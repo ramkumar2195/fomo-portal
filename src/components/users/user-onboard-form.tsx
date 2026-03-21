@@ -1,11 +1,14 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { SectionCard } from "@/components/common/section-card";
 import { ToastBanner } from "@/components/common/toast-banner";
 import { useAuth } from "@/contexts/auth-context";
+import { useBranch } from "@/contexts/branch-context";
 import { hasCapability } from "@/lib/access-policy";
+import { subscriptionService } from "@/lib/api/services/subscription-service";
 import { RegisterUserRequest, usersService } from "@/lib/api/services/users-service";
 import { DataScope, EmploymentType, UserDesignation, UserRole } from "@/types/auth";
 import { UserDirectoryItem } from "@/types/models";
@@ -29,6 +32,12 @@ interface UserOnboardFormProps {
   employmentTypeOptions?: Option<EmploymentType>[];
   requiredCapabilities: readonly string[];
   successLabel: string;
+  initialPrefill?: {
+    name?: string;
+    mobileNumber?: string;
+    email?: string;
+  };
+  sourceInquiryId?: number | null;
 }
 
 interface FormState {
@@ -36,6 +45,7 @@ interface FormState {
   mobileNumber: string;
   password: string;
   email: string;
+  defaultBranchId: string;
   employmentType: EmploymentType | "";
   designation: UserDesignation;
   dataScope: DataScope;
@@ -45,6 +55,31 @@ interface FormState {
 function toOptionalString(value: string): string | undefined {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function resolveMemberId(createdUser: UserDirectoryItem): number | null {
+  const directId = Number(String(createdUser.id || "").trim());
+  if (!Number.isNaN(directId) && Number.isFinite(directId)) {
+    return directId;
+  }
+
+  const idDigits = String(createdUser.id || "").replace(/[^0-9]/g, "");
+  if (idDigits.length > 0) {
+    const parsed = Number(idDigits);
+    if (!Number.isNaN(parsed) && Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  const mobileDigits = String(createdUser.mobile || "").replace(/[^0-9]/g, "");
+  if (mobileDigits.length > 0) {
+    const parsed = Number(mobileDigits);
+    if (!Number.isNaN(parsed) && Number.isFinite(parsed)) {
+      return parsed;
+    }
+  }
+
+  return null;
 }
 
 export function UserOnboardForm({
@@ -59,9 +94,16 @@ export function UserOnboardForm({
   ],
   requiredCapabilities,
   successLabel,
+  initialPrefill,
+  sourceInquiryId = null,
 }: UserOnboardFormProps) {
+  const router = useRouter();
   const { token, user, accessMetadata } = useAuth();
+  const { selectedBranchId } = useBranch();
   const canCreate = hasCapability(user, accessMetadata, requiredCapabilities, true);
+  const isMemberFlow = targetRole === "MEMBER";
+  const hasSourceInquiryId = isMemberFlow ? Number.isFinite(Number(sourceInquiryId)) && Number(sourceInquiryId) > 0 : true;
+  const sourceId = hasSourceInquiryId ? Number(sourceInquiryId) : null;
 
   const defaults = useMemo(
     () => ({
@@ -72,11 +114,22 @@ export function UserOnboardForm({
     [designationOptions, dataScopeOptions, employmentTypeOptions],
   );
 
+  const prefill = useMemo(
+    () => ({
+      name: initialPrefill?.name || "",
+      mobileNumber: (initialPrefill?.mobileNumber || "").replace(/[^0-9]/g, "").slice(0, 10),
+      email: initialPrefill?.email || "",
+    }),
+    [initialPrefill?.email, initialPrefill?.mobileNumber, initialPrefill?.name],
+  );
+
   const [form, setForm] = useState<FormState>(() => ({
-    name: "",
-    mobileNumber: "",
+    name: prefill.name,
+    mobileNumber: prefill.mobileNumber,
     password: "",
-    email: "",
+    email: prefill.email,
+    defaultBranchId:
+      (selectedBranchId && selectedBranchId !== "default" ? selectedBranchId : user?.defaultBranchId) || "",
     employmentType: defaults.employmentType,
     designation: defaults.designation,
     dataScope: defaults.dataScope,
@@ -84,6 +137,7 @@ export function UserOnboardForm({
   }));
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdUser, setCreatedUser] = useState<UserDirectoryItem | null>(null);
+  const [pendingConvert, setPendingConvert] = useState<{ inquiryId: number; memberId: number } | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<ToastState | null>(null);
 
@@ -96,6 +150,47 @@ export function UserOnboardForm({
     return () => window.clearTimeout(timeout);
   }, [toast]);
 
+  useEffect(() => {
+    const fallbackBranchId =
+      (selectedBranchId && selectedBranchId !== "default" ? selectedBranchId : user?.defaultBranchId) || "";
+
+    if (!fallbackBranchId) {
+      return;
+    }
+
+    setForm((prev) => (prev.defaultBranchId ? prev : { ...prev, defaultBranchId: fallbackBranchId }));
+  }, [selectedBranchId, user?.defaultBranchId]);
+
+  const convertCreatedMember = async (inquiryId: number, memberId: number): Promise<void> => {
+    if (!token) {
+      throw new Error("Session expired. Please login again.");
+    }
+
+    await subscriptionService.convertInquiry(token, String(inquiryId), { memberId });
+  };
+
+  const retryPendingConvert = async () => {
+    if (!pendingConvert || !token) {
+      return;
+    }
+
+    setIsSubmitting(true);
+    setError(null);
+
+    try {
+      await convertCreatedMember(pendingConvert.inquiryId, pendingConvert.memberId);
+      setPendingConvert(null);
+      setToast({ kind: "success", message: `Enquiry #${pendingConvert.inquiryId} converted successfully.` });
+      router.push("/portal/inquiries");
+    } catch (convertError) {
+      const message = convertError instanceof Error ? convertError.message : "Unable to convert enquiry";
+      setError(message);
+      setToast({ kind: "error", message });
+    } finally {
+      setIsSubmitting(false);
+    }
+  };
+
   const onSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
 
@@ -104,29 +199,78 @@ export function UserOnboardForm({
       return;
     }
 
+    if (isMemberFlow && !sourceId) {
+      const message = "Member onboarding must start from Enquiries Convert action (sourceInquiryId is required).";
+      setError(message);
+      setToast({ kind: "error", message });
+      return;
+    }
+
     setIsSubmitting(true);
     setError(null);
+    setPendingConvert(null);
 
     try {
       const payload: RegisterUserRequest = {
-        name: form.name.trim(),
+        fullName: form.name.trim(),
         mobileNumber: form.mobileNumber.trim(),
         password: form.password,
         role: targetRole,
         email: toOptionalString(form.email),
+        defaultBranchId: toOptionalString(form.defaultBranchId),
         employmentType: form.employmentType || undefined,
         designation: form.designation,
         dataScope: form.dataScope,
         active: form.active,
+        ...(isMemberFlow && sourceId ? { sourceInquiryId: sourceId } : {}),
       };
 
       const created = await usersService.registerUser(token, payload);
       setCreatedUser(created);
+
+      if (isMemberFlow && sourceId) {
+        const memberId = resolveMemberId(created);
+        if (memberId === null) {
+          throw new Error("Member created but numeric memberId is missing in response.");
+        }
+
+        try {
+          await convertCreatedMember(sourceId, memberId);
+          setToast({ kind: "success", message: `${successLabel} Enquiry converted.` });
+          setForm({
+            name: prefill.name,
+            mobileNumber: prefill.mobileNumber,
+            password: "",
+            email: prefill.email,
+            defaultBranchId:
+              (selectedBranchId && selectedBranchId !== "default" ? selectedBranchId : user?.defaultBranchId) || "",
+            employmentType: defaults.employmentType,
+            designation: defaults.designation,
+            dataScope: defaults.dataScope,
+            active: true,
+          });
+          router.push("/portal/inquiries");
+          return;
+        } catch (convertError) {
+          const convertMessage =
+            convertError instanceof Error ? convertError.message : "Member created but enquiry conversion failed";
+          setPendingConvert({ inquiryId: sourceId, memberId });
+          setError(convertMessage);
+          setToast({
+            kind: "error",
+            message: "Member created, but enquiry conversion failed. Use Retry Convert below.",
+          });
+          return;
+        }
+      }
+
       setForm({
-        name: "",
-        mobileNumber: "",
+        name: prefill.name,
+        mobileNumber: prefill.mobileNumber,
         password: "",
-        email: "",
+        email: prefill.email,
+        defaultBranchId:
+          (selectedBranchId && selectedBranchId !== "default" ? selectedBranchId : user?.defaultBranchId) || "",
         employmentType: defaults.employmentType,
         designation: defaults.designation,
         dataScope: defaults.dataScope,
@@ -134,7 +278,10 @@ export function UserOnboardForm({
       });
       setToast({ kind: "success", message: successLabel });
     } catch (submitError) {
-      const message = submitError instanceof Error ? submitError.message : "Unable to create user";
+      const rawMessage = submitError instanceof Error ? submitError.message : "Unable to create user";
+      const message = rawMessage.includes("sourceInquiryId")
+        ? "sourceInquiryId is missing/invalid. Start member onboarding from Enquiries -> Convert."
+        : rawMessage;
       setError(message);
       setToast({ kind: "error", message });
     } finally {
@@ -176,8 +323,17 @@ export function UserOnboardForm({
           <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700">
             Your designation does not have create capability for this module.
           </p>
+        ) : isMemberFlow && !hasSourceInquiryId ? (
+          <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">
+            Member creation requires enquiry conversion. Go to Enquiries and use the Convert action.
+          </p>
         ) : (
           <form className="grid gap-3 md:grid-cols-2" onSubmit={onSubmit}>
+            {isMemberFlow && sourceId ? (
+              <div className="md:col-span-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
+                Source Enquiry ID: {sourceId}
+              </div>
+            ) : null}
             <div>
               <label className="mb-1 block text-xs font-semibold text-slate-600">Name</label>
               <input
@@ -223,6 +379,16 @@ export function UserOnboardForm({
                 type="email"
                 value={form.email}
                 onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))}
+              />
+            </div>
+
+            <div>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">Default Branch ID (optional)</label>
+              <input
+                className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                value={form.defaultBranchId}
+                onChange={(event) => setForm((prev) => ({ ...prev, defaultBranchId: event.target.value }))}
+                placeholder={user?.defaultBranchId || "branch id"}
               />
             </div>
 
@@ -298,7 +464,7 @@ export function UserOnboardForm({
             <div className="md:col-span-2">
               <button
                 type="submit"
-                disabled={isSubmitting}
+                disabled={isSubmitting || (isMemberFlow && !hasSourceInquiryId)}
                 className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-400"
               >
                 {isSubmitting ? "Saving..." : "Create User"}
@@ -308,6 +474,21 @@ export function UserOnboardForm({
         )}
 
         {error ? <p className="mt-3 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
+        {pendingConvert ? (
+          <div className="mt-3 rounded-lg border border-amber-200 bg-amber-50 p-3">
+            <p className="text-sm font-semibold text-amber-800">
+              Member created, but enquiry conversion is pending for enquiry #{pendingConvert.inquiryId}.
+            </p>
+            <button
+              type="button"
+              onClick={() => void retryPendingConvert()}
+              disabled={isSubmitting}
+              className="mt-2 rounded-lg bg-amber-600 px-3 py-2 text-xs font-semibold text-white hover:bg-amber-700 disabled:bg-amber-300"
+            >
+              {isSubmitting ? "Retrying..." : "Retry Convert"}
+            </button>
+          </div>
+        ) : null}
       </SectionCard>
 
       <SectionCard title="Last Created User" subtitle="Result from users-service register API">

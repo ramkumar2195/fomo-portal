@@ -1,3 +1,5 @@
+import type { InquiryResponseType } from "@/types/inquiry";
+
 export type FollowUpChannel = "CALL" | "WHATSAPP" | "SMS" | "EMAIL" | "VISIT";
 
 export type FollowUpStatus = "SCHEDULED" | "COMPLETED" | "MISSED" | "CANCELLED";
@@ -9,9 +11,9 @@ export interface FollowUpRecord {
   assignedToStaffId: number | null;
   createdByStaffId: number | null;
   channel: FollowUpChannel;
+  responseType?: InquiryResponseType;
   dueAt: string;
   notes: string | null;
-  customMessage: string | null;
   status: FollowUpStatus;
   completedByStaffId: number | null;
   completedAt: string | null;
@@ -27,7 +29,7 @@ export interface CreateFollowUpRequest {
   assignedToStaffId: number;
   createdByStaffId: number;
   notes?: string;
-  customMessage?: string;
+  responseType?: InquiryResponseType;
 }
 
 export interface UpdateFollowUpRequest {
@@ -35,7 +37,6 @@ export interface UpdateFollowUpRequest {
   channel?: FollowUpChannel;
   assignedToStaffId?: number;
   notes?: string;
-  customMessage?: string;
   status?: FollowUpStatus;
   completedByStaffId?: number;
   outcomeNotes?: string;
@@ -48,10 +49,14 @@ export interface CompleteFollowUpRequest {
 
 export interface FollowUpQueueQuery {
   inquiryId?: number;
+  memberId?: number;
   assignedToStaffId?: number;
   status?: FollowUpStatus;
   dueFrom?: string;
   dueTo?: string;
   overdueOnly?: boolean;
+  branchId?: number;
+  page?: number;
+  size?: number;
   [key: string]: string | number | boolean | undefined;
 }

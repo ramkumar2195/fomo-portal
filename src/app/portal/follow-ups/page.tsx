@@ -1,38 +1,142 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { CheckCircle2, MessageCircle, PhoneCall } from "lucide-react";
 import { PageLoader } from "@/components/common/page-loader";
 import { SectionCard } from "@/components/common/section-card";
 import { useAuth } from "@/contexts/auth-context";
+import { useBranch } from "@/contexts/branch-context";
 import { subscriptionFollowUpService } from "@/lib/api/services/subscription-followup-service";
 import { formatDateTime } from "@/lib/formatters";
+import { formatInquiryCode } from "@/lib/inquiry-code";
 import { resolveStaffId } from "@/lib/staff-id";
+import { subscriptionService } from "@/lib/api/services/subscription-service";
 import { FollowUpRecord } from "@/types/follow-up";
+import { InquiryRecord } from "@/types/inquiry";
 
-function formatDateOnly(value: string): string {
-  return value.slice(0, 10);
+function getInquiryType(inquiry?: InquiryRecord): "ENQUIRY" | "RENEWAL" | "EXPIRED" | "IRREGULAR" {
+  const status = String(inquiry?.status || "").toUpperCase();
+  if (status === "CONVERTED") {
+    return "RENEWAL";
+  }
+  if (status === "LOST") {
+    return "EXPIRED";
+  }
+  if (status === "NOT_INTERESTED") {
+    return "IRREGULAR";
+  }
+
+  return "ENQUIRY";
 }
 
-function statusClass(status: string): string {
-  if (status === "SCHEDULED") {
-    return "bg-blue-50 text-blue-700 border-blue-100";
-  }
-  if (status === "COMPLETED") {
-    return "bg-green-50 text-green-700 border-green-100";
-  }
-  if (status === "MISSED") {
-    return "bg-amber-50 text-amber-700 border-amber-100";
+function getPriority(dueAt: string, overdue: boolean): "HIGH" | "MEDIUM" | "LOW" {
+  const dueDate = new Date(dueAt);
+  if (Number.isNaN(dueDate.getTime())) {
+    return "MEDIUM";
   }
 
-  return "bg-rose-50 text-rose-700 border-rose-100";
+  const now = new Date();
+  if (overdue || dueDate.getTime() <= now.getTime()) {
+    return "HIGH";
+  }
+
+  const todayStart = new Date(now);
+  todayStart.setHours(0, 0, 0, 0);
+  const tomorrowStart = new Date(todayStart);
+  tomorrowStart.setDate(todayStart.getDate() + 1);
+
+  const dueStart = new Date(dueDate);
+  dueStart.setHours(0, 0, 0, 0);
+
+  if (dueStart.getTime() === todayStart.getTime() || dueStart.getTime() === tomorrowStart.getTime()) {
+    return "MEDIUM";
+  }
+
+  if (dueStart.getTime() > tomorrowStart.getTime()) {
+    return "LOW";
+  }
+
+  return "HIGH";
+}
+
+function priorityClass(priority: "HIGH" | "MEDIUM" | "LOW"): string {
+  if (priority === "HIGH") {
+    return "bg-red-600 text-white";
+  }
+  if (priority === "MEDIUM") {
+    return "bg-amber-500 text-white";
+  }
+  return "bg-slate-400 text-white";
+}
+
+function typeClass(type: "ENQUIRY" | "RENEWAL" | "EXPIRED" | "IRREGULAR"): string {
+  if (type === "RENEWAL") {
+    return "bg-violet-50 text-violet-700";
+  }
+  if (type === "EXPIRED") {
+    return "bg-rose-50 text-rose-700";
+  }
+  if (type === "IRREGULAR") {
+    return "bg-slate-100 text-slate-700";
+  }
+  return "bg-blue-50 text-blue-700";
+}
+
+function toScheduleLabel(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) {
+    return value;
+  }
+
+  return date.toLocaleTimeString("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function getRequirement(item: FollowUpRecord, inquiry?: InquiryRecord): string {
+  const fromNotes = (item.notes || "").trim();
+  const fromInquiryComment = (inquiry?.followUpComment || "").trim();
+  const fromInquiryRemarks = (inquiry?.remarks || "").trim();
+
+  return fromNotes || fromInquiryComment || fromInquiryRemarks || "No requirement added.";
+}
+
+function getWhatsAppMessage(item: FollowUpRecord, inquiry?: InquiryRecord): string {
+  const requirement = getRequirement(item, inquiry);
+  return requirement;
+}
+
+function toWhatsAppPhoneNumber(value: string): string {
+  const digits = value.replace(/[^0-9]/g, "");
+  if (digits.length === 10) {
+    return `91${digits}`;
+  }
+
+  if (digits.length === 11 && digits.startsWith("0")) {
+    return `91${digits.slice(1)}`;
+  }
+
+  return digits;
 }
 
 export default function FollowUpsPage() {
   const { token, user } = useAuth();
+  const { selectedBranchCode, effectiveBranchId } = useBranch();
   const [queue, setQueue] = useState<FollowUpRecord[]>([]);
+  const [inquiriesById, setInquiriesById] = useState<Record<number, InquiryRecord>>({});
+  const [currentPage, setCurrentPage] = useState(1);
+  const [totalPages, setTotalPages] = useState(1);
+  const [totalRows, setTotalRows] = useState(0);
+  const [counts, setCounts] = useState({
+    todayCount: 0,
+    overdueCount: 0,
+    upcomingCount: 0,
+  });
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [savingId, setSavingId] = useState<number | null>(null);
+  const pageSize = 10;
 
   const loadQueue = useCallback(async () => {
     if (!token) {
@@ -44,30 +148,118 @@ export default function FollowUpsPage() {
 
     try {
       const staffId = resolveStaffId(user);
-      const list = await subscriptionFollowUpService.searchFollowUpQueue(token, {
-        assignedToStaffId: staffId || undefined,
+      const queueBaseQuery =
+        user?.role === "ADMIN"
+          ? { branchId: effectiveBranchId, branchCode: selectedBranchCode || undefined }
+          : {
+              assignedToStaffId: staffId || undefined,
+              branchId: effectiveBranchId,
+              branchCode: selectedBranchCode || undefined,
+            };
+
+      const now = new Date();
+      const startOfToday = new Date(now);
+      startOfToday.setHours(0, 0, 0, 0);
+      const endOfToday = new Date(now);
+      endOfToday.setHours(23, 59, 59, 999);
+      const startOfTomorrow = new Date(startOfToday);
+      startOfTomorrow.setDate(startOfTomorrow.getDate() + 1);
+
+      const [queuePage, todayPage, overduePage, upcomingPage] = await Promise.all([
+        subscriptionFollowUpService.searchFollowUpQueuePaged(
+          token,
+          {
+            ...queueBaseQuery,
+            status: "SCHEDULED",
+          },
+          Math.max(0, currentPage - 1),
+          pageSize,
+        ),
+        subscriptionFollowUpService.searchFollowUpQueuePaged(
+          token,
+          {
+            ...queueBaseQuery,
+            status: "SCHEDULED",
+            dueFrom: startOfToday.toISOString(),
+            dueTo: endOfToday.toISOString(),
+          },
+          0,
+          1,
+        ),
+        subscriptionFollowUpService.searchFollowUpQueuePaged(
+          token,
+          {
+            ...queueBaseQuery,
+            status: "SCHEDULED",
+            overdueOnly: true,
+          },
+          0,
+          1,
+        ),
+        subscriptionFollowUpService.searchFollowUpQueuePaged(
+          token,
+          {
+            ...queueBaseQuery,
+            status: "SCHEDULED",
+            dueFrom: startOfTomorrow.toISOString(),
+          },
+          0,
+          1,
+        ),
+      ]);
+
+      const inquiryIndex: Record<number, InquiryRecord> = {};
+      let inquiryPage = 0;
+      const inquiryPageSize = 200;
+
+      while (true) {
+        const inquiriesPage = await subscriptionService.searchInquiriesPaged(token, {}, inquiryPage, inquiryPageSize);
+        for (const inquiry of inquiriesPage.content) {
+          inquiryIndex[inquiry.inquiryId] = inquiry;
+        }
+
+        if (inquiriesPage.last || inquiryPage >= inquiriesPage.totalPages - 1) {
+          break;
+        }
+
+        inquiryPage += 1;
+      }
+
+      setInquiriesById(inquiryIndex);
+      setQueue(queuePage.content);
+      setCurrentPage(queuePage.number + 1);
+      setTotalPages(Math.max(queuePage.totalPages, 1));
+      setTotalRows(queuePage.totalElements);
+      setCounts({
+        todayCount: todayPage.totalElements,
+        overdueCount: overduePage.totalElements,
+        upcomingCount: upcomingPage.totalElements,
       });
-      setQueue(list);
     } catch (loadError) {
       const message = loadError instanceof Error ? loadError.message : "Unable to load follow-up queue";
       setError(message);
     } finally {
       setLoading(false);
     }
-  }, [token, user]);
+  }, [token, user, currentPage, selectedBranchCode, effectiveBranchId]);
 
   useEffect(() => {
     void loadQueue();
   }, [loadQueue]);
 
-  const counts = useMemo(() => {
-    const today = new Date().toISOString().slice(0, 10);
-    const todayCount = queue.filter((item) => item.dueAt.slice(0, 10) === today && item.status === "SCHEDULED").length;
-    const overdueCount = queue.filter((item) => item.overdue && item.status === "SCHEDULED").length;
-    const upcomingCount = queue.filter((item) => item.dueAt.slice(0, 10) > today && item.status === "SCHEDULED").length;
+  useEffect(() => {
+    if (currentPage > totalPages) {
+      setCurrentPage(totalPages);
+    }
+  }, [currentPage, totalPages]);
 
-    return { todayCount, overdueCount, upcomingCount };
-  }, [queue]);
+  const scheduledQueue = useMemo(
+    () =>
+      queue
+        .filter((item) => item.status === "SCHEDULED")
+        .sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime()),
+    [queue],
+  );
 
   const completeFollowUp = async (followUp: FollowUpRecord) => {
     if (!token) {
@@ -82,10 +274,10 @@ export default function FollowUpsPage() {
 
     setSavingId(followUp.followUpId);
     try {
-      const updated = await subscriptionFollowUpService.completeFollowUp(token, followUp.followUpId, {
+      await subscriptionFollowUpService.completeFollowUp(token, followUp.followUpId, {
         completedByStaffId: staffId,
       });
-      setQueue((prev) => prev.map((item) => (item.followUpId === updated.followUpId ? updated : item)));
+      await loadQueue();
     } catch (updateError) {
       const message = updateError instanceof Error ? updateError.message : "Unable to complete follow-up";
       setError(message);
@@ -94,21 +286,32 @@ export default function FollowUpsPage() {
     }
   };
 
-  const markStatus = async (followUp: FollowUpRecord, status: "MISSED" | "CANCELLED") => {
-    if (!token) {
+  const onCallNow = (inquiry?: InquiryRecord) => {
+    const mobile = inquiry?.mobileNumber?.trim();
+    if (!mobile) {
+      setError("Mobile number missing for this follow-up.");
       return;
     }
 
-    setSavingId(followUp.followUpId);
-    try {
-      const updated = await subscriptionFollowUpService.updateFollowUp(token, followUp.followUpId, { status });
-      setQueue((prev) => prev.map((item) => (item.followUpId === updated.followUpId ? updated : item)));
-    } catch (updateError) {
-      const message = updateError instanceof Error ? updateError.message : `Unable to mark ${status.toLowerCase()}`;
-      setError(message);
-    } finally {
-      setSavingId(null);
+    const sanitized = mobile.replace(/[^0-9]/g, "");
+    if (!sanitized) {
+      setError("Mobile number is invalid.");
+      return;
     }
+
+    window.open(`tel:${sanitized}`, "_self");
+  };
+
+  const onMessage = (item: FollowUpRecord, inquiry?: InquiryRecord) => {
+    const mobile = inquiry?.mobileNumber?.trim();
+    if (!mobile) {
+      setError("Mobile number missing for this follow-up.");
+      return;
+    }
+
+    const sanitized = toWhatsAppPhoneNumber(mobile);
+    const message = getWhatsAppMessage(item, inquiry);
+    window.open(`https://wa.me/${sanitized}?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
   };
 
   if (loading) {
@@ -144,6 +347,7 @@ export default function FollowUpsPage() {
 
       <SectionCard
         title="Scheduled Follow-ups"
+        subtitle="Live queue from follow-up APIs"
         actions={
           <button
             type="button"
@@ -154,55 +358,74 @@ export default function FollowUpsPage() {
           </button>
         }
       >
-        {queue.length === 0 ? (
+        {scheduledQueue.length === 0 ? (
           <p className="text-sm text-gray-500">No follow-ups found.</p>
         ) : (
           <div className="divide-y divide-gray-100">
-            {queue.map((item) => {
+            {scheduledQueue.map((item) => {
+              const inquiry = inquiriesById[item.inquiryId];
+              const inquiryType = getInquiryType(inquiry);
+              const priority = getPriority(item.dueAt, item.overdue);
+              const requirement = getRequirement(item, inquiry);
+              const clientName = inquiry?.fullName || "Unnamed Client";
               const busy = savingId === item.followUpId;
+              const canContact = Boolean(inquiry?.mobileNumber?.trim());
               return (
-                <article key={item.followUpId} className="flex flex-col gap-4 py-4 md:flex-row md:items-center md:justify-between">
+                <article
+                  key={item.followUpId}
+                  className="flex flex-col gap-4 py-4 md:flex-row md:items-center md:justify-between"
+                >
                   <div className="flex-1">
                     <div className="mb-1 flex flex-wrap items-center gap-2">
-                      <p className="font-semibold text-gray-900">Inquiry #{item.inquiryId}</p>
-                      <span className={`rounded-full border px-2 py-0.5 text-[10px] font-bold uppercase ${statusClass(item.status)}`}>
-                        {item.status}
+                      <p className="font-semibold text-gray-900">{clientName}</p>
+                      <span className={`rounded px-2 py-0.5 text-[10px] font-bold tracking-wide uppercase ${typeClass(inquiryType)}`}>
+                        {inquiryType}
+                      </span>
+                      <span className={`rounded px-2 py-0.5 text-[10px] font-bold tracking-wide uppercase ${priorityClass(priority)}`}>
+                        {priority} PRIORITY
+                      </span>
+                      <span className="rounded bg-slate-100 px-2 py-0.5 text-[10px] font-bold tracking-wide text-slate-600 uppercase">
+                        {formatInquiryCode(item.inquiryId, {
+                          branchCode: selectedBranchCode,
+                          createdAt: item.createdAt,
+                        })}
                       </span>
                       {item.overdue ? (
-                        <span className="rounded-full border border-rose-200 bg-rose-100 px-2 py-0.5 text-[10px] font-bold uppercase text-rose-700">
+                        <span className="rounded bg-rose-100 px-2 py-0.5 text-[10px] font-bold tracking-wide text-rose-700 uppercase">
                           Overdue
                         </span>
                       ) : null}
                     </div>
-                    <p className="text-sm text-gray-600">{item.notes || item.customMessage || "No notes available."}</p>
+                    <p className="text-sm text-gray-600">{requirement}</p>
                     <p className="mt-1 text-xs text-gray-400">
-                      Channel: {item.channel} • Due: {formatDateTime(item.dueAt)} ({formatDateOnly(item.dueAt)})
+                      Scheduled for {toScheduleLabel(item.dueAt)} • {formatDateTime(item.dueAt)} • Channel: {item.channel}
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
-                      disabled={busy || item.status === "COMPLETED"}
+                      disabled={!canContact}
+                      onClick={() => onCallNow(inquiry)}
+                      className="inline-flex items-center gap-1 rounded-xl bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-300"
+                    >
+                      <PhoneCall className="h-4 w-4" aria-hidden="true" />
+                      Call Now
+                    </button>
+                    <button
+                      type="button"
+                      disabled={!canContact}
+                      onClick={() => onMessage(item, inquiry)}
+                      className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <MessageCircle className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      disabled={busy}
                       onClick={() => void completeFollowUp(item)}
-                      className="rounded-lg bg-red-600 px-4 py-2 text-sm font-semibold text-white hover:bg-red-700 disabled:cursor-not-allowed disabled:bg-red-300"
+                      className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-slate-200 text-slate-600 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
                     >
-                      Complete
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy || item.status === "MISSED"}
-                      onClick={() => void markStatus(item, "MISSED")}
-                      className="rounded-lg border border-amber-200 px-4 py-2 text-sm font-semibold text-amber-700 hover:bg-amber-50 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      Mark Missed
-                    </button>
-                    <button
-                      type="button"
-                      disabled={busy || item.status === "CANCELLED"}
-                      onClick={() => void markStatus(item, "CANCELLED")}
-                      className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:opacity-60"
-                    >
-                      Cancel
+                      <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
                     </button>
                   </div>
                 </article>
@@ -210,6 +433,33 @@ export default function FollowUpsPage() {
             })}
           </div>
         )}
+        <div className="mt-4 flex items-center justify-between">
+          <p className="text-xs text-slate-500">
+            Showing {(currentPage - 1) * pageSize + (scheduledQueue.length > 0 ? 1 : 0)}-
+            {(currentPage - 1) * pageSize + scheduledQueue.length} of {totalRows}
+          </p>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setCurrentPage((prev) => Math.max(1, prev - 1))}
+              disabled={currentPage <= 1}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <span className="text-xs font-semibold text-slate-600">
+              Page {currentPage} / {totalPages}
+            </span>
+            <button
+              type="button"
+              onClick={() => setCurrentPage((prev) => Math.min(totalPages, prev + 1))}
+              disabled={currentPage >= totalPages}
+              className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Next
+            </button>
+          </div>
+        </div>
       </SectionCard>
     </div>
   );

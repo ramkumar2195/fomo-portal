@@ -3,7 +3,7 @@
 import { FormEvent, useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { useAuth } from "@/contexts/auth-context";
-import { hasDesignation } from "@/lib/access-policy";
+import { pushAuthDebug } from "@/lib/debug/auth-debug";
 import { DEFAULT_ROUTE_BY_ROLE } from "@/lib/route-access";
 
 export default function LoginPage() {
@@ -17,12 +17,7 @@ export default function LoginPage() {
 
   useEffect(() => {
     if (!isBootstrapping && isAuthenticated) {
-      const destination =
-        user?.role === "ADMIN" && hasDesignation(user, "SUPER_ADMIN")
-          ? "/branch-selector"
-          : user
-            ? DEFAULT_ROUTE_BY_ROLE[user.role]
-            : "/portal";
+      const destination = user ? DEFAULT_ROUTE_BY_ROLE[user.role] : "/portal";
       router.replace(destination);
     }
   }, [isBootstrapping, isAuthenticated, router, user]);
@@ -31,14 +26,14 @@ export default function LoginPage() {
     event.preventDefault();
     setError(null);
     setIsSubmitting(true);
+    pushAuthDebug("login-page", "submit", {
+      mobileLength: mobileNumber.length,
+      hasPassword: Boolean(password),
+    });
 
     try {
       const resolvedUser = await login({ mobileNumber, password });
-      if (resolvedUser.role === "ADMIN" && hasDesignation(resolvedUser, "SUPER_ADMIN")) {
-        router.replace("/branch-selector");
-      } else {
-        router.replace(DEFAULT_ROUTE_BY_ROLE[resolvedUser.role]);
-      }
+      router.replace(DEFAULT_ROUTE_BY_ROLE[resolvedUser.role]);
     } catch (submitError) {
       const message = submitError instanceof Error ? submitError.message : "Unable to login";
       if (message.includes("only for ADMIN and STAFF")) {

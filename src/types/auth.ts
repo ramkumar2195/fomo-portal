@@ -48,7 +48,7 @@ export interface LoginRequest {
 
 export interface LoginResponse {
   token: string;
-  refreshToken?: string;
+  refreshToken: string;
   expiresIn?: number;
   refreshExpiresIn?: number;
   tokenType?: string;

@@ -1,32 +1,36 @@
 "use client";
 
+import dynamic from "next/dynamic";
 import Link from "next/link";
 import { ComponentType, SVGProps, useCallback, useEffect, useMemo, useState } from "react";
+import { ArrowRight, Clock3, ShieldAlert, Sparkles, Target, Users2 } from "lucide-react";
 import {
   ActiveMembersIcon,
-  BirthdayIcon,
+  BiometricIcon,
+  DashboardIcon,
   EnquiryIcon,
   ExpiredMembersIcon,
   FollowUpsIcon,
   IrregularMembersIcon,
+  MembersIcon,
   PTClientsIcon,
   RenewalsMetricIcon,
   RevenueIcon,
-  ReportsIcon,
-  CommunityIcon,
-  MembersIcon,
-  RenewalsIcon,
-  DashboardIcon,
 } from "@/components/common/icons";
 import { PageLoader } from "@/components/common/page-loader";
 import { SectionCard } from "@/components/common/section-card";
 import { useAuth } from "@/contexts/auth-context";
-import { hasDesignation } from "@/lib/access-policy";
+import { useBranch } from "@/contexts/branch-context";
 import { engagementService } from "@/lib/api/services/engagement-service";
 import { subscriptionFollowUpService } from "@/lib/api/services/subscription-followup-service";
 import { formatCurrency, formatPercent } from "@/lib/formatters";
 import { resolveStaffId } from "@/lib/staff-id";
+import { UserDesignation } from "@/types/auth";
 import { AdminOverviewMetrics, DashboardMetrics, LeaderboardEntry } from "@/types/models";
+
+const AdminDashboardContent = dynamic(() => import("@/app/(admin)/admin/dashboard/page"), {
+  loading: () => <PageLoader label="Loading dashboard..." />,
+});
 
 interface DashboardState {
   metrics: DashboardMetrics;
@@ -36,38 +40,54 @@ interface DashboardState {
   overdueFollowUps: number;
 }
 
-interface QuickAction {
+interface MetricCard {
   label: string;
-  href: string;
+  value: string;
+  subtitle: string;
   color: string;
-  icon: ComponentType<SVGProps<SVGSVGElement>>;
 }
 
-interface RevenuePoint {
-  day: string;
-  value: number;
+interface FocusPanel {
+  title: string;
+  value: string;
+  description: string;
+  href: string;
+  tone: "blue" | "emerald" | "amber" | "rose" | "violet" | "slate";
 }
 
-interface ActivityItem {
-  actor: string;
-  action: string;
-  target: string;
-  time: string;
+interface WorkspaceItem {
+  title: string;
+  description: string;
+  href: string;
 }
 
-const QUICK_ACTIONS: QuickAction[] = [
-  { label: "Add Member", href: "/portal/members/add", color: "bg-blue-600", icon: MembersIcon },
-  { label: "Add Enquiry", href: "/portal/inquiries", color: "bg-green-600", icon: EnquiryIcon },
-  { label: "Add Trainer", href: "/portal/trainers/add", color: "bg-violet-600", icon: MembersIcon },
-  { label: "Add Staff", href: "/portal/staff/add", color: "bg-fuchsia-600", icon: MembersIcon },
-  { label: "Follow-ups", href: "/portal/follow-ups", color: "bg-orange-600", icon: FollowUpsIcon },
-  { label: "Community", href: "/portal/community", color: "bg-purple-600", icon: CommunityIcon },
-  { label: "Biometric", href: "/portal/trainer-attendance", color: "bg-slate-700", icon: DashboardIcon },
-  { label: "Appointments", href: "/portal/class-schedule", color: "bg-red-600", icon: RenewalsIcon },
-  { label: "Packages", href: "/portal/billing", color: "bg-emerald-600", icon: RevenueIcon },
-  { label: "Members List", href: "/portal/members", color: "bg-cyan-600", icon: MembersIcon },
-  { label: "Reports", href: "/portal/reports", color: "bg-indigo-600", icon: ReportsIcon },
-];
+interface WatchlistItem {
+  label: string;
+  detail: string;
+  tone: "neutral" | "amber" | "rose" | "green";
+}
+
+type CardKey =
+  | "activeMembers"
+  | "expiredMembers"
+  | "irregularMembers"
+  | "ptClients"
+  | "revenueToday"
+  | "revenueMonth"
+  | "renewals"
+  | "todaysInquiries"
+  | "followUpsDue"
+  | "overdueFollowUps"
+  | "conversionRate"
+  | "totalMembers"
+  | "totalStaff"
+  | "todaysBirthdays";
+
+type OperationalDesignation =
+  | "SALES_MANAGER"
+  | "SALES_EXECUTIVE"
+  | "FRONT_DESK_EXECUTIVE"
+  | "FITNESS_MANAGER";
 
 const EMPTY_STATE: DashboardState = {
   metrics: {
@@ -96,79 +116,661 @@ const EMPTY_STATE: DashboardState = {
   overdueFollowUps: 0,
 };
 
+const PRIMARY_CARD_KEYS: Record<OperationalDesignation | "DEFAULT", CardKey[]> = {
+  SALES_MANAGER: [
+    "todaysInquiries",
+    "followUpsDue",
+    "overdueFollowUps",
+    "conversionRate",
+    "renewals",
+    "revenueToday",
+  ],
+  SALES_EXECUTIVE: [
+    "todaysInquiries",
+    "followUpsDue",
+    "overdueFollowUps",
+    "conversionRate",
+    "renewals",
+    "revenueToday",
+  ],
+  FRONT_DESK_EXECUTIVE: [
+    "activeMembers",
+    "expiredMembers",
+    "renewals",
+    "revenueToday",
+    "totalMembers",
+    "todaysBirthdays",
+  ],
+  FITNESS_MANAGER: [
+    "ptClients",
+    "irregularMembers",
+    "activeMembers",
+    "totalStaff",
+    "renewals",
+    "todaysBirthdays",
+  ],
+  DEFAULT: [
+    "activeMembers",
+    "todaysInquiries",
+    "followUpsDue",
+    "renewals",
+    "revenueToday",
+    "totalMembers",
+  ],
+};
+
+const WORKSPACE_ITEMS: Record<OperationalDesignation | "DEFAULT", WorkspaceItem[]> = {
+  SALES_MANAGER: [
+    {
+      title: "Leads & Inquiries",
+      description: "Review the pipeline, assign owners, and move prospects toward trial or conversion.",
+      href: "/portal/inquiries",
+    },
+    {
+      title: "Renewals & Follow-ups",
+      description: "Track expiring members and clear the overdue follow-up queue.",
+      href: "/portal/renewals",
+    },
+    {
+      title: "Reports",
+      description: "Review daily conversion, collection, and sales performance trends.",
+      href: "/portal/reports",
+    },
+    {
+      title: "Members",
+      description: "Check converted leads, onboarding progress, and current member context.",
+      href: "/portal/members",
+    },
+  ],
+  SALES_EXECUTIVE: [
+    {
+      title: "Leads & Inquiries",
+      description: "Add walk-ins, qualify leads, and update the CRM without leaving the desk.",
+      href: "/portal/inquiries",
+    },
+    {
+      title: "Follow-up Queue",
+      description: "Work through scheduled calls, WhatsApp nudges, and missed follow-ups.",
+      href: "/portal/follow-ups",
+    },
+    {
+      title: "Renewals",
+      description: "Recover expiring members before they fall into the overdue bucket.",
+      href: "/portal/renewals",
+    },
+    {
+      title: "Members",
+      description: "Search converted members and confirm onboarding details after closure.",
+      href: "/portal/members",
+    },
+  ],
+  FRONT_DESK_EXECUTIVE: [
+    {
+      title: "Members",
+      description: "Look up member records, verify plan status, and help with branch-side requests.",
+      href: "/portal/members",
+    },
+    {
+      title: "Billing / Subscriptions",
+      description: "Support quick collections, subscription actions, and front-desk billing tasks.",
+      href: "/portal/billing",
+    },
+    {
+      title: "Renewals & Follow-ups",
+      description: "Handle expiring memberships and service lapses before they hit the floor team.",
+      href: "/portal/renewals",
+    },
+    {
+      title: "Leads & Inquiries",
+      description: "Capture walk-ins and hand over qualified inquiries to sales with clean data.",
+      href: "/portal/inquiries",
+    },
+  ],
+  FITNESS_MANAGER: [
+    {
+      title: "Coaches",
+      description: "Review coach roster, assigned members, and training-side ownership.",
+      href: "/portal/trainers",
+    },
+    {
+      title: "Classes & Sessions",
+      description: "Monitor schedules, attendance pressure, and branch training execution.",
+      href: "/portal/class-schedule",
+    },
+    {
+      title: "Members",
+      description: "Track at-risk members, PT clients, and members needing fitness intervention.",
+      href: "/portal/members",
+    },
+    {
+      title: "Reports",
+      description: "Review trainer utilization, retention patterns, and performance indicators.",
+      href: "/portal/reports",
+    },
+  ],
+  DEFAULT: [
+    {
+      title: "Dashboard",
+      description: "Start from the live operating numbers and then jump into the right module.",
+      href: "/portal/sales-dashboard",
+    },
+    {
+      title: "Members",
+      description: "Inspect active member state and quickly pivot into member operations.",
+      href: "/portal/members",
+    },
+    {
+      title: "Reports",
+      description: "Review summary trends when the operational queue is under control.",
+      href: "/portal/reports",
+    },
+  ],
+};
+
+function formatCount(value: number): string {
+  return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(value || 0);
+}
+
+function toneClasses(tone: FocusPanel["tone"]): string {
+  switch (tone) {
+    case "blue":
+      return "border-blue-200 bg-blue-50 text-blue-700";
+    case "emerald":
+      return "border-emerald-200 bg-emerald-50 text-emerald-700";
+    case "amber":
+      return "border-amber-200 bg-amber-50 text-amber-700";
+    case "rose":
+      return "border-rose-200 bg-rose-50 text-rose-700";
+    case "violet":
+      return "border-violet-200 bg-violet-50 text-violet-700";
+    default:
+      return "border-slate-200 bg-slate-50 text-slate-700";
+  }
+}
+
+function watchlistToneClasses(tone: WatchlistItem["tone"]): string {
+  switch (tone) {
+    case "green":
+      return "border-green-200 bg-green-50 text-green-700";
+    case "amber":
+      return "border-amber-200 bg-amber-50 text-amber-700";
+    case "rose":
+      return "border-rose-200 bg-rose-50 text-rose-700";
+    default:
+      return "border-slate-200 bg-slate-50 text-slate-700";
+  }
+}
+
+function displayDesignation(designation?: UserDesignation): string {
+  switch (designation) {
+    case "GYM_MANAGER":
+      return "Branch Manager";
+    case "FRONT_DESK_EXECUTIVE":
+      return "Front Desk";
+    case "SALES_MANAGER":
+      return "Sales Manager";
+    case "SALES_EXECUTIVE":
+      return "Sales Executive";
+    case "FITNESS_MANAGER":
+      return "Fitness Manager";
+    case "SUPER_ADMIN":
+      return "Super Admin";
+    default:
+      return designation ? designation.replace(/_/g, " ") : "Staff";
+  }
+}
+
 function iconForMetric(label: string): ComponentType<SVGProps<SVGSVGElement>> {
-  if (label.includes("Active")) {
-    return ActiveMembersIcon;
-  }
-  if (label.includes("Expired")) {
-    return ExpiredMembersIcon;
-  }
-  if (label.includes("Irregular")) {
-    return IrregularMembersIcon;
-  }
-  if (label.includes("PT")) {
-    return PTClientsIcon;
-  }
-  if (label.includes("Revenue")) {
-    return RevenueIcon;
-  }
-  if (label.includes("Birthdays")) {
-    return BirthdayIcon;
-  }
-  if (label.includes("Renewals")) {
-    return RenewalsMetricIcon;
-  }
-  if (label.includes("Inquiries")) {
-    return EnquiryIcon;
-  }
-  if (label.includes("Follow-ups")) {
-    return FollowUpsIcon;
-  }
+  if (label.includes("Active")) return ActiveMembersIcon;
+  if (label.includes("Expired")) return ExpiredMembersIcon;
+  if (label.includes("Irregular")) return IrregularMembersIcon;
+  if (label.includes("PT")) return PTClientsIcon;
+  if (label.includes("Revenue")) return RevenueIcon;
+  if (label.includes("Renewals")) return RenewalsMetricIcon;
+  if (label.includes("Lead")) return EnquiryIcon;
+  if (label.includes("Follow-up")) return FollowUpsIcon;
+  if (label.includes("Birthday")) return Sparkles;
+  if (label.includes("Members")) return MembersIcon;
+  if (label.includes("Team")) return Users2;
   return DashboardIcon;
 }
 
-function buildWeeklyRevenueSeries(revenueToday: number, revenueThisMonth: number): RevenuePoint[] {
-  const seed = revenueThisMonth > 0 ? revenueThisMonth : revenueToday * 18;
-  const base = Math.max(seed / 30, 1000);
-  const multipliers = [0.9, 1.05, 0.82, 1.2, 0.96, 1.32, 1.14];
-  const labels = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"];
-
-  return labels.map((day, index) => {
-    const value = Math.round(base * multipliers[index]);
-    return {
-      day,
-      value: index === labels.length - 1 && revenueToday > 0 ? revenueToday : value,
-    };
-  });
+function buildAllCards(
+  overview: AdminOverviewMetrics,
+  metrics: DashboardMetrics,
+  followUpsDueToday: number,
+  overdueFollowUps: number,
+): Record<CardKey, MetricCard> {
+  return {
+    activeMembers: {
+      label: "Active Members",
+      value: formatCount(overview.totalActiveMembers),
+      subtitle: "Current live member base",
+      color: "bg-blue-50 text-blue-700",
+    },
+    expiredMembers: {
+      label: "Expired Members",
+      value: formatCount(overview.expiredMembers),
+      subtitle: "Memberships requiring renewal action",
+      color: "bg-rose-50 text-rose-700",
+    },
+    irregularMembers: {
+      label: "Irregular Members",
+      value: formatCount(overview.irregularMembers),
+      subtitle: "Retention watchlist",
+      color: "bg-amber-50 text-amber-700",
+    },
+    ptClients: {
+      label: "PT Clients",
+      value: formatCount(overview.totalPtClients),
+      subtitle: "Members in personal training",
+      color: "bg-emerald-50 text-emerald-700",
+    },
+    revenueToday: {
+      label: "Revenue Today",
+      value: formatCurrency(overview.todaysRevenue || metrics.revenueToday),
+      subtitle: "Collections closed today",
+      color: "bg-fuchsia-50 text-fuchsia-700",
+    },
+    revenueMonth: {
+      label: "Revenue This Month",
+      value: formatCurrency(overview.monthRevenue || metrics.revenueThisMonth),
+      subtitle: "Month-to-date collection pace",
+      color: "bg-violet-50 text-violet-700",
+    },
+    renewals: {
+      label: "Upcoming Renewals",
+      value: formatCount(overview.upcomingRenewals7Days),
+      subtitle: "Expiring in the next 7 days",
+      color: "bg-indigo-50 text-indigo-700",
+    },
+    todaysInquiries: {
+      label: "Today's Leads",
+      value: formatCount(metrics.todaysInquiries),
+      subtitle: "Fresh CRM intake for the day",
+      color: "bg-green-50 text-green-700",
+    },
+    followUpsDue: {
+      label: "Follow-ups Due",
+      value: formatCount(followUpsDueToday),
+      subtitle: "Scheduled for action today",
+      color: "bg-orange-50 text-orange-700",
+    },
+    overdueFollowUps: {
+      label: "Overdue Follow-ups",
+      value: formatCount(overdueFollowUps),
+      subtitle: "Immediate recovery queue",
+      color: "bg-red-50 text-red-700",
+    },
+    conversionRate: {
+      label: "Conversion Rate",
+      value: formatPercent(metrics.conversionRate),
+      subtitle: "Lead to member conversion",
+      color: "bg-sky-50 text-sky-700",
+    },
+    totalMembers: {
+      label: "Total Members",
+      value: formatCount(overview.totalMembers),
+      subtitle: "All registered members",
+      color: "bg-slate-50 text-slate-700",
+    },
+    totalStaff: {
+      label: "Team Strength",
+      value: formatCount(overview.totalStaff),
+      subtitle: "Staff and coach headcount",
+      color: "bg-teal-50 text-teal-700",
+    },
+    todaysBirthdays: {
+      label: "Birthdays Today",
+      value: formatCount(overview.todaysBirthdays),
+      subtitle: "Members to celebrate or notify",
+      color: "bg-pink-50 text-pink-700",
+    },
+  };
 }
 
-function buildActivityItems(leaderboard: LeaderboardEntry[]): ActivityItem[] {
-  if (leaderboard.length === 0) {
-    return [
-      { actor: "Staff", action: "updated", target: "member records", time: "10 mins ago" },
-      { actor: "Staff", action: "scheduled", target: "follow-up queue", time: "35 mins ago" },
-      { actor: "Staff", action: "processed", target: "billing actions", time: "1 hour ago" },
-    ];
+function buildHeroCopy(designation?: UserDesignation, selectedBranchName?: string): {
+  eyebrow: string;
+  title: string;
+  description: string;
+} {
+  const branchLabel =
+    selectedBranchName && selectedBranchName !== "All Branches"
+      ? selectedBranchName
+      : "your operating scope";
+
+  switch (designation) {
+    case "SALES_MANAGER":
+      return {
+        eyebrow: "Sales Command Center",
+        title: "Lead flow, follow-ups, and conversion momentum",
+        description: `Use this board to drive the branch pipeline, protect renewals, and keep ${branchLabel} conversion-focused.`,
+      };
+    case "SALES_EXECUTIVE":
+      return {
+        eyebrow: "Daily Sales Queue",
+        title: "Today's outreach and closure priorities",
+        description: `Clear scheduled follow-ups, recover overdue leads, and move fresh enquiries from ${branchLabel} toward conversion.`,
+      };
+    case "FRONT_DESK_EXECUTIVE":
+      return {
+        eyebrow: "Front Desk Operations",
+        title: "Member-facing service, collections, and renewals",
+        description: `Track the plan health of members arriving at ${branchLabel} and keep desk-side billing friction low.`,
+      };
+    case "FITNESS_MANAGER":
+      return {
+        eyebrow: "Training Operations",
+        title: "Coach readiness, PT engagement, and retention watch",
+        description: `Use this view to stay ahead of at-risk members and coach execution across ${branchLabel}.`,
+      };
+    default:
+      return {
+        eyebrow: "Operations Dashboard",
+        title: "Live operating view for the current role",
+        description: `This workspace adapts to the logged-in designation and keeps the most relevant branch work in front.`,
+      };
+  }
+}
+
+function buildFocusPanels(
+  designation: UserDesignation | undefined,
+  state: DashboardState,
+): FocusPanel[] {
+  const overview = state.adminOverview;
+  const metrics = state.metrics;
+
+  switch (designation) {
+    case "SALES_MANAGER":
+      return [
+        {
+          title: "Pipeline Intake",
+          value: formatCount(metrics.todaysInquiries),
+          description: `${formatCount(state.followUpsDueToday)} follow-ups due today across the queue.`,
+          href: "/portal/inquiries",
+          tone: "blue",
+        },
+        {
+          title: "Conversion Pressure",
+          value: formatPercent(metrics.conversionRate),
+          description: `${formatCount(state.overdueFollowUps)} overdue leads need immediate recovery.`,
+          href: "/portal/follow-ups",
+          tone: "amber",
+        },
+        {
+          title: "Renewal Revenue",
+          value: formatCurrency(overview.todaysRevenue || metrics.revenueToday),
+          description: `${formatCount(overview.upcomingRenewals7Days)} memberships expire in the next 7 days.`,
+          href: "/portal/renewals",
+          tone: "emerald",
+        },
+      ];
+    case "SALES_EXECUTIVE":
+      return [
+        {
+          title: "Calls To Close",
+          value: formatCount(state.followUpsDueToday),
+          description: "Scheduled touches due before the day closes.",
+          href: "/portal/follow-ups",
+          tone: "blue",
+        },
+        {
+          title: "Overdue Recovery",
+          value: formatCount(state.overdueFollowUps),
+          description: "Old follow-ups blocking conversion momentum.",
+          href: "/portal/follow-ups",
+          tone: "rose",
+        },
+        {
+          title: "Fresh Leads",
+          value: formatCount(metrics.todaysInquiries),
+          description: "New enquiries ready for qualification or trial planning.",
+          href: "/portal/inquiries",
+          tone: "emerald",
+        },
+      ];
+    case "FRONT_DESK_EXECUTIVE":
+      return [
+        {
+          title: "Members In Good Standing",
+          value: formatCount(overview.totalActiveMembers),
+          description: "Active members you can service immediately at the desk.",
+          href: "/portal/members",
+          tone: "blue",
+        },
+        {
+          title: "Renewal Risk",
+          value: formatCount(overview.upcomingRenewals7Days),
+          description: `${formatCount(overview.expiredMembers)} already expired and likely to surface at front desk.`,
+          href: "/portal/renewals",
+          tone: "amber",
+        },
+        {
+          title: "Collections Today",
+          value: formatCurrency(overview.todaysRevenue || metrics.revenueToday),
+          description: "Collections posted through the operating day.",
+          href: "/portal/billing",
+          tone: "emerald",
+        },
+      ];
+    case "FITNESS_MANAGER":
+      return [
+        {
+          title: "PT Engagement",
+          value: formatCount(overview.totalPtClients),
+          description: "Members currently in structured personal training.",
+          href: "/portal/trainers",
+          tone: "violet",
+        },
+        {
+          title: "Retention Watch",
+          value: formatCount(overview.irregularMembers),
+          description: "Members showing poor attendance and needing intervention.",
+          href: "/portal/members",
+          tone: "amber",
+        },
+        {
+          title: "Coach Capacity",
+          value: formatCount(overview.totalStaff),
+          description: "Current staff-side strength supporting training operations.",
+          href: "/portal/reports",
+          tone: "blue",
+        },
+      ];
+    default:
+      return [
+        {
+          title: "Active Members",
+          value: formatCount(overview.totalActiveMembers),
+          description: "Current active members across your visible operating area.",
+          href: "/portal/members",
+          tone: "blue",
+        },
+        {
+          title: "Lead Intake",
+          value: formatCount(metrics.todaysInquiries),
+          description: "Today's new enquiries captured in the CRM.",
+          href: "/portal/inquiries",
+          tone: "emerald",
+        },
+        {
+          title: "Collections",
+          value: formatCurrency(overview.todaysRevenue || metrics.revenueToday),
+          description: "Collections closed so far in the day.",
+          href: "/portal/billing",
+          tone: "slate",
+        },
+      ];
+  }
+}
+
+function buildWatchlist(
+  designation: UserDesignation | undefined,
+  state: DashboardState,
+): WatchlistItem[] {
+  const overview = state.adminOverview;
+
+  switch (designation) {
+    case "SALES_MANAGER":
+    case "SALES_EXECUTIVE":
+      return [
+        {
+          label: "Follow-ups due today",
+          detail: `${formatCount(state.followUpsDueToday)} need action before the close of day.`,
+          tone: state.followUpsDueToday > 0 ? "amber" : "green",
+        },
+        {
+          label: "Overdue follow-ups",
+          detail: `${formatCount(state.overdueFollowUps)} are already slipping the pipeline.`,
+          tone: state.overdueFollowUps > 0 ? "rose" : "green",
+        },
+        {
+          label: "Renewals this week",
+          detail: `${formatCount(overview.upcomingRenewals7Days)} members are entering the renewal window.`,
+          tone: overview.upcomingRenewals7Days > 0 ? "neutral" : "green",
+        },
+      ];
+    case "FRONT_DESK_EXECUTIVE":
+      return [
+        {
+          label: "Expired members",
+          detail: `${formatCount(overview.expiredMembers)} may arrive needing desk-side support.`,
+          tone: overview.expiredMembers > 0 ? "rose" : "green",
+        },
+        {
+          label: "Birthdays today",
+          detail: `${formatCount(overview.todaysBirthdays)} members can receive a service touchpoint.`,
+          tone: overview.todaysBirthdays > 0 ? "neutral" : "green",
+        },
+        {
+          label: "Renewals due soon",
+          detail: `${formatCount(overview.upcomingRenewals7Days)} members are due within 7 days.`,
+          tone: overview.upcomingRenewals7Days > 0 ? "amber" : "green",
+        },
+      ];
+    case "FITNESS_MANAGER":
+      return [
+        {
+          label: "Irregular members",
+          detail: `${formatCount(overview.irregularMembers)} members need retention or programming follow-through.`,
+          tone: overview.irregularMembers > 0 ? "amber" : "green",
+        },
+        {
+          label: "PT client base",
+          detail: `${formatCount(overview.totalPtClients)} members depend on training-side delivery quality.`,
+          tone: "neutral",
+        },
+        {
+          label: "Birthdays today",
+          detail: `${formatCount(overview.todaysBirthdays)} members can be acknowledged by the coaching team.`,
+          tone: overview.todaysBirthdays > 0 ? "neutral" : "green",
+        },
+      ];
+    default:
+      return [
+        {
+          label: "Upcoming renewals",
+          detail: `${formatCount(overview.upcomingRenewals7Days)} memberships expire in the next week.`,
+          tone: overview.upcomingRenewals7Days > 0 ? "amber" : "green",
+        },
+        {
+          label: "Irregular members",
+          detail: `${formatCount(overview.irregularMembers)} members are showing retention risk.`,
+          tone: overview.irregularMembers > 0 ? "amber" : "green",
+        },
+      ];
+  }
+}
+
+function AlertsSection({ overview }: { overview: AdminOverviewMetrics }) {
+  const alerts = [
+    overview.upcomingRenewals7Days > 0 && {
+      label: `${formatCount(overview.upcomingRenewals7Days)} memberships expiring in 7 days`,
+      tone: "amber" as const,
+    },
+    overview.upcomingRenewals30Days > 0 && {
+      label: `${formatCount(overview.upcomingRenewals30Days)} memberships expiring in 30 days`,
+      tone: "neutral" as const,
+    },
+    overview.expiredMembers > 0 && {
+      label: `${formatCount(overview.expiredMembers)} expired memberships need attention`,
+      tone: "rose" as const,
+    },
+    overview.irregularMembers > 0 && {
+      label: `${formatCount(overview.irregularMembers)} irregular members need outreach`,
+      tone: "amber" as const,
+    },
+  ].filter(Boolean) as { label: string; tone: "amber" | "rose" | "neutral" }[];
+
+  if (alerts.length === 0) {
+    return null;
   }
 
-  return leaderboard.slice(0, 4).map((entry, index) => ({
-    actor: entry.userName,
-    action: "closed",
-    target: `${entry.conversions} conversions`,
-    time: `${(index + 1) * 18} mins ago`,
-  }));
+  return (
+    <SectionCard title="Branch Watchlist" subtitle="Operational issues requiring follow-through">
+      <div className="space-y-2">
+        {alerts.map((alert) => {
+          const toneClass =
+            alert.tone === "rose"
+              ? "border-rose-200 bg-rose-50 text-rose-700"
+              : alert.tone === "amber"
+                ? "border-amber-200 bg-amber-50 text-amber-700"
+                : "border-slate-200 bg-slate-50 text-slate-700";
+          return (
+            <div key={alert.label} className={`rounded-xl border px-3 py-2 text-sm font-medium ${toneClass}`}>
+              {alert.label}
+            </div>
+          );
+        })}
+      </div>
+    </SectionCard>
+  );
 }
 
-export default function SalesDashboardPage() {
+function LeaderboardSection({ leaderboard }: { leaderboard: LeaderboardEntry[] }) {
+  if (leaderboard.length === 0) {
+    return (
+      <SectionCard title="Conversion Leaderboard" subtitle="Available when team ranking data is returned">
+        <p className="text-sm text-slate-500">No leaderboard data is available for this role right now.</p>
+      </SectionCard>
+    );
+  }
+
+  return (
+    <SectionCard title="Conversion Leaderboard" subtitle="Top team members by conversion and revenue">
+      <div className="space-y-3">
+        {leaderboard.slice(0, 5).map((entry, index) => (
+          <div
+            key={entry.userId}
+            className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3"
+          >
+            <div>
+              <p className="text-sm font-semibold text-slate-800">
+                {index + 1}. {entry.userName}
+              </p>
+              <p className="text-xs text-slate-500">{formatCount(entry.conversions)} conversions</p>
+            </div>
+            <p className="text-sm font-semibold text-slate-700">{formatCurrency(entry.revenue)}</p>
+          </div>
+        ))}
+      </div>
+    </SectionCard>
+  );
+}
+
+export default function UnifiedDashboardPage() {
   const { token, user } = useAuth();
+  const { selectedBranchName } = useBranch();
   const [state, setState] = useState<DashboardState>(EMPTY_STATE);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const isSuperAdmin = hasDesignation(user, "SUPER_ADMIN");
+  const isSuperAdmin = user?.role === "ADMIN" && user.designation === "SUPER_ADMIN";
+  const isGymManager = user?.designation === "GYM_MANAGER";
+  const designation = user?.designation;
 
   const loadDashboard = useCallback(async () => {
-    if (!token || !user) {
+    if (!token || !user || isSuperAdmin || isGymManager) {
       return;
     }
 
@@ -183,139 +785,98 @@ export default function SalesDashboardPage() {
       const endOfDay = new Date(now);
       endOfDay.setHours(23, 59, 59, 999);
 
-      const [dashboardResponse, dueToday, overdue] = await Promise.all([
+      const [dashboardResponse, dueTodayPage, overduePage] = await Promise.all([
         engagementService.getSalesDashboard(token, user.id, user.role),
-        subscriptionFollowUpService.searchFollowUpQueue(token, {
-          assignedToStaffId: staffId || undefined,
-          status: "SCHEDULED",
-          dueFrom: startOfDay.toISOString(),
-          dueTo: endOfDay.toISOString(),
-        }),
-        subscriptionFollowUpService.searchFollowUpQueue(token, {
-          assignedToStaffId: staffId || undefined,
-          status: "SCHEDULED",
-          overdueOnly: true,
-        }),
+        subscriptionFollowUpService.searchFollowUpQueuePaged(
+          token,
+          {
+            assignedToStaffId: staffId || undefined,
+            status: "SCHEDULED",
+            dueFrom: startOfDay.toISOString(),
+            dueTo: endOfDay.toISOString(),
+          },
+          0,
+          1,
+        ),
+        subscriptionFollowUpService.searchFollowUpQueuePaged(
+          token,
+          {
+            assignedToStaffId: staffId || undefined,
+            status: "SCHEDULED",
+            overdueOnly: true,
+          },
+          0,
+          1,
+        ),
       ]);
 
       setState({
         ...dashboardResponse,
-        followUpsDueToday: dueToday.length,
-        overdueFollowUps: overdue.length,
+        followUpsDueToday: dueTodayPage.totalElements,
+        overdueFollowUps: overduePage.totalElements,
       });
     } catch (dashboardError) {
-      const message = dashboardError instanceof Error ? dashboardError.message : "Unable to load dashboard";
-      setError(message);
+      setError(
+        dashboardError instanceof Error ? dashboardError.message : "Unable to load dashboard",
+      );
     } finally {
       setLoading(false);
     }
-  }, [token, user]);
+  }, [isGymManager, isSuperAdmin, token, user]);
 
   useEffect(() => {
     void loadDashboard();
   }, [loadDashboard]);
 
-  const revenueSeries = useMemo(
-    () => buildWeeklyRevenueSeries(state.metrics.revenueToday, state.metrics.revenueThisMonth),
-    [state.metrics.revenueToday, state.metrics.revenueThisMonth],
+  const allCards = useMemo(
+    () =>
+      buildAllCards(
+        state.adminOverview,
+        state.metrics,
+        state.followUpsDueToday,
+        state.overdueFollowUps,
+      ),
+    [state],
   );
 
-  const maxRevenue = useMemo(
-    () => Math.max(...revenueSeries.map((item) => item.value), 1),
-    [revenueSeries],
+  const roleKey =
+    designation === "SALES_MANAGER" ||
+    designation === "SALES_EXECUTIVE" ||
+    designation === "FRONT_DESK_EXECUTIVE" ||
+    designation === "FITNESS_MANAGER"
+      ? designation
+      : "DEFAULT";
+
+  const hero = useMemo(
+    () => buildHeroCopy(designation, selectedBranchName),
+    [designation, selectedBranchName],
   );
 
-  const activityItems = useMemo(() => buildActivityItems(state.leaderboard), [state.leaderboard]);
+  const primaryCards = PRIMARY_CARD_KEYS[roleKey]
+    .map((key) => allCards[key])
+    .filter(Boolean);
 
-  const metricCards = isSuperAdmin
-    ? [
-        {
-          label: "Total Active Members",
-          value: String(state.adminOverview.totalActiveMembers),
-          subtitle: "Current active memberships",
-          color: "bg-green-50 text-green-700",
-        },
-        {
-          label: "Total Expired Members",
-          value: String(state.adminOverview.expiredMembers),
-          subtitle: "Needs renewal intervention",
-          color: "bg-red-50 text-red-700",
-        },
-        {
-          label: "Total Irregular Members",
-          value: String(state.adminOverview.irregularMembers),
-          subtitle: "Attendance requires follow-up",
-          color: "bg-orange-50 text-orange-700",
-        },
-        {
-          label: "Total PT Clients",
-          value: String(state.adminOverview.totalPtClients),
-          subtitle: "Active PT assignments",
-          color: "bg-blue-50 text-blue-700",
-        },
-        {
-          label: "Today's Revenue",
-          value: formatCurrency(state.adminOverview.todaysRevenue || state.metrics.revenueToday),
-          subtitle: "Current day collection",
-          color: "bg-emerald-50 text-emerald-700",
-        },
-        {
-          label: "Monthly Revenue",
-          value: formatCurrency(state.adminOverview.monthRevenue || state.metrics.revenueThisMonth),
-          subtitle: "Month-to-date billing",
-          color: "bg-purple-50 text-purple-700",
-        },
-        {
-          label: "Today's Birthdays",
-          value: String(state.adminOverview.todaysBirthdays),
-          subtitle: "Member birthdays today",
-          color: "bg-pink-50 text-pink-700",
-        },
-        {
-          label: "Upcoming Renewals",
-          value: `${state.adminOverview.upcomingRenewals7Days}/${state.adminOverview.upcomingRenewals15Days}/${state.adminOverview.upcomingRenewals30Days}`,
-          subtitle: "Next 7 / 15 / 30 days",
-          color: "bg-amber-50 text-amber-700",
-        },
-      ]
-    : [
-        {
-          label: "Today's Inquiries",
-          value: String(state.metrics.todaysInquiries),
-          subtitle: "Lead intake for today",
-          color: "bg-blue-50 text-blue-700",
-        },
-        {
-          label: "Follow-ups Due",
-          value: String(state.followUpsDueToday),
-          subtitle: "Scheduled for today",
-          color: "bg-orange-50 text-orange-700",
-        },
-        {
-          label: "Overdue Follow-ups",
-          value: String(state.overdueFollowUps),
-          subtitle: "Immediate action needed",
-          color: "bg-red-50 text-red-700",
-        },
-        {
-          label: "Conversion Rate",
-          value: formatPercent(state.metrics.conversionRate),
-          subtitle: "Inquiry to member conversion",
-          color: "bg-purple-50 text-purple-700",
-        },
-        {
-          label: "Revenue Today",
-          value: formatCurrency(state.metrics.revenueToday),
-          subtitle: "Today's collections",
-          color: "bg-emerald-50 text-emerald-700",
-        },
-        {
-          label: "Revenue Month",
-          value: formatCurrency(state.metrics.revenueThisMonth),
-          subtitle: "Monthly collections",
-          color: "bg-indigo-50 text-indigo-700",
-        },
-      ];
+  const focusPanels = useMemo(() => buildFocusPanels(designation, state), [designation, state]);
+  const workspaceItems = WORKSPACE_ITEMS[roleKey];
+  const watchlist = useMemo(() => buildWatchlist(designation, state), [designation, state]);
+
+  const greetingHour = new Date().getHours();
+  const greeting =
+    greetingHour < 12 ? "Good Morning" : greetingHour < 17 ? "Good Afternoon" : "Good Evening";
+
+  if (isSuperAdmin) {
+    return <AdminDashboardContent />;
+  }
+
+  if (isGymManager) {
+    return (
+      <AdminDashboardContent
+        branchScoped
+        headingTitle={`${selectedBranchName || "Branch"} Dashboard`}
+        headingSubtitle={`${selectedBranchName || "Selected branch"} overview`}
+      />
+    );
+  }
 
   if (loading) {
     return <PageLoader label="Loading dashboard..." />;
@@ -323,167 +884,196 @@ export default function SalesDashboardPage() {
 
   return (
     <div className="space-y-8 pb-12">
-      <div>
-        <h1 className="text-2xl font-bold text-gray-900">
-          Good Morning{user?.name ? `, ${user.name.split(" ")[0]}` : ""}
-        </h1>
-        <p className="text-gray-500">Here&apos;s what&apos;s happening at FOMO Gym today.</p>
-      </div>
+      <section className="overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm">
+        <div className="grid gap-0 lg:grid-cols-[1.8fr_1fr]">
+          <div className="bg-[radial-gradient(circle_at_top_left,_rgba(196,36,41,0.18),_transparent_45%),linear-gradient(135deg,#111827_0%,#1f2937_45%,#7f1d1d_100%)] px-6 py-8 text-white sm:px-8">
+            <p className="text-xs font-semibold uppercase tracking-[0.28em] text-rose-100">
+              {hero.eyebrow}
+            </p>
+            <h1 className="mt-4 text-3xl font-bold tracking-tight sm:text-4xl">
+              {greeting}
+              {user?.name ? `, ${user.name.split(" ")[0]}` : ""}
+            </h1>
+            <p className="mt-2 text-lg font-semibold text-white/90">
+              {displayDesignation(designation)}
+              {selectedBranchName && selectedBranchName !== "All Branches"
+                ? ` · ${selectedBranchName}`
+                : ""}
+            </p>
+            <p className="mt-5 max-w-2xl text-sm leading-6 text-rose-50/90">{hero.description}</p>
+          </div>
 
-      {error ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
-
-      <div className={`grid gap-6 ${isSuperAdmin ? "grid-cols-1 md:grid-cols-2 lg:grid-cols-4" : "grid-cols-1 md:grid-cols-2 lg:grid-cols-3"}`}>
-        {metricCards.map((card) => (
-          <article key={card.label} className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
-            {(() => {
-              const MetricIcon = iconForMetric(card.label);
-              return (
-                <div className="mb-4 flex items-start justify-between">
-                  <div className={`rounded-xl p-2.5 ${card.color}`}>
-                    <MetricIcon className="h-5 w-5" />
-                  </div>
+          <div className="grid gap-0 border-t border-slate-200 bg-slate-50 lg:border-t-0 lg:border-l">
+            <div className="border-b border-slate-200 p-5">
+              <div className="flex items-center gap-3">
+                <div className="rounded-2xl bg-white p-3 text-[#C42429] shadow-sm">
+                  <Target className="h-5 w-5" />
                 </div>
-              );
-            })()}
-            <h3 className="text-sm font-medium text-gray-500">{card.label}</h3>
-            <p className="mt-1 text-2xl font-bold text-gray-900">{card.value}</p>
-            <p className="mt-2 text-xs text-gray-400">{card.subtitle}</p>
-          </article>
-        ))}
-      </div>
+                <div>
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">
+                    Main KPI
+                  </p>
+                  <p className="text-xl font-bold text-slate-900">{focusPanels[0]?.value || "0"}</p>
+                </div>
+              </div>
+              <p className="mt-3 text-sm font-semibold text-slate-800">
+                {focusPanels[0]?.title || "Operating summary"}
+              </p>
+              <p className="mt-1 text-sm text-slate-500">
+                {focusPanels[0]?.description || "Live branch-side indicators update from the backend."}
+              </p>
+            </div>
 
-      <div className="grid grid-cols-1 gap-8 xl:grid-cols-3">
-        <div className="space-y-8 xl:col-span-2">
-          <SectionCard
-            title="Weekly Revenue"
-            subtitle="Trend view from today and monthly collections"
-            actions={
+            <div className="grid gap-3 p-5">
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">
+                  Today&apos;s Watch
+                </p>
+                <p className="mt-2 text-sm font-semibold text-slate-900">
+                  {formatCount(state.followUpsDueToday)} follow-ups due, {formatCount(state.overdueFollowUps)} overdue
+                </p>
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-white p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">
+                  Branch Pulse
+                </p>
+                <p className="mt-2 text-sm font-semibold text-slate-900">
+                  {formatCount(state.adminOverview.totalActiveMembers)} active members, {formatCount(state.adminOverview.upcomingRenewals7Days)} renewals due
+                </p>
+              </div>
               <button
                 type="button"
                 onClick={() => void loadDashboard()}
-                className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100"
+                className="inline-flex items-center justify-center gap-2 rounded-2xl bg-[#C42429] px-4 py-3 text-sm font-semibold text-white transition hover:bg-[#a61e22]"
               >
-                Refresh
+                Refresh Dashboard
+                <ArrowRight className="h-4 w-4" />
               </button>
-            }
-          >
-            <div className="flex h-64 items-end gap-4 rounded-2xl bg-gray-50 p-4">
-              {revenueSeries.map((point) => {
-                const height = Math.max(12, Math.round((point.value / maxRevenue) * 100));
-                return (
-                  <div key={point.day} className="flex flex-1 flex-col items-center justify-end gap-2">
-                    <div className="relative flex h-48 w-full items-end rounded-lg bg-white">
-                      <div className="w-full rounded-lg bg-red-600/90" style={{ height: `${height}%` }} />
-                    </div>
-                    <p className="text-xs font-medium text-gray-500">{point.day}</p>
-                  </div>
-                );
-              })}
             </div>
-          </SectionCard>
-
-          <SectionCard title="Quick Actions" subtitle="Fast access shortcuts">
-            <div className="grid grid-cols-3 gap-4 md:grid-cols-5 lg:grid-cols-9">
-              {QUICK_ACTIONS.map((action) => (
-                <Link key={action.label} href={action.href} className="group flex flex-col items-center gap-2">
-                  <span
-                    className={`flex h-12 w-12 items-center justify-center rounded-xl text-white transition-transform group-hover:scale-105 ${action.color}`}
-                  >
-                    <action.icon className="h-5 w-5" />
-                  </span>
-                  <span className="text-center text-[10px] font-medium text-gray-500 group-hover:text-gray-900">
-                    {action.label}
-                  </span>
-                </Link>
-              ))}
-            </div>
-          </SectionCard>
+          </div>
         </div>
+      </section>
 
-        <div className="space-y-8">
-          <SectionCard title="Activity History" actions={<Link href="/portal/reports" className="text-xs font-semibold text-red-600 hover:underline">View All</Link>}>
-            <div className="space-y-5">
-              {activityItems.map((item, index) => (
-                <div key={`${item.actor}-${item.target}-${index}`} className="flex gap-3">
-                  <div className="relative">
-                    <div className="flex h-9 w-9 items-center justify-center rounded-full bg-gray-100 text-xs font-bold text-gray-700">
-                      {item.actor.slice(0, 1).toUpperCase()}
-                    </div>
-                    {index !== activityItems.length - 1 ? (
-                      <div className="absolute left-1/2 top-9 h-5 w-px -translate-x-1/2 bg-gray-100" />
-                    ) : null}
-                  </div>
-                  <div>
-                    <p className="text-sm text-gray-700">
-                      <span className="font-semibold text-gray-900">{item.actor}</span>{" "}
-                      <span>{item.action}</span>{" "}
-                      <span className="font-medium text-gray-900">{item.target}</span>
-                    </p>
-                    <p className="mt-1 text-xs text-gray-400">{item.time}</p>
-                  </div>
+      {error ? (
+        <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+          {error}
+        </p>
+      ) : null}
+
+      <div className="grid gap-5 grid-cols-1 sm:grid-cols-2 xl:grid-cols-3">
+        {primaryCards.map((card) => {
+          const MetricIcon = iconForMetric(card.label);
+          return (
+            <article
+              key={card.label}
+              className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+            >
+              <div className="flex items-start justify-between gap-4">
+                <div>
+                  <p className="text-sm font-semibold text-slate-500">{card.label}</p>
+                  <p className="mt-3 text-3xl font-bold tracking-tight text-slate-900">{card.value}</p>
+                  <p className="mt-2 text-sm text-slate-500">{card.subtitle}</p>
                 </div>
-              ))}
-            </div>
-          </SectionCard>
-
-          <section className="rounded-2xl bg-black p-6 text-white shadow-xl shadow-black/10">
-            <h2 className="text-lg font-bold">Enquiry Conversion</h2>
-            <p className="mb-6 mt-1 text-sm text-gray-400">Efficiency of the sales team</p>
-            <div className="mb-6 flex h-24 items-end gap-3">
-              {revenueSeries.slice(1).map((point) => {
-                const relative = Math.max(20, Math.round((point.value / maxRevenue) * 100));
-                return (
-                  <div key={`mini-${point.day}`} className="flex-1 rounded-t-lg bg-white/10">
-                    <div className="rounded-t-lg bg-red-600" style={{ height: `${relative}%` }} />
-                  </div>
-                );
-              })}
-            </div>
-            <div className="flex items-end justify-between">
-              <div>
-                <p className="text-2xl font-bold">{formatPercent(state.metrics.conversionRate)}</p>
-                <p className="text-xs text-gray-500">Conversion Rate</p>
+                <div className={`rounded-2xl p-3 ${card.color}`}>
+                  <MetricIcon className="h-5 w-5" />
+                </div>
               </div>
-              <p className="rounded-lg bg-white/10 px-2 py-1 text-xs font-semibold text-green-300">
-                +{state.metrics.todaysInquiries}
-              </p>
-            </div>
-          </section>
-        </div>
+            </article>
+          );
+        })}
       </div>
 
-      <SectionCard title="Leaderboard" subtitle="Top performers by conversions and revenue">
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-left">
-            <thead>
-              <tr className="bg-gray-50 text-xs font-semibold tracking-wide text-gray-500 uppercase">
-                <th className="px-4 py-3">Rank</th>
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Conversions</th>
-                <th className="px-4 py-3">Revenue</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-gray-100">
-              {state.leaderboard.length === 0 ? (
-                <tr>
-                  <td className="px-4 py-4 text-sm text-gray-500" colSpan={4}>
-                    No leaderboard data available
-                  </td>
-                </tr>
-              ) : (
-                state.leaderboard.map((entry, index) => (
-                  <tr key={entry.userId} className="hover:bg-gray-50/50">
-                    <td className="px-4 py-3 text-sm text-gray-600">#{index + 1}</td>
-                    <td className="px-4 py-3 text-sm font-semibold text-gray-900">{entry.userName}</td>
-                    <td className="px-4 py-3 text-sm text-gray-700">{entry.conversions}</td>
-                    <td className="px-4 py-3 text-sm text-gray-700">{formatCurrency(entry.revenue)}</td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
-        </div>
-      </SectionCard>
+      <div className="grid gap-6 xl:grid-cols-[1.45fr_1fr]">
+        <SectionCard
+          title="Role Focus"
+          subtitle="The most important lanes for this designation right now"
+        >
+          <div className="grid gap-4 md:grid-cols-3">
+            {focusPanels.map((panel) => (
+              <Link
+                key={panel.title}
+                href={panel.href}
+                className={`rounded-2xl border p-4 transition hover:shadow-sm ${toneClasses(panel.tone)}`}
+              >
+                <p className="text-xs font-semibold uppercase tracking-[0.18em]">{panel.title}</p>
+                <p className="mt-3 text-3xl font-bold">{panel.value}</p>
+                <p className="mt-2 text-sm leading-6">{panel.description}</p>
+                <span className="mt-4 inline-flex items-center gap-1 text-sm font-semibold">
+                  Open module
+                  <ArrowRight className="h-4 w-4" />
+                </span>
+              </Link>
+            ))}
+          </div>
+        </SectionCard>
+
+        <SectionCard title="Watchlist" subtitle="Operational items that need attention">
+          <div className="space-y-3">
+            {watchlist.map((item) => (
+              <div
+                key={item.label}
+                className={`rounded-2xl border px-4 py-3 ${watchlistToneClasses(item.tone)}`}
+              >
+                <p className="text-sm font-semibold">{item.label}</p>
+                <p className="mt-1 text-sm">{item.detail}</p>
+              </div>
+            ))}
+          </div>
+        </SectionCard>
+      </div>
+
+      <div className="grid gap-6 xl:grid-cols-[1.35fr_1fr]">
+        <SectionCard
+          title="Workspace"
+          subtitle="Jump into the modules that matter for this role"
+        >
+          <div className="grid gap-4 md:grid-cols-2">
+            {workspaceItems.map((item) => (
+              <Link
+                key={item.title}
+                href={item.href}
+                className="group rounded-2xl border border-slate-200 bg-slate-50 p-5 transition hover:border-[#C42429] hover:bg-white hover:shadow-sm"
+              >
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <p className="text-lg font-semibold text-slate-900">{item.title}</p>
+                    <p className="mt-2 text-sm leading-6 text-slate-500">{item.description}</p>
+                  </div>
+                  <ArrowRight className="mt-1 h-5 w-5 text-slate-400 transition group-hover:text-[#C42429]" />
+                </div>
+              </Link>
+            ))}
+          </div>
+        </SectionCard>
+
+        {(designation === "SALES_MANAGER" || designation === "SALES_EXECUTIVE") ? (
+          <LeaderboardSection leaderboard={state.leaderboard} />
+        ) : (
+          <SectionCard
+            title="Operating Notes"
+            subtitle="What this dashboard currently represents"
+          >
+            <div className="space-y-3 text-sm text-slate-600">
+              <div className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <Clock3 className="mt-0.5 h-4 w-4 text-slate-500" />
+                <p>The portal already supports a single dashboard route with role-specific content instead of separate dashboard entries.</p>
+              </div>
+              <div className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <ShieldAlert className="mt-0.5 h-4 w-4 text-slate-500" />
+                <p>Operational cards here are built from live backend metrics already exposed by the existing dashboard and follow-up APIs.</p>
+              </div>
+              <div className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
+                <BiometricIcon className="mt-0.5 h-4 w-4 text-slate-500" />
+                <p>Branch managers continue to use the richer branch-scoped HQ dashboard, while coach users remain blocked from portal access.</p>
+              </div>
+            </div>
+          </SectionCard>
+        )}
+      </div>
+
+      {(designation === "SALES_MANAGER" || designation === "FITNESS_MANAGER") ? (
+        <AlertsSection overview={state.adminOverview} />
+      ) : null}
     </div>
   );
 }

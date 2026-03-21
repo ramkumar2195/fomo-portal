@@ -5,11 +5,13 @@ import { COOKIE_KEYS, STORAGE_KEYS } from "@/lib/constants";
 import { clearCookie, getFromStorage, removeFromStorage, saveToStorage, setCookie } from "@/lib/storage";
 import { usersService } from "@/lib/api/services/users-service";
 import { isAdminOrStaff } from "@/lib/access-policy";
+import { maskMobile, pushAuthDebug, tokenPreview } from "@/lib/debug/auth-debug";
 import { AccessMetadata, AuthUser, LoginRequest } from "@/types/auth";
 
 interface AuthContextValue {
   user: AuthUser | null;
   token: string | null;
+  refreshToken: string | null;
   accessMetadata: AccessMetadata | null;
   isAuthenticated: boolean;
   isBootstrapping: boolean;
@@ -32,6 +34,10 @@ function getStoredUser(): AuthUser | null {
   return storedUser;
 }
 
+function getStoredRefreshToken(): string | null {
+  return getFromStorage<string>(STORAGE_KEYS.refreshToken);
+}
+
 function getStoredAccessMetadata(): AccessMetadata | null {
   return getFromStorage<AccessMetadata>(STORAGE_KEYS.accessMetadata);
 }
@@ -39,6 +45,9 @@ function getStoredAccessMetadata(): AccessMetadata | null {
 export function AuthProvider({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<AuthUser | null>(() => getStoredUser());
   const [token, setToken] = useState<string | null>(() => (getStoredUser() ? getStoredToken() : null));
+  const [refreshToken, setRefreshToken] = useState<string | null>(() =>
+    getStoredUser() ? getStoredRefreshToken() : null,
+  );
   const [accessMetadata, setAccessMetadata] = useState<AccessMetadata | null>(() =>
     getStoredUser() ? getStoredAccessMetadata() : null,
   );
@@ -61,11 +70,18 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [token, user]);
 
   const clearSession = useCallback(() => {
+    pushAuthDebug("auth-context", "session:clear", {
+      hadToken: Boolean(token),
+      hadUser: Boolean(user),
+    });
+
     setToken(null);
+    setRefreshToken(null);
     setUser(null);
     setAccessMetadata(null);
 
     removeFromStorage(STORAGE_KEYS.token);
+    removeFromStorage(STORAGE_KEYS.refreshToken);
     removeFromStorage(STORAGE_KEYS.user);
     removeFromStorage(STORAGE_KEYS.accessMetadata);
     removeFromStorage(STORAGE_KEYS.selectedBranchId);
@@ -74,7 +90,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     clearCookie(COOKIE_KEYS.role);
     clearCookie(COOKIE_KEYS.designation);
     clearCookie(COOKIE_KEYS.branchId);
-  }, []);
+  }, [token, user]);
 
   useEffect(() => {
     if (typeof window === "undefined") {
@@ -82,6 +98,9 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     }
 
     const onUnauthorized = () => {
+      pushAuthDebug("auth-context", "unauthorized:event", {
+        pathname: typeof window !== "undefined" ? window.location.pathname : "",
+      });
       clearSession();
       window.location.replace("/login");
     };
@@ -90,9 +109,57 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return () => window.removeEventListener("fomo:unauthorized", onUnauthorized);
   }, [clearSession]);
 
+  useEffect(() => {
+    if (typeof window === "undefined") {
+      return;
+    }
+
+    const onTokenRefreshed = (event: Event) => {
+      const detail = (event as CustomEvent<{ accessToken?: unknown; refreshToken?: unknown }>).detail || {};
+      const nextAccessToken = typeof detail.accessToken === "string" ? detail.accessToken : "";
+      const nextRefreshToken = typeof detail.refreshToken === "string" ? detail.refreshToken : "";
+
+      if (!nextAccessToken || !nextRefreshToken) {
+        return;
+      }
+
+      pushAuthDebug("auth-context", "token:refreshed", {
+        tokenPreview: tokenPreview(nextAccessToken),
+        refreshTokenPreview: tokenPreview(nextRefreshToken),
+      });
+
+      setToken(nextAccessToken);
+      setRefreshToken(nextRefreshToken);
+      saveToStorage(STORAGE_KEYS.token, nextAccessToken);
+      saveToStorage(STORAGE_KEYS.refreshToken, nextRefreshToken);
+      setCookie(COOKIE_KEYS.token, nextAccessToken);
+    };
+
+    window.addEventListener("fomo:token-refreshed", onTokenRefreshed);
+    return () => window.removeEventListener("fomo:token-refreshed", onTokenRefreshed);
+  }, []);
+
   const login = useCallback(async (payload: LoginRequest): Promise<AuthUser> => {
+    pushAuthDebug("auth-context", "login:start", {
+      mobileNumber: maskMobile(payload.mobileNumber),
+    });
+
     const response = await usersService.login(payload);
+    if (!response.refreshToken) {
+      throw new Error("Login response missing refreshToken");
+    }
+    pushAuthDebug("auth-context", "login:token-received", {
+      tokenPreview: tokenPreview(response.token),
+      tokenLength: response.token?.length,
+      refreshTokenPreview: tokenPreview(response.refreshToken),
+    });
+
     const resolvedUser = await usersService.getMe(response.token, response.user);
+    pushAuthDebug("auth-context", "login:me-success", {
+      userId: resolvedUser.id,
+      role: resolvedUser.role,
+      designation: resolvedUser.designation,
+    });
 
     if (!isAdminOrStaff(resolvedUser)) {
       clearSession();
@@ -103,16 +170,22 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
 
     try {
       resolvedAccessMetadata = await usersService.getAccessMetadata(response.token);
+      pushAuthDebug("auth-context", "login:metadata-success", {
+        hasMetadata: Boolean(resolvedAccessMetadata),
+      });
     } catch (metadataError) {
       const message = metadataError instanceof Error ? metadataError.message : "Unable to load access metadata";
+      pushAuthDebug("auth-context", "login:metadata-error", { message });
       console.warn(message);
     }
 
     setToken(response.token);
+    setRefreshToken(response.refreshToken);
     setUser(resolvedUser);
     setAccessMetadata(resolvedAccessMetadata);
 
     saveToStorage(STORAGE_KEYS.token, response.token);
+    saveToStorage(STORAGE_KEYS.refreshToken, response.refreshToken);
     saveToStorage(STORAGE_KEYS.user, resolvedUser);
     if (resolvedAccessMetadata) {
       saveToStorage(STORAGE_KEYS.accessMetadata, resolvedAccessMetadata);
@@ -137,6 +210,11 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       clearCookie(COOKIE_KEYS.branchId);
     }
 
+    pushAuthDebug("auth-context", "login:complete", {
+      role: resolvedUser.role,
+      designation: resolvedUser.designation,
+    });
+
     return resolvedUser;
   }, [clearSession]);
 
@@ -148,13 +226,14 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     () => ({
       user,
       token,
+      refreshToken,
       accessMetadata,
       isAuthenticated: Boolean(user && token),
       isBootstrapping,
       login,
       logout,
     }),
-    [user, token, accessMetadata, isBootstrapping, login, logout],
+    [user, token, refreshToken, accessMetadata, isBootstrapping, login, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

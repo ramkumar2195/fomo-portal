@@ -31,15 +31,11 @@ Staff Portal for Sales + Admin operations with role-aware navigation, branch sco
 
 ## Environment Variables
 
-Copy `.env.example` into `.env.local` and set service URLs:
+Copy `.env.example` into `.env.local` and set API gateway URL:
 
 ```bash
-NEXT_PUBLIC_USERS_SERVICE_URL=http://localhost:8082
+NEXT_PUBLIC_API_BASE_URL=http://localhost:8081
 NEXT_PUBLIC_USERS_API_PREFIX=/api/users
-NEXT_PUBLIC_SUBSCRIPTION_SERVICE_URL=http://localhost:8084
-NEXT_PUBLIC_ENGAGEMENT_SERVICE_URL=http://localhost:8083
-NEXT_PUBLIC_TRAINING_SERVICE_URL=http://localhost:8085
-NEXT_PUBLIC_NOTIFICATION_SERVICE_URL=http://localhost:8086
 ```
 
 ## Run

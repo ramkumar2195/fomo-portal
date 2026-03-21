@@ -8,7 +8,12 @@ import { ToastBanner } from "@/components/common/toast-banner";
 import { useAuth } from "@/contexts/auth-context";
 import { hasCapability } from "@/lib/access-policy";
 import { engagementService } from "@/lib/api/services/engagement-service";
-import { UpdateUserRequest, usersService } from "@/lib/api/services/users-service";
+import {
+  CreateLeaveRequestPayload,
+  UpdateUserRequest,
+  usersService,
+} from "@/lib/api/services/users-service";
+import { useBranch } from "@/contexts/branch-context";
 import { formatDateTime } from "@/lib/formatters";
 import { DataScope, EmploymentType, UserDesignation, UserRole } from "@/types/auth";
 import { UserDirectoryItem } from "@/types/models";
@@ -28,6 +33,73 @@ interface AttendanceRow {
   memberName: string;
   checkInAt?: string;
   checkOutAt?: string;
+}
+
+interface OwnAttendanceRow {
+  id: string;
+  staffName: string;
+  date: string;
+  clockIn?: string;
+  clockOut?: string;
+  status: string;
+}
+
+interface LeaveRequestRow {
+  id: string | number;
+  staffName: string;
+  leaveType: string;
+  fromDate: string;
+  toDate: string;
+  reason: string;
+  status: string;
+}
+
+type ManagementTab = "directory" | "attendance" | "leave";
+
+const LEAVE_TYPES = [
+  { label: "Casual Leave", value: "CASUAL" },
+  { label: "Sick Leave", value: "SICK" },
+  { label: "Earned Leave", value: "EARNED" },
+  { label: "Compensatory Off", value: "COMP_OFF" },
+  { label: "Loss of Pay", value: "LOP" },
+];
+
+const LEAVE_STATUS_STYLES: Record<string, string> = {
+  APPROVED: "border-emerald-200 bg-emerald-50 text-emerald-700",
+  PENDING: "border-amber-200 bg-amber-50 text-amber-700",
+  REJECTED: "border-rose-200 bg-rose-50 text-rose-700",
+  CANCELLED: "border-slate-200 bg-slate-50 text-slate-500",
+};
+
+function mapOwnAttendance(payload: unknown): OwnAttendanceRow[] {
+  if (!payload || typeof payload !== "object") return [];
+  const items = Array.isArray(payload) ? payload : (payload as Record<string, unknown>).records as unknown[] ?? [];
+  return items.map((item, index) => {
+    const r = toRecord(item);
+    return {
+      id: String(r.id ?? r.attendanceId ?? `att-${index}`),
+      staffName: String(r.staffName ?? r.trainerName ?? r.name ?? "-"),
+      date: String(r.date ?? r.attendanceDate ?? "-"),
+      clockIn: r.clockInTime ? String(r.clockInTime) : r.checkInAt ? String(r.checkInAt) : undefined,
+      clockOut: r.clockOutTime ? String(r.clockOutTime) : r.checkOutAt ? String(r.checkOutAt) : undefined,
+      status: String(r.status ?? "PRESENT"),
+    };
+  });
+}
+
+function mapLeaveRequests(payload: unknown[]): LeaveRequestRow[] {
+  return payload.map((item, index) => {
+    const r = toRecord(item);
+    return {
+      id: r.id ?? r.leaveRequestId ?? `leave-${index}`,
+      staffName: String(r.staffName ?? r.trainerName ?? r.name ?? "-"),
+      leaveType: String(r.leaveType ?? "-"),
+      fromDate: String(r.fromDate ?? r.startDate ?? "-"),
+      toDate: String(r.toDate ?? r.endDate ?? "-"),
+      reason: String(r.reason ?? "-"),
+      status: String(r.status ?? "PENDING"),
+    } as LeaveRequestRow;
+  });
 }
 
 interface UserManagementPageProps {
@@ -128,6 +200,7 @@ export function UserManagementPage({
     name: "",
     mobileNumber: "",
     email: "",
+    defaultBranchId: "",
     employmentType: "INTERNAL" as EmploymentType,
     designation: designationOptions[0]?.value || "GYM_MANAGER",
     dataScope: "BRANCH" as DataScope,
@@ -135,6 +208,24 @@ export function UserManagementPage({
   });
 
   const [attendanceRows, setAttendanceRows] = useState<AttendanceRow[]>([]);
+
+  const [activeTab, setActiveTab] = useState<ManagementTab>("directory");
+  const [ownAttendance, setOwnAttendance] = useState<OwnAttendanceRow[]>([]);
+  const [ownAttendanceLoading, setOwnAttendanceLoading] = useState(false);
+  const [leaveRequests, setLeaveRequests] = useState<LeaveRequestRow[]>([]);
+  const [leaveLoading, setLeaveLoading] = useState(false);
+  const [leaveStatusFilter, setLeaveStatusFilter] = useState<string>("");
+  const [showLeaveForm, setShowLeaveForm] = useState(false);
+  const [leaveForm, setLeaveForm] = useState({
+    leaveType: "CASUAL",
+    fromDate: "",
+    toDate: "",
+    reason: "",
+    staffId: "",
+  });
+  const [leaveSubmitting, setLeaveSubmitting] = useState(false);
+
+  const { selectedBranchId, effectiveBranchId } = useBranch();
 
   const loadUsers = useCallback(async () => {
     if (!token || !canView) {
@@ -153,6 +244,7 @@ export function UserManagementPage({
         designation: designationFilter ? (designationFilter as UserDesignation) : undefined,
         employmentType: employmentTypeFilter || undefined,
         dataScope: dataScopeFilter || undefined,
+        defaultBranchId: effectiveBranchId ? String(effectiveBranchId) : undefined,
       });
 
       setUsers(list);
@@ -163,7 +255,7 @@ export function UserManagementPage({
     } finally {
       setLoading(false);
     }
-  }, [token, canView, role, searchQuery, activeFilter, designationFilter, employmentTypeFilter, dataScopeFilter]);
+  }, [token, canView, role, searchQuery, activeFilter, designationFilter, employmentTypeFilter, dataScopeFilter, effectiveBranchId]);
 
   const loadAttendance = useCallback(async () => {
     if (!token || !showClientAttendance) {
@@ -179,9 +271,104 @@ export function UserManagementPage({
     }
   }, [token, showClientAttendance]);
 
+  const loadOwnAttendance = useCallback(async () => {
+    if (!token) return;
+    setOwnAttendanceLoading(true);
+    try {
+      const data =
+        role === "COACH"
+          ? await usersService.getTrainerAttendanceReport(token)
+          : await usersService.getStaffAttendanceReport(token);
+      setOwnAttendance(mapOwnAttendance(data));
+    } catch (e) {
+      setToast({ kind: "error", message: e instanceof Error ? e.message : "Unable to load attendance report" });
+    } finally {
+      setOwnAttendanceLoading(false);
+    }
+  }, [token, role]);
+
+  const loadLeaveRequests = useCallback(async () => {
+    if (!token) return;
+    setLeaveLoading(true);
+    try {
+      const query = leaveStatusFilter ? { status: leaveStatusFilter } : {};
+      const data =
+        role === "COACH"
+          ? await usersService.getTrainerLeaveRequests(token, query)
+          : await usersService.getStaffLeaveRequests(token, query);
+      setLeaveRequests(mapLeaveRequests(data));
+    } catch (e) {
+      setToast({ kind: "error", message: e instanceof Error ? e.message : "Unable to load leave requests" });
+    } finally {
+      setLeaveLoading(false);
+    }
+  }, [token, role, leaveStatusFilter]);
+
+  const submitLeaveRequest = useCallback(async () => {
+    if (!token || !user) return;
+    setLeaveSubmitting(true);
+    try {
+      const body: CreateLeaveRequestPayload = {
+        leaveType: leaveForm.leaveType,
+        fromDate: leaveForm.fromDate,
+        toDate: leaveForm.toDate,
+        reason: leaveForm.reason || undefined,
+        branchCode: selectedBranchId || undefined,
+      };
+      if (leaveForm.staffId) {
+        if (role === "COACH") {
+          body.trainerId = Number(leaveForm.staffId);
+        } else {
+          body.staffId = Number(leaveForm.staffId);
+        }
+      }
+      body.requestedByStaffId = Number(user.id);
+
+      if (role === "COACH") {
+        await usersService.createTrainerLeaveRequest(token, body);
+      } else {
+        await usersService.createStaffLeaveRequest(token, body);
+      }
+      setToast({ kind: "success", message: "Leave request submitted." });
+      setShowLeaveForm(false);
+      setLeaveForm({ leaveType: "CASUAL", fromDate: "", toDate: "", reason: "", staffId: "" });
+      void loadLeaveRequests();
+    } catch (e) {
+      setToast({ kind: "error", message: e instanceof Error ? e.message : "Unable to submit leave request" });
+    } finally {
+      setLeaveSubmitting(false);
+    }
+  }, [token, user, role, leaveForm, selectedBranchId, loadLeaveRequests]);
+
+  const updateLeaveStatus = useCallback(
+    async (leaveId: string | number, newStatus: string) => {
+      if (!token) return;
+      try {
+        if (role === "COACH") {
+          await usersService.updateTrainerLeaveRequestStatus(token, leaveId, newStatus);
+        } else {
+          await usersService.updateStaffLeaveRequestStatus(token, leaveId, newStatus);
+        }
+        setToast({ kind: "success", message: `Leave request ${newStatus.toLowerCase()}.` });
+        void loadLeaveRequests();
+      } catch (e) {
+        setToast({ kind: "error", message: e instanceof Error ? e.message : "Unable to update leave status" });
+      }
+    },
+    [token, role, loadLeaveRequests],
+  );
+
   useEffect(() => {
     void loadUsers();
   }, [loadUsers]);
+
+  useEffect(() => {
+    if (activeTab === "attendance") void loadOwnAttendance();
+  }, [activeTab, loadOwnAttendance]);
+
+  useEffect(() => {
+    if (activeTab === "leave") void loadLeaveRequests();
+  }, [activeTab, loadLeaveRequests]);
 
   useEffect(() => {
     if (!showClientAttendance) {
@@ -216,6 +403,7 @@ export function UserManagementPage({
       name: item.name || "",
       mobileNumber: item.mobile || "",
       email: item.email || "",
+      defaultBranchId: item.defaultBranchId || "",
       employmentType: (item.employmentType as EmploymentType) || "INTERNAL",
       designation: (item.designation as UserDesignation) || designationOptions[0]?.value || "GYM_MANAGER",
       dataScope: (item.dataScope as DataScope) || "BRANCH",
@@ -242,6 +430,7 @@ export function UserManagementPage({
         name: editForm.name.trim(),
         mobileNumber: editForm.mobileNumber,
         email: toOptionalString(editForm.email),
+        defaultBranchId: toOptionalString(editForm.defaultBranchId),
         role,
         employmentType: editForm.employmentType,
         designation: editForm.designation,
@@ -294,20 +483,45 @@ export function UserManagementPage({
         ) : null}
       </div>
 
-      <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
-        <article className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
-          <p className="text-sm font-medium text-gray-500">Total</p>
-          <p className="mt-1 text-2xl font-bold text-gray-900">{summary.total}</p>
-        </article>
-        <article className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
-          <p className="text-sm font-medium text-gray-500">Active</p>
-          <p className="mt-1 text-2xl font-bold text-emerald-700">{summary.active}</p>
-        </article>
-        <article className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
-          <p className="text-sm font-medium text-gray-500">Inactive</p>
-          <p className="mt-1 text-2xl font-bold text-rose-700">{summary.inactive}</p>
-        </article>
+      {/* ---- Tab Navigation ---- */}
+      <div className="flex gap-1 rounded-xl bg-gray-100 p-1">
+        {(
+          [
+            { key: "directory", label: "Directory" },
+            { key: "attendance", label: "Attendance" },
+            { key: "leave", label: "Leave Requests" },
+          ] as const
+        ).map((tab) => (
+          <button
+            key={tab.key}
+            type="button"
+            onClick={() => setActiveTab(tab.key)}
+            className={`flex-1 rounded-lg px-4 py-2 text-sm font-semibold transition-colors ${
+              activeTab === tab.key ? "bg-white text-gray-900 shadow-sm" : "text-gray-500 hover:text-gray-700"
+            }`}
+          >
+            {tab.label}
+          </button>
+        ))}
       </div>
+
+      {/* ---- Directory Tab ---- */}
+      {activeTab === "directory" ? (
+        <>
+          <div className="grid grid-cols-1 gap-6 md:grid-cols-3">
+            <article className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
+              <p className="text-sm font-medium text-gray-500">Total</p>
+              <p className="mt-1 text-2xl font-bold text-gray-900">{summary.total}</p>
+            </article>
+            <article className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
+              <p className="text-sm font-medium text-gray-500">Active</p>
+              <p className="mt-1 text-2xl font-bold text-emerald-700">{summary.active}</p>
+            </article>
+            <article className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
+              <p className="text-sm font-medium text-gray-500">Inactive</p>
+              <p className="mt-1 text-2xl font-bold text-rose-700">{summary.inactive}</p>
+            </article>
+          </div>
 
       <SectionCard
         title={`${role === "STAFF" ? "Staff" : "Trainer"} Directory`}
@@ -393,6 +607,7 @@ export function UserManagementPage({
                 <th className="px-4 py-3">Designation</th>
                 <th className="px-4 py-3">Employment</th>
                 <th className="px-4 py-3">Data Scope</th>
+                <th className="px-4 py-3">Default Branch</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Action</th>
               </tr>
@@ -400,7 +615,7 @@ export function UserManagementPage({
             <tbody className="divide-y divide-gray-100">
               {users.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-4 text-gray-500" colSpan={7}>
+                  <td className="px-4 py-4 text-gray-500" colSpan={8}>
                     No users found
                   </td>
                 </tr>
@@ -415,6 +630,7 @@ export function UserManagementPage({
                     <td className="px-4 py-3">{item.designation || "-"}</td>
                     <td className="px-4 py-3">{item.employmentType || "-"}</td>
                     <td className="px-4 py-3">{item.dataScope || "-"}</td>
+                    <td className="px-4 py-3">{item.defaultBranchId || "-"}</td>
                     <td className="px-4 py-3">
                       <span
                         className={`rounded-full border px-2 py-1 text-xs font-semibold ${
@@ -427,14 +643,17 @@ export function UserManagementPage({
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      <button
-                        type="button"
-                        disabled={!canUpdate}
-                        onClick={() => openEdit(item)}
-                        className="rounded-lg border border-gray-200 px-2 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-100 disabled:cursor-not-allowed disabled:text-gray-400"
-                      >
-                        Manage
-                      </button>
+                      {canUpdate ? (
+                        <button
+                          type="button"
+                          onClick={() => openEdit(item)}
+                          className="rounded-lg border border-gray-200 px-2 py-1 text-xs font-semibold text-gray-700 hover:bg-gray-100"
+                        >
+                          Manage
+                        </button>
+                      ) : (
+                        <span className="text-xs text-gray-400">-</span>
+                      )}
                     </td>
                   </tr>
                 ))
@@ -443,15 +662,256 @@ export function UserManagementPage({
           </table>
         </div>
       </SectionCard>
+        </>
+      ) : null}
 
-      <SectionCard title={leaveTitle} subtitle={leaveSubtitle}>
-        <p className="rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-600">
-          Leave approval APIs are not available in current backend contracts. UI is prepared for integration once
-          leave endpoints are provided.
-        </p>
-      </SectionCard>
+      {/* ---- Attendance Report Tab ---- */}
+      {activeTab === "attendance" ? (
+        <SectionCard
+          title={`${role === "STAFF" ? "Staff" : "Coach"} Attendance`}
+          subtitle="Attendance records from ESSL face recognition / manual clock-in"
+          actions={
+            <button
+              type="button"
+              onClick={() => void loadOwnAttendance()}
+              className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100"
+            >
+              Refresh
+            </button>
+          }
+        >
+          {ownAttendanceLoading ? (
+            <p className="py-4 text-sm text-slate-500">Loading attendance...</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 text-left text-xs font-semibold tracking-wide text-gray-500 uppercase">
+                    <th className="px-4 py-3">Name</th>
+                    <th className="px-4 py-3">Date</th>
+                    <th className="px-4 py-3">Clock In</th>
+                    <th className="px-4 py-3">Clock Out</th>
+                    <th className="px-4 py-3">Status</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {ownAttendance.length === 0 ? (
+                    <tr>
+                      <td className="px-4 py-4 text-gray-500" colSpan={5}>
+                        No attendance records found
+                      </td>
+                    </tr>
+                  ) : (
+                    ownAttendance.map((row) => (
+                      <tr key={row.id} className="hover:bg-gray-50/50">
+                        <td className="px-4 py-3 font-semibold text-gray-900">{row.staffName}</td>
+                        <td className="px-4 py-3">{row.date}</td>
+                        <td className="px-4 py-3">{formatDateTime(row.clockIn)}</td>
+                        <td className="px-4 py-3">{formatDateTime(row.clockOut)}</td>
+                        <td className="px-4 py-3">
+                          <span className="rounded-full border border-emerald-200 bg-emerald-50 px-2 py-1 text-xs font-semibold text-emerald-700">
+                            {row.status}
+                          </span>
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </SectionCard>
+      ) : null}
 
-      {showClientAttendance ? (
+      {/* ---- Leave Requests Tab ---- */}
+      {activeTab === "leave" ? (
+        <SectionCard
+          title={leaveTitle}
+          subtitle={leaveSubtitle}
+          actions={
+            <div className="flex gap-2">
+              <select
+                className="rounded-lg border border-slate-300 px-2 py-2 text-sm"
+                value={leaveStatusFilter}
+                onChange={(e) => setLeaveStatusFilter(e.target.value)}
+              >
+                <option value="">All status</option>
+                <option value="PENDING">Pending</option>
+                <option value="APPROVED">Approved</option>
+                <option value="REJECTED">Rejected</option>
+              </select>
+              <button
+                type="button"
+                onClick={() => setShowLeaveForm(true)}
+                className="rounded-lg bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700"
+              >
+                New Leave Request
+              </button>
+            </div>
+          }
+        >
+          {leaveLoading ? (
+            <p className="py-4 text-sm text-slate-500">Loading leave requests...</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="bg-gray-50 text-left text-xs font-semibold tracking-wide text-gray-500 uppercase">
+                    <th className="px-4 py-3">Name</th>
+                    <th className="px-4 py-3">Type</th>
+                    <th className="px-4 py-3">From</th>
+                    <th className="px-4 py-3">To</th>
+                    <th className="px-4 py-3">Reason</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Action</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-gray-100">
+                  {leaveRequests.length === 0 ? (
+                    <tr>
+                      <td className="px-4 py-4 text-gray-500" colSpan={7}>
+                        No leave requests found
+                      </td>
+                    </tr>
+                  ) : (
+                    leaveRequests.map((row) => (
+                      <tr key={row.id} className="hover:bg-gray-50/50">
+                        <td className="px-4 py-3 font-semibold text-gray-900">{row.staffName}</td>
+                        <td className="px-4 py-3">{row.leaveType}</td>
+                        <td className="px-4 py-3">{row.fromDate}</td>
+                        <td className="px-4 py-3">{row.toDate}</td>
+                        <td className="px-4 py-3 max-w-[200px] truncate">{row.reason}</td>
+                        <td className="px-4 py-3">
+                          <span
+                            className={`rounded-full border px-2 py-1 text-xs font-semibold ${LEAVE_STATUS_STYLES[row.status] ?? "border-slate-200 bg-slate-50 text-slate-600"}`}
+                          >
+                            {row.status}
+                          </span>
+                        </td>
+                        <td className="px-4 py-3">
+                          {row.status === "PENDING" && canUpdate ? (
+                            <div className="flex gap-1">
+                              <button
+                                type="button"
+                                onClick={() => void updateLeaveStatus(row.id, "APPROVED")}
+                                className="rounded border border-emerald-300 px-2 py-1 text-xs font-semibold text-emerald-700 hover:bg-emerald-50"
+                              >
+                                Approve
+                              </button>
+                              <button
+                                type="button"
+                                onClick={() => void updateLeaveStatus(row.id, "REJECTED")}
+                                className="rounded border border-rose-300 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                              >
+                                Reject
+                              </button>
+                            </div>
+                          ) : (
+                            <span className="text-xs text-gray-400">-</span>
+                          )}
+                        </td>
+                      </tr>
+                    ))
+                  )}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </SectionCard>
+      ) : null}
+
+      {/* ---- Leave Request Creation Modal ---- */}
+      {showLeaveForm ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-900/30">
+          <div className="w-full max-w-md rounded-2xl bg-white p-6 shadow-xl">
+            <h3 className="text-lg font-semibold text-slate-900 mb-4">New Leave Request</h3>
+            <div className="grid gap-3">
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-600">
+                  {role === "COACH" ? "Coach" : "Staff"} (select from directory)
+                </label>
+                <select
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  value={leaveForm.staffId}
+                  onChange={(e) => setLeaveForm((prev) => ({ ...prev, staffId: e.target.value }))}
+                >
+                  <option value="">-- Select --</option>
+                  {users.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.name} ({u.designation})
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-600">Leave Type</label>
+                <select
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  value={leaveForm.leaveType}
+                  onChange={(e) => setLeaveForm((prev) => ({ ...prev, leaveType: e.target.value }))}
+                >
+                  {LEAVE_TYPES.map((lt) => (
+                    <option key={lt.value} value={lt.value}>
+                      {lt.label}
+                    </option>
+                  ))}
+                </select>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-600">From</label>
+                  <input
+                    type="date"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    value={leaveForm.fromDate}
+                    onChange={(e) => setLeaveForm((prev) => ({ ...prev, fromDate: e.target.value }))}
+                    required
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-600">To</label>
+                  <input
+                    type="date"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    value={leaveForm.toDate}
+                    onChange={(e) => setLeaveForm((prev) => ({ ...prev, toDate: e.target.value }))}
+                    required
+                  />
+                </div>
+              </div>
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-600">Reason</label>
+                <textarea
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  rows={2}
+                  value={leaveForm.reason}
+                  onChange={(e) => setLeaveForm((prev) => ({ ...prev, reason: e.target.value }))}
+                />
+              </div>
+              <div className="flex justify-end gap-2 mt-2">
+                <button
+                  type="button"
+                  onClick={() => setShowLeaveForm(false)}
+                  className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  disabled={leaveSubmitting || !leaveForm.fromDate || !leaveForm.toDate || !leaveForm.staffId}
+                  onClick={() => void submitLeaveRequest()}
+                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-400"
+                >
+                  {leaveSubmitting ? "Submitting..." : "Submit"}
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      ) : null}
+
+      {/* ---- Client Attendance (coaches only — today's PT sessions) ---- */}
+      {showClientAttendance && activeTab === "directory" ? (
         <SectionCard
           title="Client Attendance"
           subtitle="Today attendance from engagement-service"
@@ -548,6 +1008,15 @@ export function UserManagementPage({
                   type="email"
                   value={editForm.email}
                   onChange={(event) => setEditForm((prev) => ({ ...prev, email: event.target.value }))}
+                />
+              </div>
+
+              <div>
+                <label className="mb-1 block text-xs font-semibold text-slate-600">Default Branch ID</label>
+                <input
+                  className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                  value={editForm.defaultBranchId}
+                  onChange={(event) => setEditForm((prev) => ({ ...prev, defaultBranchId: event.target.value }))}
                 />
               </div>
 

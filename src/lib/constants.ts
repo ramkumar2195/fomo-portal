@@ -1,5 +1,6 @@
 export const STORAGE_KEYS = {
   token: "fomo.token",
+  refreshToken: "fomo.refreshToken",
   user: "fomo.user",
   accessMetadata: "fomo.accessMetadata",
   selectedBranchId: "fomo.branchId",

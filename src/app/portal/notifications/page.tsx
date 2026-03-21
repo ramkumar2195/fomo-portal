@@ -4,6 +4,7 @@ import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { SectionCard } from "@/components/common/section-card";
 import { ToastBanner } from "@/components/common/toast-banner";
 import { useAuth } from "@/contexts/auth-context";
+import { useBranch } from "@/contexts/branch-context";
 import { hasDesignation, isAdminOrStaff } from "@/lib/access-policy";
 import { notificationService } from "@/lib/api/services/notification-service";
 import { formatDateTime } from "@/lib/formatters";
@@ -36,6 +37,7 @@ function parseIds(value: string): number[] {
 
 export default function NotificationsPage() {
   const { token, user } = useAuth();
+  const { effectiveBranchId } = useBranch();
 
   const isCampaignManager = isAdminOrStaff(user);
   const isSuperAdmin = hasDesignation(user, "SUPER_ADMIN");
@@ -168,7 +170,7 @@ export default function NotificationsPage() {
         channel: createForm.channel,
         audienceType: createForm.audienceType,
         targetMemberIds,
-        branchId: null,
+        branchId: effectiveBranchId ? Number(effectiveBranchId) : null,
         createdBy: staffId,
         scheduledAt: createForm.scheduledAt ? new Date(createForm.scheduledAt).toISOString() : null,
         metadataJson: createForm.metadataJson,
@@ -239,7 +241,7 @@ export default function NotificationsPage() {
         message: inAppForm.message,
         type: inAppForm.type,
         campaignId: selectedCampaignId,
-        branchId: null,
+        branchId: effectiveBranchId ? Number(effectiveBranchId) : null,
         deepLink: inAppForm.deepLink,
         metadataJson: inAppForm.metadataJson,
         expiresAt: inAppForm.expiresAt ? new Date(inAppForm.expiresAt).toISOString() : null,

@@ -2,11 +2,12 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import axios from "axios";
 
-const USERS_BASE_URL =
-  (process.env.TEST_USERS_SERVICE_URL || process.env.NEXT_PUBLIC_USERS_SERVICE_URL || "http://localhost:8082").replace(
-    /\/$/,
-    "",
-  );
+const USERS_BASE_URL = (
+  process.env.TEST_USERS_SERVICE_URL ||
+  process.env.TEST_API_BASE_URL ||
+  process.env.NEXT_PUBLIC_API_BASE_URL ||
+  "http://localhost:8081"
+).replace(/\/$/, "");
 const USERS_API_PREFIX = (process.env.TEST_USERS_API_PREFIX || process.env.NEXT_PUBLIC_USERS_API_PREFIX || "/api/users").replace(
   /\/$/,
   "",
@@ -15,6 +16,7 @@ const USERS_API_PREFIX = (process.env.TEST_USERS_API_PREFIX || process.env.NEXT_
 const TEST_MOBILE = process.env.FOMO_TEST_MOBILE;
 const TEST_PASSWORD = process.env.FOMO_TEST_PASSWORD;
 const ENABLE_WRITE_TESTS = process.env.FOMO_INTEGRATION_WRITE === "true";
+const MEMBER_SOURCE_INQUIRY_ID = process.env.FOMO_TEST_MEMBER_SOURCE_INQUIRY_ID;
 
 function requireCredentials() {
   assert.ok(TEST_MOBILE, "Set FOMO_TEST_MOBILE to run integration tests.");
@@ -33,15 +35,23 @@ function unwrapEnvelope(payload) {
 }
 
 async function usersRequest({ method = "GET", path, token, data, params }) {
-  const response = await axios.request({
-    baseURL: USERS_BASE_URL,
-    url: path,
-    method,
-    data,
-    params,
-    headers: token ? { Authorization: `Bearer ${token}` } : undefined,
-    validateStatus: () => true,
-  });
+  let response;
+  try {
+    response = await axios.request({
+      baseURL: USERS_BASE_URL,
+      url: path,
+      method,
+      data,
+      params,
+      headers: token ? { Authorization: `Bearer ${token}` } : undefined,
+      validateStatus: () => true,
+    });
+  } catch (networkError) {
+    const errorObj = networkError && typeof networkError === "object" ? networkError : {};
+    const code = "code" in errorObj ? String(errorObj.code) : "UNKNOWN";
+    const message = "message" in errorObj ? String(errorObj.message) : "Network request failed";
+    throw new Error(`Network error (code=${code}, baseURL=${USERS_BASE_URL}, path=${path}): ${message}`);
+  }
 
   if (response.status >= 400) {
     const message =
@@ -80,14 +90,22 @@ function uniqueMobileNumber() {
 async function registerAndVerify(token, roleConfig) {
   const mobileNumber = uniqueMobileNumber();
   const password = "Temp@1234";
-  const name = `IT-${roleConfig.role}-${Date.now()}`;
+  const fullName = `IT-${roleConfig.role}-${Date.now()}`;
+  const parsedSourceInquiryId = Number(MEMBER_SOURCE_INQUIRY_ID);
+
+  if (roleConfig.role === "MEMBER" && !MEMBER_SOURCE_INQUIRY_ID) {
+    throw new Error("Set FOMO_TEST_MEMBER_SOURCE_INQUIRY_ID for MEMBER write-registration test.");
+  }
+  if (roleConfig.role === "MEMBER" && (!Number.isFinite(parsedSourceInquiryId) || parsedSourceInquiryId <= 0)) {
+    throw new Error("FOMO_TEST_MEMBER_SOURCE_INQUIRY_ID must be a positive number.");
+  }
 
   await usersRequest({
     method: "POST",
     path: `${USERS_API_PREFIX}/register`,
     token,
     data: {
-      name,
+      fullName,
       mobileNumber,
       password,
       role: roleConfig.role,
@@ -95,6 +113,7 @@ async function registerAndVerify(token, roleConfig) {
       designation: roleConfig.designation,
       dataScope: roleConfig.dataScope,
       active: true,
+      ...(roleConfig.role === "MEMBER" ? { sourceInquiryId: parsedSourceInquiryId } : {}),
     },
   });
 
@@ -142,15 +161,19 @@ test("users-service /me and /metadata/access are accessible with bearer token", 
 test(
   "users-service register + search for MEMBER/COACH/STAFF",
   { skip: !TEST_MOBILE || !TEST_PASSWORD || !ENABLE_WRITE_TESTS },
-  async () => {
+  async (t) => {
     const token = await loginAndGetToken();
 
-    await registerAndVerify(token, {
-      role: "MEMBER",
-      employmentType: "INTERNAL",
-      designation: "MEMBER",
-      dataScope: "ASSIGNED_ONLY",
-    });
+    if (MEMBER_SOURCE_INQUIRY_ID) {
+      await registerAndVerify(token, {
+        role: "MEMBER",
+        employmentType: "INTERNAL",
+        designation: "MEMBER",
+        dataScope: "ASSIGNED_ONLY",
+      });
+    } else {
+      t.diagnostic("Skipping MEMBER register write-check because FOMO_TEST_MEMBER_SOURCE_INQUIRY_ID is not set.");
+    }
 
     await registerAndVerify(token, {
       role: "COACH",

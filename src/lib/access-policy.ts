@@ -5,54 +5,56 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
   GYM_MANAGER: [
     "/portal/sales-dashboard",
     "/portal/inquiries",
+    "/portal/follow-ups",
     "/portal/members",
+    "/portal/renewals",
     "/portal/billing",
-    "/portal/trainer-attendance",
-    "/portal/class-schedule",
     "/portal/trainers",
+    "/portal/trainer-attendance",
     "/portal/staff",
-    "/portal/accounts",
+    "/portal/community",
     "/portal/notifications",
-    "/portal",
-    "/branch-selector",
+    "/portal/reports",
+    "/portal/settings",
+    "/portal/class-schedule",
+    "/portal/accounts",
+    "/admin/programs",
+    "/admin/classes",
+    "/admin/credits",
   ],
   SALES_MANAGER: [
     "/portal/sales-dashboard",
     "/portal/inquiries",
+    "/portal/follow-ups",
     "/portal/members",
+    "/portal/renewals",
     "/portal/billing",
     "/portal/notifications",
-    "/portal",
-    "/branch-selector",
+    "/portal/reports",
   ],
   SALES_EXECUTIVE: [
     "/portal/sales-dashboard",
     "/portal/inquiries",
+    "/portal/follow-ups",
     "/portal/members",
-    "/portal/billing",
-    "/portal/notifications",
-    "/portal",
-    "/branch-selector",
+    "/portal/renewals",
   ],
   FRONT_DESK_EXECUTIVE: [
     "/portal/sales-dashboard",
     "/portal/inquiries",
+    "/portal/follow-ups",
     "/portal/members",
+    "/portal/renewals",
     "/portal/billing",
-    "/portal/notifications",
-    "/portal",
-    "/branch-selector",
   ],
   FITNESS_MANAGER: [
     "/portal/sales-dashboard",
-    "/portal/inquiries",
-    "/portal/members",
-    "/portal/trainer-attendance",
     "/portal/trainers",
+    "/portal/trainer-attendance",
+    "/portal/reports",
     "/portal/class-schedule",
-    "/portal/notifications",
-    "/portal",
-    "/branch-selector",
+    "/admin/programs",
+    "/admin/classes",
   ],
   HEAD_COACH: [],
   PT_COACH: [],
@@ -89,8 +91,20 @@ const ROUTE_CAPABILITY_MAP: Array<{ prefix: string; capabilities: string[] }> = 
     capabilities: ["MEMBER_VIEW", "MEMBERS_VIEW", "MEMBER_MANAGE"],
   },
   {
+    prefix: "/portal/renewals",
+    capabilities: ["RENEWAL_VIEW", "RENEWALS_VIEW", "MEMBER_RENEWAL_VIEW", "SALES_REPORT_VIEW"],
+  },
+  {
+    prefix: "/portal/follow-ups",
+    capabilities: ["FOLLOW_UP_VIEW", "FOLLOW_UP_MANAGE", "INQUIRY_MANAGE"],
+  },
+  {
     prefix: "/portal/billing",
     capabilities: ["BILLING_VIEW", "INVOICE_VIEW", "BILLING_MANAGE"],
+  },
+  {
+    prefix: "/portal/reports",
+    capabilities: ["REPORTS_VIEW", "SALES_REPORT_VIEW", "ANALYTICS_VIEW"],
   },
   {
     prefix: "/portal/trainer-attendance",
@@ -102,7 +116,7 @@ const ROUTE_CAPABILITY_MAP: Array<{ prefix: string; capabilities: string[] }> = 
   },
   {
     prefix: "/portal/accounts",
-    capabilities: ["ACCOUNTS_VIEW", "FINANCE_VIEW", "REPORTS_VIEW"],
+    capabilities: ["ACCOUNTS_VIEW", "FINANCE_VIEW", "RECEIPT_VIEW", "INVOICE_VIEW", "REPORTS_VIEW"],
   },
   {
     prefix: "/portal/notifications",
@@ -115,6 +129,14 @@ const ROUTE_CAPABILITY_MAP: Array<{ prefix: string; capabilities: string[] }> = 
   {
     prefix: "/portal/staff",
     capabilities: ["STAFF_CREATE", "STAFF_MANAGE", "USER_MANAGE", "ADMIN_MANAGE_USERS"],
+  },
+  {
+    prefix: "/portal/community",
+    capabilities: ["COMMUNITY_VIEW", "COMMUNITY_MANAGE"],
+  },
+  {
+    prefix: "/portal/settings",
+    capabilities: ["SETTINGS_VIEW", "ADMIN_SETTINGS_VIEW", "SYSTEM_SETTINGS_MANAGE"],
   },
 ];
 
@@ -275,8 +297,24 @@ export function canAccessRouteWithMetadata(
   user?: AuthUser | null,
   accessMetadata?: AccessMetadata | null,
 ): boolean {
+  if (pathname.startsWith("/admin")) {
+    if (!user || !isAdminOrStaff(user)) return false;
+    if (user.role === "ADMIN") return true;
+    // STAFF can access specific /admin routes based on designation
+    if (user.role === "STAFF" && user.designation) {
+      const allowedPrefixes = STAFF_DESIGNATION_ROUTE_PREFIXES[user.designation] || [];
+      return allowedPrefixes.includes("*") || routeMatches(pathname, allowedPrefixes);
+    }
+    return false;
+  }
+
   if (!pathname.startsWith("/portal") && !pathname.startsWith("/branch-selector")) {
     return true;
+  }
+
+  // /portal root is a redirect page — allow any authenticated staff/admin through
+  if (pathname === "/portal") {
+    return Boolean(user && isAdminOrStaff(user));
   }
 
   if (!user || !isAdminOrStaff(user)) {
@@ -291,15 +329,19 @@ export function canAccessRouteWithMetadata(
     return false;
   }
 
+  const allowedPrefixes = STAFF_DESIGNATION_ROUTE_PREFIXES[user.designation] || [];
+  const designationAllowsRoute = allowedPrefixes.includes("*") || routeMatches(pathname, allowedPrefixes);
+
+  // Designation prefix grants access — no capability veto needed
+  if (designationAllowsRoute) {
+    return true;
+  }
+
+  // Route not in designation's prefix list — check capabilities as fallback grant
   const requiredCapabilities = resolveRouteCapabilities(pathname);
   if (requiredCapabilities.length > 0 && hasMetadataCapabilities(user, accessMetadata)) {
     return hasCapability(user, accessMetadata, requiredCapabilities, false);
   }
 
-  const allowedPrefixes = STAFF_DESIGNATION_ROUTE_PREFIXES[user.designation] || [];
-  if (allowedPrefixes.includes("*")) {
-    return true;
-  }
-
-  return routeMatches(pathname, allowedPrefixes);
+  return false;
 }

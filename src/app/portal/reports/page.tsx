@@ -3,9 +3,12 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { PageLoader } from "@/components/common/page-loader";
 import { SectionCard } from "@/components/common/section-card";
+import { DataTable } from "@/components/common/data-table";
 import { useAuth } from "@/contexts/auth-context";
+import { useBranch } from "@/contexts/branch-context";
 import { engagementService } from "@/lib/api/services/engagement-service";
 import { formatCurrency, formatPercent } from "@/lib/formatters";
+import { TrainerUtilizationRow } from "@/types/admin";
 import { AdminOverviewMetrics, DashboardMetrics, LeaderboardEntry } from "@/types/models";
 
 interface ReportsState {
@@ -48,27 +51,31 @@ function buildMonthlySeries(monthRevenue: number): Array<{ month: string; value:
 
 export default function ReportsPage() {
   const { token, user } = useAuth();
+  const { effectiveBranchId } = useBranch();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [state, setState] = useState<ReportsState>(EMPTY_STATE);
+  const [trainerRows, setTrainerRows] = useState<TrainerUtilizationRow[]>([]);
 
   const loadReports = useCallback(async () => {
-    if (!token || !user) {
-      return;
-    }
-
+    if (!token || !user) return;
     setLoading(true);
     setError(null);
     try {
-      const response = await engagementService.getSalesDashboard(token, user.id, user.role);
-      setState(response);
+      const [dashboard, utilization] = await Promise.all([
+        engagementService.getSalesDashboard(token, user.id, user.role),
+        engagementService.getTrainerUtilization(token, {
+          branchId: effectiveBranchId || undefined,
+        }),
+      ]);
+      setState(dashboard);
+      setTrainerRows(utilization?.content ?? []);
     } catch (loadError) {
-      const message = loadError instanceof Error ? loadError.message : "Unable to load reports";
-      setError(message);
+      setError(loadError instanceof Error ? loadError.message : "Unable to load reports");
     } finally {
       setLoading(false);
     }
-  }, [token, user]);
+  }, [token, user, effectiveBranchId]);
 
   useEffect(() => {
     void loadReports();
@@ -80,9 +87,7 @@ export default function ReportsPage() {
   );
   const maxSeries = useMemo(() => Math.max(...monthlySeries.map((item) => item.value), 1), [monthlySeries]);
 
-  if (loading) {
-    return <PageLoader label="Loading reports..." />;
-  }
+  if (loading) return <PageLoader label="Loading reports..." />;
 
   return (
     <div className="space-y-8 pb-12">
@@ -100,38 +105,21 @@ export default function ReportsPage() {
         </button>
       </div>
 
-      {error ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
+      {error && <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>}
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
         {[
           {
-            label: "Avg Monthly Revenue",
-            value: formatCurrency(Math.round((state.adminOverview.monthRevenue || state.metrics.revenueThisMonth) / 1)),
-            change: "+8%",
+            label: "Monthly Revenue",
+            value: formatCurrency(Math.round(state.adminOverview.monthRevenue || state.metrics.revenueThisMonth)),
           },
-          { label: "Total Memberships", value: String(state.adminOverview.totalMembers), change: "+12%" },
-          { label: "Lead Conversion", value: formatPercent(state.metrics.conversionRate), change: "+5%" },
-          {
-            label: "Follow-ups Due",
-            value: String(state.metrics.followUpsDue),
-            change: state.metrics.followUpsDue > 0 ? "-2%" : "+0%",
-          },
+          { label: "Total Memberships", value: String(state.adminOverview.totalMembers) },
+          { label: "Lead Conversion", value: formatPercent(state.metrics.conversionRate) },
+          { label: "Follow-ups Due", value: String(state.metrics.followUpsDue) },
         ].map((item) => (
           <article key={item.label} className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
-            <div className="mb-4 flex items-center justify-between">
-              <span className="rounded-lg bg-gray-50 px-3 py-2 text-xs font-bold text-gray-700">
-                {item.label.slice(0, 2).toUpperCase()}
-              </span>
-              <span
-                className={`rounded-full px-2 py-1 text-xs font-bold ${
-                  item.change.startsWith("+") ? "bg-green-50 text-green-700" : "bg-red-50 text-red-700"
-                }`}
-              >
-                {item.change}
-              </span>
-            </div>
             <p className="text-sm font-medium text-gray-500">{item.label}</p>
-            <p className="mt-1 text-2xl font-bold text-gray-900">{item.value}</p>
+            <p className="mt-2 text-2xl font-bold text-gray-900">{item.value}</p>
           </article>
         ))}
       </div>
@@ -164,12 +152,42 @@ export default function ReportsPage() {
                 <p className="text-sm font-semibold text-gray-800">{formatCurrency(entry.revenue)}</p>
               </div>
             ))}
-            {state.leaderboard.length === 0 ? (
+            {state.leaderboard.length === 0 && (
               <p className="text-sm text-gray-500">No leaderboard data available.</p>
-            ) : null}
+            )}
           </div>
         </SectionCard>
       </div>
+
+      {/* Trainer Utilization */}
+      <SectionCard title="Trainer Utilization" subtitle="Coach performance and session metrics">
+        <DataTable<TrainerUtilizationRow>
+          columns={[
+            { key: "trainerName", header: "Trainer", render: (r) => r.trainerName || "-" },
+            { key: "sessionsConducted", header: "Sessions", render: (r) => String(r.sessionsConducted) },
+            { key: "programSessions", header: "Program Sessions", render: (r) => String(r.programSessions) },
+            { key: "ptRevenue", header: "PT Revenue", render: (r) => formatCurrency(r.ptRevenue) },
+            {
+              key: "utilizationPercent",
+              header: "Utilization",
+              render: (r) => (
+                <div className="flex items-center gap-2">
+                  <div className="h-2 w-20 rounded-full bg-gray-200">
+                    <div
+                      className="h-2 rounded-full bg-red-600"
+                      style={{ width: `${Math.min(r.utilizationPercent, 100)}%` }}
+                    />
+                  </div>
+                  <span className="text-xs font-medium">{Math.round(r.utilizationPercent)}%</span>
+                </div>
+              ),
+            },
+          ]}
+          data={trainerRows}
+          keyExtractor={(r) => r.trainerId}
+          emptyMessage="No trainer utilization data available."
+        />
+      </SectionCard>
     </div>
   );
 }

@@ -1,427 +1,429 @@
 "use client";
 
-import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
+import { useRouter, useSearchParams } from "next/navigation";
 import { PageLoader } from "@/components/common/page-loader";
 import { SectionCard } from "@/components/common/section-card";
+import { StatCard } from "@/components/common/stat-card";
+import { DataTable } from "@/components/common/data-table";
+import { Badge } from "@/components/common/badge";
 import { useAuth } from "@/contexts/auth-context";
-import { canManagePlans } from "@/lib/access-policy";
-import {
-  InvoicePaymentRequest,
-  subscriptionService,
-  SubscriptionCreateRequest,
-} from "@/lib/api/services/subscription-service";
-import { usersService } from "@/lib/api/services/users-service";
-import { GST_DEFAULT_PERCENT } from "@/lib/constants";
-import { formatCurrency } from "@/lib/formatters";
-import { BillingInvoice, Plan, UserDirectoryItem } from "@/types/models";
+import { useBranch } from "@/contexts/branch-context";
+import { subscriptionService } from "@/lib/api/services/subscription-service";
+import { formatCurrency, formatDateTime } from "@/lib/formatters";
+
+type TabKey = "invoices" | "receipts" | "balance" | "subscriptions" | "discounts";
+
+const TABS: { key: TabKey; label: string }[] = [
+  { key: "invoices", label: "Invoices" },
+  { key: "receipts", label: "Receipts" },
+  { key: "balance", label: "Balance Due" },
+  { key: "subscriptions", label: "Subscriptions" },
+  { key: "discounts", label: "Discount Logs" },
+];
+
+type Row = Record<string, unknown>;
+
+function str(row: Row, ...keys: string[]): string {
+  for (const k of keys) {
+    const v = row[k];
+    if (typeof v === "string" && v.length > 0) return v;
+    if (typeof v === "number") return String(v);
+  }
+  return "-";
+}
+
+function num(row: Row, ...keys: string[]): number {
+  for (const k of keys) {
+    const v = row[k];
+    if (typeof v === "number") return v;
+    if (typeof v === "string") {
+      const n = Number(v);
+      if (!Number.isNaN(n)) return n;
+    }
+  }
+  return 0;
+}
+
+interface FinanceState {
+  dashboard: Record<string, unknown>;
+  invoices: Row[];
+  receipts: Row[];
+  balance: Row[];
+  subscriptions: Row[];
+  discounts: Row[];
+}
+
+const EMPTY: FinanceState = {
+  dashboard: {},
+  invoices: [],
+  receipts: [],
+  balance: [],
+  subscriptions: [],
+  discounts: [],
+};
 
 export default function BillingPage() {
-  const { token, user } = useAuth();
-  const canManagePlanCatalog = canManagePlans(user);
-
-  const [members, setMembers] = useState<UserDirectoryItem[]>([]);
-  const [plans, setPlans] = useState<Plan[]>([]);
+  const router = useRouter();
+  const searchParams = useSearchParams();
+  const { token } = useAuth();
+  const { selectedBranchCode } = useBranch();
   const [loading, setLoading] = useState(true);
-  const [isSubmitting, setIsSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [result, setResult] = useState<BillingInvoice | null>(null);
+  const [state, setState] = useState<FinanceState>(EMPTY);
+  const [activeTab, setActiveTab] = useState<TabKey>("invoices");
+  const [dateRange, setDateRange] = useState<{ from: string; to: string }>({
+    from: "",
+    to: "",
+  });
 
-  const [selectedMemberId, setSelectedMemberId] = useState("");
-  const [selectedPlanId, setSelectedPlanId] = useState("");
-  const [discountAmount, setDiscountAmount] = useState(0);
-  const [gstPercent, setGstPercent] = useState(GST_DEFAULT_PERCENT);
-  const [categoryCode, setCategoryCode] = useState("");
-  const [productCode, setProductCode] = useState("");
-  const [subscriptionId, setSubscriptionId] = useState("");
-  const [invoiceId, setInvoiceId] = useState("");
-
-  const loadMembers = useCallback(async () => {
-    if (!token) {
-      return;
-    }
-
-    const memberList = await usersService.getUsersByRole(token, "MEMBER");
-    setMembers(memberList);
-    setSelectedMemberId((current) => current || memberList[0]?.id || "");
-  }, [token]);
-
-  const loadPlans = useCallback(async () => {
-    if (!token || !categoryCode || !productCode) {
-      return;
-    }
-
-    const variants = await subscriptionService.getCatalogVariants(token, categoryCode, productCode);
-    setPlans(variants);
-    setSelectedPlanId((current) => current || variants[0]?.id || "");
-
-    if (variants[0]?.gstPercent) {
-      setGstPercent(variants[0].gstPercent);
-    }
-  }, [token, categoryCode, productCode]);
-
-  useEffect(() => {
-    if (!token) {
-      return;
-    }
-
+  const loadFinance = useCallback(async () => {
+    if (!token) return;
     setLoading(true);
     setError(null);
-
-    void loadMembers()
-      .catch((loadError) => {
-        const message = loadError instanceof Error ? loadError.message : "Unable to load members";
-        setError(message);
-      })
-      .finally(() => setLoading(false));
-  }, [token, loadMembers]);
-
-  const selectedPlan = useMemo(
-    () => plans.find((plan) => plan.id === selectedPlanId) || null,
-    [plans, selectedPlanId],
-  );
+    const query = {
+      ...(dateRange.from ? { from: dateRange.from } : {}),
+      ...(dateRange.to ? { to: dateRange.to } : {}),
+      ...(selectedBranchCode ? { branchCode: selectedBranchCode } : {}),
+    };
+    try {
+      const [dashboard, invoices, receipts, balance, subscriptions, discounts] =
+        await Promise.all([
+          subscriptionService.getFinanceDashboard(token, query),
+          subscriptionService.getInvoiceRegister(token, query),
+          subscriptionService.getReceiptRegister(token, query),
+          subscriptionService.getBalanceDue(token, query),
+          subscriptionService.getSubscriptionRegister(token, query),
+          subscriptionService.getDiscountLogs(token, query),
+        ]);
+      setState({
+        dashboard: dashboard as Record<string, unknown>,
+        invoices: invoices as Row[],
+        receipts: receipts as Row[],
+        balance: balance as Row[],
+        subscriptions: subscriptions as Row[],
+        discounts: discounts as Row[],
+      });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to load finance data");
+    } finally {
+      setLoading(false);
+    }
+  }, [token, dateRange, selectedBranchCode]);
 
   useEffect(() => {
-    if (selectedPlan?.gstPercent) {
-      setGstPercent(selectedPlan.gstPercent);
-    }
-  }, [selectedPlan]);
+    void loadFinance();
+  }, [loadFinance]);
 
-  const billingPreview = useMemo(() => {
-    const baseAmount = selectedPlan?.price || 0;
-    const discount = Math.max(0, discountAmount);
-    const taxableAmount = Math.max(0, baseAmount - discount);
-    const gstAmount = (taxableAmount * Math.max(0, gstPercent)) / 100;
-    const total = taxableAmount + gstAmount;
-
-    return {
-      baseAmount,
-      discount,
-      taxableAmount,
-      gstAmount,
-      total,
-    };
-  }, [selectedPlan?.price, discountAmount, gstPercent]);
-
-  const handleCreateSubscription = async (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    if (!token || !selectedMemberId || !selectedPlanId) {
+  useEffect(() => {
+    const requestedTab = searchParams.get("tab");
+    if (!requestedTab) {
+      setActiveTab("invoices");
       return;
     }
 
-    setError(null);
-    setIsSubmitting(true);
+    const normalizedTab = TABS.find((tab) => tab.key === requestedTab)?.key;
+    setActiveTab(normalizedTab || "invoices");
+  }, [searchParams]);
 
-    try {
-      const payload: SubscriptionCreateRequest = {
-        variantId: selectedPlanId,
-        discountAmount: billingPreview.discount,
-        gstPercent,
-      };
-
-      const response = await subscriptionService.createMemberSubscription(token, selectedMemberId, payload);
-      setResult(response);
-      if (response.subscriptionId) {
-        setSubscriptionId(response.subscriptionId);
-      }
-      if (response.invoiceId) {
-        setInvoiceId(response.invoiceId);
-      }
-    } catch (submitError) {
-      const message = submitError instanceof Error ? submitError.message : "Unable to create subscription";
-      setError(message);
-    } finally {
-      setIsSubmitting(false);
-    }
+  const handleTabChange = (tab: TabKey) => {
+    setActiveTab(tab);
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.set("tab", tab);
+    router.replace(`/portal/billing?${nextParams.toString()}`);
   };
 
-  const handleActivate = async () => {
-    if (!token || !subscriptionId) {
-      return;
-    }
+  if (loading) return <PageLoader label="Loading finance dashboard..." />;
 
-    setError(null);
-    setIsSubmitting(true);
-
-    try {
-      const response = await subscriptionService.activateSubscription(token, subscriptionId);
-      setResult(response);
-      if (response.invoiceId) {
-        setInvoiceId(response.invoiceId);
-      }
-    } catch (submitError) {
-      const message = submitError instanceof Error ? submitError.message : "Unable to activate subscription";
-      setError(message);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  const handlePayInvoice = async () => {
-    if (!token || !invoiceId) {
-      return;
-    }
-
-    setError(null);
-    setIsSubmitting(true);
-
-    try {
-      const payload: InvoicePaymentRequest = {
-        amount: billingPreview.total,
-      };
-      const response = await subscriptionService.payInvoice(token, invoiceId, payload);
-      setResult(response);
-    } catch (submitError) {
-      const message = submitError instanceof Error ? submitError.message : "Unable to pay invoice";
-      setError(message);
-    } finally {
-      setIsSubmitting(false);
-    }
-  };
-
-  if (loading) {
-    return <PageLoader label="Loading billing data..." />;
-  }
+  const d = state.dashboard as Row;
+  const totalInvoiced = num(d, "totalInvoiced", "invoiceTotal", "totalAmount");
+  const totalOutstanding = num(d, "totalOutstanding", "outstanding", "balanceDue");
+  const totalInvoices = num(d, "invoicesIssued", "totalInvoices", "invoiceCount");
+  const totalCollected = num(d, "totalCollected", "collected", "paidAmount");
 
   return (
-    <div className="space-y-5">
-      <SectionCard title="Quick Billing" subtitle="Subscription v2 flow: catalog -> create -> activate -> pay">
-        <p className="mb-4 rounded-lg bg-slate-100 px-3 py-2 text-xs text-slate-600">
-          {canManagePlanCatalog
-            ? "SUPER_ADMIN access: plan and catalog master controls are permitted."
-            : "Plan/catalog master control is restricted to SUPER_ADMIN. Billing operations remain available."}
-        </p>
-        <form className="grid gap-4 lg:grid-cols-2" onSubmit={handleCreateSubscription}>
-          <div className="space-y-3">
-            <label className="block text-sm font-medium text-slate-700">
-              Member
-              <select
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                value={selectedMemberId}
-                onChange={(event) => setSelectedMemberId(event.target.value)}
-                required
-              >
-                {members.map((member) => (
-                  <option key={member.id} value={member.id}>
-                    {member.name} ({member.mobile})
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <div className="grid gap-3 sm:grid-cols-2">
-              <label className="block text-sm font-medium text-slate-700">
-                Category code
-                <input
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                  value={categoryCode}
-                  onChange={(event) => setCategoryCode(event.target.value)}
-                  placeholder="e.g. MEMBERSHIP"
-                />
-              </label>
-              <label className="block text-sm font-medium text-slate-700">
-                Product code
-                <input
-                  className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                  value={productCode}
-                  onChange={(event) => setProductCode(event.target.value)}
-                  placeholder="e.g. GYM"
-                />
-              </label>
-            </div>
-
-            <button
-              type="button"
-              onClick={() => void loadPlans()}
-              disabled={!categoryCode || !productCode || isSubmitting}
-              className="rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:bg-slate-100"
-            >
-              Fetch Plans
-            </button>
-
-            <label className="block text-sm font-medium text-slate-700">
-              Plan variant
-              <select
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                value={selectedPlanId}
-                onChange={(event) => setSelectedPlanId(event.target.value)}
-                required
-              >
-                <option value="" disabled>
-                  Select plan variant
-                </option>
-                {plans.map((plan) => (
-                  <option key={plan.id} value={plan.id}>
-                    {plan.name} - {formatCurrency(plan.price)} ({plan.durationMonths || 0} months)
-                  </option>
-                ))}
-              </select>
-            </label>
-
-            <label className="block text-sm font-medium text-slate-700">
-              Discount amount
-              <input
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                type="number"
-                min={0}
-                step={100}
-                value={discountAmount}
-                onChange={(event) => setDiscountAmount(Number(event.target.value || 0))}
-              />
-            </label>
-
-            <label className="block text-sm font-medium text-slate-700">
-              GST %
-              <input
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                type="number"
-                min={0}
-                max={100}
-                step={1}
-                value={gstPercent}
-                onChange={(event) => setGstPercent(Number(event.target.value || 0))}
-              />
-            </label>
-
-            <button
-              type="submit"
-              disabled={isSubmitting || !selectedMemberId || !selectedPlanId}
-              className="w-full rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-400"
-            >
-              {isSubmitting ? "Processing..." : "Create Subscription"}
-            </button>
-          </div>
-
-          <div className="space-y-4 rounded-xl border border-slate-200 bg-slate-50 p-4">
-            <h3 className="text-base font-semibold text-slate-900">Billing Summary</h3>
-            <div className="space-y-2 text-sm text-slate-700">
-              <div className="flex justify-between">
-                <span>Plan amount</span>
-                <span>{formatCurrency(billingPreview.baseAmount)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Discount</span>
-                <span>-{formatCurrency(billingPreview.discount)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>Taxable amount</span>
-                <span>{formatCurrency(billingPreview.taxableAmount)}</span>
-              </div>
-              <div className="flex justify-between">
-                <span>GST ({gstPercent}%)</span>
-                <span>{formatCurrency(billingPreview.gstAmount)}</span>
-              </div>
-              <div className="mt-2 border-t border-slate-300 pt-2 text-base font-semibold text-slate-900">
-                <div className="flex justify-between">
-                  <span>Total</span>
-                  <span>{formatCurrency(billingPreview.total)}</span>
-                </div>
-              </div>
-            </div>
-
-            <label className="block text-sm font-medium text-slate-700">
-              Subscription ID
-              <input
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                value={subscriptionId}
-                onChange={(event) => setSubscriptionId(event.target.value)}
-                placeholder="From create subscription response"
-              />
-            </label>
-
-            <button
-              type="button"
-              onClick={() => void handleActivate()}
-              disabled={isSubmitting || !subscriptionId}
-              className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-100 disabled:bg-slate-100"
-            >
-              Activate Subscription
-            </button>
-
-            <label className="block text-sm font-medium text-slate-700">
-              Invoice ID
-              <input
-                className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
-                value={invoiceId}
-                onChange={(event) => setInvoiceId(event.target.value)}
-                placeholder="From create/activate response"
-              />
-            </label>
-
-            <button
-              type="button"
-              onClick={() => void handlePayInvoice()}
-              disabled={isSubmitting || !invoiceId}
-              className="w-full rounded-lg bg-emerald-700 px-3 py-2 text-sm font-semibold text-white hover:bg-emerald-600 disabled:bg-emerald-300"
-            >
-              Pay Invoice
-            </button>
-
-            {result ? (
-              <div className="rounded-lg border border-emerald-200 bg-emerald-50 p-3 text-sm text-emerald-700">
-                <p>
-                  Subscription: <strong>{result.subscriptionId || "-"}</strong>
-                </p>
-                <p>
-                  Invoice: <strong>{result.invoiceId || "-"}</strong>
-                </p>
-                <p>
-                  Receipt: <strong>{result.receiptId || "-"}</strong>
-                </p>
-                <p>Total: {formatCurrency(result.total)}</p>
-              </div>
-            ) : null}
-          </div>
-        </form>
-
-        {error ? <p className="mt-4 rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
-      </SectionCard>
-
-      <SectionCard title="Membership Packages" subtitle="Catalog variants currently available from backend">
-        <p className="mb-3 rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-600">
-          Package create/update endpoints are not available in the current backend contract. You can fetch and view
-          packages here; create/edit will be enabled once backend APIs are provided.
-        </p>
-
-        <div className="overflow-x-auto">
-          <table className="min-w-full text-sm">
-            <thead>
-              <tr className="border-b border-slate-200 text-left text-slate-500">
-                <th className="px-2 py-2 font-semibold">Variant</th>
-                <th className="px-2 py-2 font-semibold">Duration</th>
-                <th className="px-2 py-2 font-semibold">Price</th>
-                <th className="px-2 py-2 font-semibold">GST %</th>
-                <th className="px-2 py-2 font-semibold">Action</th>
-              </tr>
-            </thead>
-            <tbody>
-              {plans.length === 0 ? (
-                <tr>
-                  <td className="px-2 py-4 text-slate-500" colSpan={5}>
-                    No packages loaded. Enter category/product code and click Fetch Plans.
-                  </td>
-                </tr>
-              ) : (
-                plans.map((plan) => (
-                  <tr key={`package-${plan.id}`} className="border-b border-slate-100">
-                    <td className="px-2 py-3 font-medium text-slate-900">{plan.name}</td>
-                    <td className="px-2 py-3">{plan.durationMonths || 0} months</td>
-                    <td className="px-2 py-3">{formatCurrency(plan.price)}</td>
-                    <td className="px-2 py-3">{plan.gstPercent ?? GST_DEFAULT_PERCENT}</td>
-                    <td className="px-2 py-3">
-                      <button
-                        type="button"
-                        disabled
-                        className="cursor-not-allowed rounded-lg border border-slate-200 px-2 py-1 text-xs font-semibold text-slate-400"
-                      >
-                        Edit (Pending API)
-                      </button>
-                    </td>
-                  </tr>
-                ))
-              )}
-            </tbody>
-          </table>
+    <div className="space-y-8 pb-12">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-gray-900">Finance Dashboard</h1>
+          <p className="text-gray-500">Revenue, collections, and financial registers.</p>
         </div>
+        <button
+          type="button"
+          onClick={() => void loadFinance()}
+          className="inline-flex rounded-xl bg-black px-4 py-2.5 text-sm font-semibold text-white hover:bg-gray-800"
+        >
+          Refresh
+        </button>
+      </div>
+
+      {error && (
+        <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p>
+      )}
+
+      {/* Date Range Filter */}
+      <div className="flex flex-wrap items-end gap-3">
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-500">From</label>
+          <input
+            type="date"
+            value={dateRange.from}
+            onChange={(e) => setDateRange((prev) => ({ ...prev, from: e.target.value }))}
+            className="rounded-lg border border-gray-200 px-3 py-2 text-sm"
+          />
+        </div>
+        <div>
+          <label className="mb-1 block text-xs font-medium text-gray-500">To</label>
+          <input
+            type="date"
+            value={dateRange.to}
+            onChange={(e) => setDateRange((prev) => ({ ...prev, to: e.target.value }))}
+            className="rounded-lg border border-gray-200 px-3 py-2 text-sm"
+          />
+        </div>
+        <button
+          type="button"
+          onClick={() => void loadFinance()}
+          className="rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200"
+        >
+          Apply
+        </button>
+      </div>
+
+      {/* Stat Cards */}
+      <div className="grid grid-cols-1 gap-6 sm:grid-cols-2 lg:grid-cols-4">
+        <StatCard label="Total Invoiced" value={formatCurrency(totalInvoiced)} />
+        <StatCard label="Collections" value={formatCurrency(totalCollected)} />
+        <StatCard
+          label="Outstanding"
+          value={formatCurrency(totalOutstanding)}
+          hint="Balance due across all members"
+        />
+        <StatCard label="Total Invoices" value={String(totalInvoices)} />
+      </div>
+
+      {/* Tabbed Registers */}
+      <SectionCard title="Financial Registers">
+        <div className="mb-4 flex flex-wrap gap-2 border-b border-gray-100 pb-3">
+          {TABS.map((tab) => (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => handleTabChange(tab.key)}
+              className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
+                activeTab === tab.key
+                  ? "bg-black text-white"
+                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+              }`}
+            >
+              {tab.label}
+            </button>
+          ))}
+        </div>
+
+        {activeTab === "invoices" && (
+          <DataTable<Row>
+            columns={[
+              {
+                key: "invoiceNumber",
+                header: "Invoice #",
+                render: (r) => str(r, "invoiceNumber", "invoiceId", "id"),
+              },
+              {
+                key: "memberName",
+                header: "Member",
+                render: (r) => str(r, "memberName", "member", "customerName"),
+              },
+              {
+                key: "amount",
+                header: "Amount",
+                render: (r) =>
+                  formatCurrency(num(r, "amount", "totalAmount", "invoiceAmount")),
+              },
+              {
+                key: "status",
+                header: "Status",
+                render: (r) => {
+                  const s = str(r, "status", "invoiceStatus");
+                  const variant = s.toLowerCase().includes("paid")
+                    ? "success"
+                    : s.toLowerCase().includes("overdue")
+                      ? "error"
+                      : "info";
+                  return <Badge variant={variant}>{s}</Badge>;
+                },
+              },
+              {
+                key: "dueDate",
+                header: "Due Date",
+                render: (r) => formatDateTime(str(r, "dueDate", "due")),
+              },
+              {
+                key: "createdAt",
+                header: "Created",
+                render: (r) => formatDateTime(str(r, "createdAt", "invoiceDate")),
+              },
+            ]}
+            data={state.invoices}
+            keyExtractor={(r) => str(r, "invoiceNumber", "invoiceId", "id")}
+            emptyMessage="No invoices found for the selected period."
+          />
+        )}
+
+        {activeTab === "receipts" && (
+          <DataTable<Row>
+            columns={[
+              {
+                key: "receiptNumber",
+                header: "Receipt #",
+                render: (r) => str(r, "receiptNumber", "receiptId", "id"),
+              },
+              {
+                key: "memberName",
+                header: "Member",
+                render: (r) => str(r, "memberName", "member"),
+              },
+              {
+                key: "amount",
+                header: "Amount",
+                render: (r) =>
+                  formatCurrency(num(r, "amount", "paidAmount", "receiptAmount")),
+              },
+              {
+                key: "paymentMode",
+                header: "Payment Mode",
+                render: (r) => str(r, "paymentMode", "mode", "method"),
+              },
+              {
+                key: "paidAt",
+                header: "Paid At",
+                render: (r) => formatDateTime(str(r, "paidAt", "paymentDate", "createdAt")),
+              },
+            ]}
+            data={state.receipts}
+            keyExtractor={(r) => str(r, "receiptNumber", "receiptId", "id")}
+            emptyMessage="No receipts found for the selected period."
+          />
+        )}
+
+        {activeTab === "balance" && (
+          <DataTable<Row>
+            columns={[
+              {
+                key: "memberName",
+                header: "Member",
+                render: (r) => str(r, "memberName", "member"),
+              },
+              {
+                key: "totalDue",
+                header: "Balance Due",
+                render: (r) =>
+                  formatCurrency(num(r, "totalDue", "balanceDue", "outstanding")),
+              },
+              {
+                key: "lastPaymentDate",
+                header: "Last Payment",
+                render: (r) =>
+                  formatDateTime(str(r, "lastPaymentDate", "lastPaidAt")),
+              },
+              {
+                key: "overdueDays",
+                header: "Overdue Days",
+                render: (r) => str(r, "overdueDays", "daysOverdue"),
+              },
+            ]}
+            data={state.balance}
+            keyExtractor={(r) => str(r, "memberId", "memberName", "id")}
+            emptyMessage="No outstanding balances."
+          />
+        )}
+
+        {activeTab === "subscriptions" && (
+          <DataTable<Row>
+            columns={[
+              {
+                key: "memberName",
+                header: "Member",
+                render: (r) => str(r, "memberName", "member"),
+              },
+              {
+                key: "planName",
+                header: "Plan",
+                render: (r) => str(r, "planName", "productName", "plan"),
+              },
+              {
+                key: "status",
+                header: "Status",
+                render: (r) => {
+                  const s = str(r, "status", "subscriptionStatus");
+                  const variant =
+                    s.toLowerCase() === "active"
+                      ? "success"
+                      : s.toLowerCase() === "expired"
+                        ? "error"
+                        : "warning";
+                  return <Badge variant={variant}>{s}</Badge>;
+                },
+              },
+              {
+                key: "startDate",
+                header: "Start",
+                render: (r) => formatDateTime(str(r, "startDate", "activatedAt")),
+              },
+              {
+                key: "endDate",
+                header: "End",
+                render: (r) => formatDateTime(str(r, "endDate", "expiresAt")),
+              },
+              {
+                key: "amount",
+                header: "Amount",
+                render: (r) =>
+                  formatCurrency(num(r, "amount", "totalAmount", "price")),
+              },
+            ]}
+            data={state.subscriptions}
+            keyExtractor={(r) => str(r, "subscriptionId", "id", "memberName")}
+            emptyMessage="No subscription records found."
+          />
+        )}
+
+        {activeTab === "discounts" && (
+          <DataTable<Row>
+            columns={[
+              {
+                key: "memberName",
+                header: "Member",
+                render: (r) => str(r, "memberName", "member"),
+              },
+              {
+                key: "discountAmount",
+                header: "Discount",
+                render: (r) =>
+                  formatCurrency(num(r, "discountAmount", "amount", "discount")),
+              },
+              {
+                key: "reason",
+                header: "Reason",
+                render: (r) => str(r, "reason", "notes", "remarks"),
+              },
+              {
+                key: "staffName",
+                header: "Approved By",
+                render: (r) =>
+                  str(r, "staffName", "discountedByStaffName", "approvedBy"),
+              },
+              {
+                key: "createdAt",
+                header: "Date",
+                render: (r) => formatDateTime(str(r, "createdAt", "discountDate")),
+              },
+            ]}
+            data={state.discounts}
+            keyExtractor={(r) => str(r, "id", "memberName", "createdAt") + str(r, "discountAmount")}
+            emptyMessage="No discount logs found."
+          />
+        )}
       </SectionCard>
     </div>
   );

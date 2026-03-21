@@ -5,14 +5,14 @@ export function resolveStaffId(user?: AuthUser | null): number | null {
     return null;
   }
 
-  const fromId = Number(user.id);
-  if (!Number.isNaN(fromId) && Number.isFinite(fromId)) {
-    return fromId;
-  }
-
   const fromMobile = Number(user.mobile);
   if (!Number.isNaN(fromMobile) && Number.isFinite(fromMobile)) {
     return fromMobile;
+  }
+
+  const fromId = Number(user.id);
+  if (!Number.isNaN(fromId) && Number.isFinite(fromId)) {
+    return fromId;
   }
 
   return null;
