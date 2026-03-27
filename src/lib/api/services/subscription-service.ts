@@ -1,3 +1,5 @@
+import axios from "axios";
+import { apiBaseUrl } from "@/lib/api/config";
 import { apiRequest } from "@/lib/api/http-client";
 import { unwrapData } from "@/lib/api/response";
 import {
@@ -311,6 +313,7 @@ function mapInvoices(payload: unknown): InvoiceSummary[] {
       tax: toOptionalNumber(record, ["tax"]) || undefined,
       paidAmount: toOptionalNumber(record, ["paidAmount", "totalPaidAmount"]) || undefined,
       balanceAmount: toOptionalNumber(record, ["balanceAmount", "outstandingAmount"]) || undefined,
+      receiptId: toString(record, ["receiptId"]) || undefined,
       receiptNumber: toString(record, ["receiptNumber"]) || undefined,
     }));
 }
@@ -1006,6 +1009,21 @@ export const subscriptionService = {
     return unwrapData<unknown>(response);
   },
 
+  async transferSubscription(
+    token: string,
+    subscriptionId: string | number,
+    payload: Record<string, unknown>,
+  ): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/subscriptions/${subscriptionId}/transfer`,
+      token,
+      method: "POST",
+      body: payload,
+    });
+    return unwrapData<unknown>(response);
+  },
+
   async recordPayment(token: string, invoiceId: number, payload: Record<string, unknown>): Promise<PaymentReceipt> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "subscription",
@@ -1015,6 +1033,46 @@ export const subscriptionService = {
       body: payload,
     });
     return mapPaymentReceipt(unwrapData<unknown>(response));
+  },
+
+  async getInvoiceDocumentHtml(token: string, invoiceId: number | string): Promise<string> {
+    const response = await axios.get<string>(`${apiBaseUrl}/api/subscriptions/v2/invoices/${invoiceId}/document`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      responseType: "text",
+    });
+    return response.data;
+  },
+
+  async getReceiptDocumentHtml(token: string, receiptId: number | string): Promise<string> {
+    const response = await axios.get<string>(`${apiBaseUrl}/api/subscriptions/v2/receipts/${receiptId}/document`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      responseType: "text",
+    });
+    return response.data;
+  },
+
+  async getInvoicePdf(token: string, invoiceId: number | string): Promise<Blob> {
+    const response = await axios.get(`${apiBaseUrl}/api/subscriptions/v2/invoices/${invoiceId}/pdf`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      responseType: "blob",
+    });
+    return response.data as Blob;
+  },
+
+  async getReceiptPdf(token: string, receiptId: number | string): Promise<Blob> {
+    const response = await axios.get(`${apiBaseUrl}/api/subscriptions/v2/receipts/${receiptId}/pdf`, {
+      headers: {
+        Authorization: `Bearer ${token}`,
+      },
+      responseType: "blob",
+    });
+    return response.data as Blob;
   },
 
   async activateMembership(token: string, subscriptionId: number): Promise<unknown> {

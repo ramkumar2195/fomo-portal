@@ -49,7 +49,7 @@ export default function TrainersPage() {
       requiredCreateCapabilities={TRAINER_CREATE_CAPABILITIES}
       leaveTitle="Trainer Leave Approvals"
       leaveSubtitle="Approve/reject trainer leave requests"
-      showClientAttendance
+      profileRoute="/portal/trainers"
     />
   );
 }

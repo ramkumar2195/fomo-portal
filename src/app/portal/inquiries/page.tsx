@@ -1279,6 +1279,7 @@ export default function InquiriesPage() {
     );
     const sourceCounts = new Map<string, number>();
     let convertedCount = 0;
+    let closedCount = 0;
 
     for (const inquiry of analysisInquiries) {
       const statusKey = String(inquiry.status || "").toUpperCase();
@@ -1287,6 +1288,8 @@ export default function InquiriesPage() {
       }
       if (isConvertedInquiry(inquiry)) {
         convertedCount += 1;
+      } else if (statusKey === "LOST" || statusKey === "NOT_INTERESTED") {
+        closedCount += 1;
       }
 
       const source = formatSourceLabel(inquiry.promotionSource);
@@ -1312,7 +1315,7 @@ export default function InquiriesPage() {
       sourceSeries,
       total,
       convertedCount,
-      openCount: Math.max(total - convertedCount, 0),
+      openCount: Math.max(total - convertedCount - closedCount, 0),
       conversionRate,
     };
   }, [analysisInquiries]);

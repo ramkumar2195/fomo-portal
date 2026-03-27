@@ -544,6 +544,23 @@ export const engagementService = {
     return mapFreezeHistory(unwrapData<unknown>(response));
   },
 
+  async activateFreeze(
+    token: string,
+    memberId: string | number,
+    payload: { freezeDays: number; creditsCost?: number; reason?: string },
+  ): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "engagement",
+      path: `/api/retention/member/${memberId}/freeze`,
+      token,
+      method: "POST",
+      body: payload,
+    });
+
+    const data = unwrapData<unknown>(response);
+    return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
+  },
+
   // ── Credits CRUD ──────────────────────────────────────────────────
 
   async awardCredits(token: string, payload: Record<string, unknown>): Promise<Record<string, unknown>> {

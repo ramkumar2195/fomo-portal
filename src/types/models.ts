@@ -335,6 +335,7 @@ export interface Inquiry {
 export interface InvoiceSummary {
   id: string;
   invoiceNumber: string;
+  receiptId?: string;
   amount: number;
   status: string;
   issuedAt: string;

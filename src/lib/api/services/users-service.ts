@@ -23,10 +23,12 @@ import {
   UserDirectoryItem,
 } from "@/types/models";
 import {
+  MemberAccessStateResponse,
   MemberContextResponse,
   MemberFitnessFormPayload,
   MemberFitnessFormStatusResponse,
   MemberNotesResponse,
+  MemberProfileAuditEntry,
   MemberProfileShellResponse,
   MemberProfileShellTab,
 } from "@/types/member-profile";
@@ -112,6 +114,7 @@ export interface RegisterUserRequest {
 }
 
 export interface UpdateUserRequest {
+  fullName?: string;
   name?: string;
   mobileNumber?: string;
   password?: string;
@@ -803,6 +806,9 @@ function normalizeMemberProfileTabKey(value: string): MemberProfileShellTab["key
       return "freeze-history";
     case "notes":
       return "notes";
+    case "audit-trail":
+    case "audit":
+      return "audit-trail";
     case "fitness-assessment":
     case "fitness":
     case "assessment":
@@ -883,12 +889,16 @@ function mapMemberFitnessFormStatus(payload: unknown): MemberFitnessFormStatusRe
 function mapMemberNotes(payload: unknown): MemberNotesResponse {
   if (Array.isArray(payload)) {
     return {
+      followUps: [],
       items: payload.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null),
       raw: payload,
     };
   }
 
   const record = toRecord(payload);
+  const followUpsRaw = Array.isArray(record.followUps)
+    ? record.followUps.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+    : [];
   const rawItems = Array.isArray(record.items)
     ? record.items
     : Array.isArray(record.notes)
@@ -896,6 +906,22 @@ function mapMemberNotes(payload: unknown): MemberNotesResponse {
       : [];
 
   return {
+    memberId: toOptionalString(record, ["memberId"]),
+    sourceInquiryId: toOptionalString(record, ["sourceInquiryId"]),
+    inquiryStatus: toOptionalString(record, ["inquiryStatus"]),
+    inquiryNotes: toOptionalString(record, ["inquiryNotes"]),
+    inquiryRemarks: toOptionalString(record, ["inquiryRemarks"]),
+    interestedIn: toOptionalString(record, ["interestedIn"]),
+    latestFollowUpComment: toOptionalString(record, ["latestFollowUpComment"]),
+    followUps: followUpsRaw.map((item) => ({
+      followUpId: toOptionalString(item, ["followUpId", "id"]),
+      dueAt: toOptionalString(item, ["dueAt"]),
+      channel: toOptionalString(item, ["channel"]),
+      status: toOptionalString(item, ["status"]),
+      notes: toOptionalString(item, ["notes"]),
+      customMessage: toOptionalString(item, ["customMessage"]),
+      raw: item,
+    })),
     items: rawItems.filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null),
     raw: payload,
   };
@@ -1066,6 +1092,81 @@ export const usersService = {
     });
 
     return mapMemberNotes(unwrapData<unknown>(response));
+  },
+
+  async getMemberProfileAuditTrail(token: string, memberId: string | number): Promise<MemberProfileAuditEntry[]> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "users",
+      path: `${USERS_API_PREFIX}/members/${memberId}/audit-trail`,
+      token,
+    });
+
+    const payload = unwrapData<unknown>(response);
+    if (!Array.isArray(payload)) {
+      return [];
+    }
+
+    return payload
+      .filter((item): item is Record<string, unknown> => typeof item === "object" && item !== null)
+      .map((item) => ({
+        auditId: toOptionalString(item, ["auditId", "id"]),
+        memberId: toOptionalString(item, ["memberId"]),
+        actorId: toOptionalString(item, ["actorId"]),
+        actorName: toOptionalString(item, ["actorName"]),
+        action: toOptionalString(item, ["action"]),
+        summary: toOptionalString(item, ["summary"]),
+        changesJson: toOptionalString(item, ["changesJson"]),
+        createdAt: toOptionalString(item, ["createdAt"]),
+        raw: item,
+      }));
+  },
+
+  async getMemberAccessState(token: string, memberId: string | number): Promise<MemberAccessStateResponse> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "users",
+      path: `${USERS_API_PREFIX}/members/${memberId}/access`,
+      token,
+    });
+
+    const payload = toRecord(unwrapData<unknown>(response));
+    return {
+      memberId: toOptionalString(payload, ["memberId"]),
+      status: toOptionalString(payload, ["status"]),
+      externalReference: toOptionalString(payload, ["externalReference"]),
+      lastAction: toOptionalString(payload, ["lastAction"]),
+      lastActionAt: toOptionalString(payload, ["lastActionAt"]),
+      lastNotes: toOptionalString(payload, ["lastNotes"]),
+      createdAt: toOptionalString(payload, ["createdAt"]),
+      updatedAt: toOptionalString(payload, ["updatedAt"]),
+      raw: payload,
+    };
+  },
+
+  async applyMemberAccessAction(
+    token: string,
+    memberId: string | number,
+    payload: { action: string; notes?: string },
+  ): Promise<MemberAccessStateResponse> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "users",
+      path: `${USERS_API_PREFIX}/members/${memberId}/access`,
+      token,
+      method: "POST",
+      body: payload,
+    });
+
+    const raw = toRecord(unwrapData<unknown>(response));
+    return {
+      memberId: toOptionalString(raw, ["memberId"]),
+      status: toOptionalString(raw, ["status"]),
+      externalReference: toOptionalString(raw, ["externalReference"]),
+      lastAction: toOptionalString(raw, ["lastAction"]),
+      lastActionAt: toOptionalString(raw, ["lastActionAt"]),
+      lastNotes: toOptionalString(raw, ["lastNotes"]),
+      createdAt: toOptionalString(raw, ["createdAt"]),
+      updatedAt: toOptionalString(raw, ["updatedAt"]),
+      raw,
+    };
   },
 
   async getMemberFitnessForm(token: string, memberId: string | number): Promise<MemberFitnessFormPayload> {

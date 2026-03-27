@@ -39,6 +39,16 @@ export interface PtBookingRequest {
   [key: string]: unknown;
 }
 
+export interface ClientAssignmentRequest {
+  memberId: number;
+  memberEmail: string;
+  coachId: number;
+  coachEmail: string;
+  trainingType: "GENERAL" | "PERSONAL_TRAINING";
+  startDate: string;
+  endDate?: string;
+}
+
 function toRecord(payload: unknown): JsonRecord {
   return typeof payload === "object" && payload !== null ? (payload as JsonRecord) : {};
 }
@@ -226,6 +236,18 @@ function ensureArray(payload: unknown): unknown[] {
 }
 
 export const trainingService = {
+  async createAssignment(token: string, payload: ClientAssignmentRequest): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: "/api/training/assignments",
+      token,
+      method: "POST",
+      body: payload,
+    });
+
+    return unwrapData<unknown>(response);
+  },
+
   async getMemberAssignments(token: string, memberId: string): Promise<unknown[]> {
     try {
       const response = await apiRequest<unknown | { data: unknown }>({

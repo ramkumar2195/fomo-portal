@@ -9,6 +9,7 @@ export type MemberProfileTabKey =
   | "progress"
   | "freeze-history"
   | "notes"
+  | "audit-trail"
   | "fitness-assessment";
 
 export interface MemberProfileShellTab {
@@ -132,7 +133,25 @@ export interface MemberAssessmentHistoryEntry {
   raw: Record<string, unknown>;
 }
 
+export interface MemberFollowUpNote {
+  followUpId?: string;
+  dueAt?: string;
+  channel?: string;
+  status?: string;
+  notes?: string;
+  customMessage?: string;
+  raw: Record<string, unknown>;
+}
+
 export interface MemberNotesResponse {
+  memberId?: string;
+  sourceInquiryId?: string;
+  inquiryStatus?: string;
+  inquiryNotes?: string;
+  inquiryRemarks?: string;
+  interestedIn?: string;
+  latestFollowUpComment?: string;
+  followUps: MemberFollowUpNote[];
   items: Array<Record<string, unknown>>;
   raw: unknown;
 }
@@ -141,6 +160,30 @@ export interface MemberContextResponse {
   onboarding?: Record<string, unknown>;
   fitnessForm?: MemberFitnessFormStatusResponse;
   fitnessAssessment?: MemberAssessmentStatusResponse;
+  raw: Record<string, unknown>;
+}
+
+export interface MemberAccessStateResponse {
+  memberId?: string;
+  status?: string;
+  externalReference?: string;
+  lastAction?: string;
+  lastActionAt?: string;
+  lastNotes?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  raw?: Record<string, unknown>;
+}
+
+export interface MemberProfileAuditEntry {
+  auditId?: string;
+  memberId?: string;
+  actorId?: string;
+  actorName?: string;
+  action?: string;
+  summary?: string;
+  changesJson?: string;
+  createdAt?: string;
   raw: Record<string, unknown>;
 }
 

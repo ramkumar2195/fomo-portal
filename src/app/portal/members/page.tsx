@@ -54,14 +54,29 @@ function getString(payload: JsonRecord, keys: string[]): string {
   return "";
 }
 
+function normalizeDisplayPlanName(value: string): string {
+  const trimmed = value.trim();
+  if (!trimmed || trimmed === "-") {
+    return "No subscription is active";
+  }
+
+  return trimmed
+    .replace(/\b(1|3|6|12)M\b/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+[-/]\s*$/g, "")
+    .trim();
+}
+
 function resolveActivePlan(dashboard: unknown, entitlements: unknown): string {
   const dashboardRecord = toRecord(dashboard);
   const entitlementsRecord = toRecord(entitlements);
 
-  return (
+  return normalizeDisplayPlanName(
+    (
     getString(dashboardRecord, ["activePlan", "planName", "currentPlan"]) ||
     getString(entitlementsRecord, ["activePlan", "planName", "currentPlan"]) ||
     "-"
+    ),
   );
 }
 

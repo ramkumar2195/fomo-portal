@@ -313,9 +313,13 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
         if (!active) {
           return;
         }
+        // Filter out CONVERTED enquiries — those already appear as members in user results
+        const openEnquiries = enquiryPage.content.filter(
+          (enq) => enq.status !== "CONVERTED",
+        );
         setGlobalSearchResults([
           ...users.slice(0, 6).map((item) => ({ kind: "user" as const, item })),
-          ...enquiryPage.content.slice(0, 4).map((item) => ({ kind: "enquiry" as const, item })),
+          ...openEnquiries.slice(0, 4).map((item) => ({ kind: "enquiry" as const, item })),
         ]);
         setGlobalSearchOpen(true);
       } catch {
@@ -544,7 +548,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
       <div className={`${offsetClass} transition-all duration-200`}>
         {/* Header */}
         <header
-          className={`fixed top-0 right-0 z-30 h-16 border-b border-white/8 bg-[#0c1016]/90 backdrop-blur ${headerOffsetClass} left-0 md:left-auto transition-all duration-200`}
+          className={`fixed top-0 right-0 z-30 h-16 border-b border-white/8 bg-[#0c1016] ${headerOffsetClass} left-0 md:left-auto transition-all duration-200`}
         >
           <div className="mx-auto flex h-full max-w-[1500px] items-center justify-between px-4 md:px-6">
             <div className="flex items-center gap-3">

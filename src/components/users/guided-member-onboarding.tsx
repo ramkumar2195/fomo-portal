@@ -23,6 +23,7 @@ import { hasCapability } from "@/lib/access-policy";
 import { ApiError } from "@/lib/api/http-client";
 import { BillingSettings, CatalogProduct, CatalogVariant, subscriptionService } from "@/lib/api/services/subscription-service";
 import { formatInquiryCode, formatMemberCode } from "@/lib/inquiry-code";
+import { trainingService } from "@/lib/api/services/training-service";
 import { RegisterUserRequest, usersService } from "@/lib/api/services/users-service";
 import { resolveStaffId } from "@/lib/staff-id";
 import { EmploymentType } from "@/types/auth";
@@ -234,6 +235,14 @@ function featurePillLabel(feature: string): string {
     .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
+function normalizeDisplayVariantName(value: string): string {
+  return value
+    .replace(/\b(1|3|6|12)M\b/gi, "")
+    .replace(/\s{2,}/g, " ")
+    .replace(/\s+[-/]\s*$/g, "")
+    .trim();
+}
+
 function splitFeatures(features: string): string[] {
   return features
     .split(",")
@@ -243,6 +252,22 @@ function splitFeatures(features: string): string[] {
 
 function isFlagshipVariant(variant: CatalogVariant | undefined): boolean {
   return Boolean(variant && FLAGSHIP_PRODUCT_CODES.has(variant.productCode));
+}
+
+function isTransformationVariant(variant: CatalogVariant | undefined): boolean {
+  return Boolean(variant && variant.categoryCode?.toUpperCase() === "TRANSFORMATION");
+}
+
+function needsTrainerAssignment(variant: CatalogVariant | undefined): boolean {
+  return isFlagshipVariant(variant) || isTransformationVariant(variant);
+}
+
+function isFlexVariant(variant: CatalogVariant | undefined): boolean {
+  return Boolean(variant && (variant.categoryCode?.toUpperCase() === "FLEX" || variant.productCode?.toUpperCase().includes("FLEX")));
+}
+
+function isGroupClassVariant(variant: CatalogVariant | undefined): boolean {
+  return Boolean(variant && variant.categoryCode?.toUpperCase() === "GROUP_CLASS");
 }
 
 function initialComplementaryState(): ComplementaryState {
@@ -324,6 +349,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   const [branchCoaches, setBranchCoaches] = useState<UserDirectoryItem[]>([]);
   const [branchMembers, setBranchMembers] = useState<UserDirectoryItem[]>([]);
   const [assignedTrainer, setAssignedTrainer] = useState<UserDirectoryItem | null>(null);
+  const [manualTrainerId, setManualTrainerId] = useState<string>("");
   const [billingSettings, setBillingSettings] = useState<BillingSettings>(defaultBillingSettings);
   const [currentStep, setCurrentStep] = useState<OnboardingStep>(1);
   const [pricingInputMode, setPricingInputMode] = useState<PricingInputMode>(null);
@@ -786,36 +812,46 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   }, [memberForm.defaultBranchId, token]);
 
   useEffect(() => {
-    if (!isFlagshipVariant(selectedPrimaryVariant)) {
-      setAssignedTrainer(null);
-      return;
-    }
-
-    if (branchCoaches.length === 0) {
-      setAssignedTrainer(null);
-      return;
-    }
-
-    const assignmentCount = new Map<string, number>();
-    branchMembers.forEach((member) => {
-      if (!member.defaultTrainerStaffId) {
+    // Flagship: auto-assign via load-balancing
+    if (isFlagshipVariant(selectedPrimaryVariant)) {
+      if (branchCoaches.length === 0) {
+        setAssignedTrainer(null);
         return;
       }
-      assignmentCount.set(member.defaultTrainerStaffId, (assignmentCount.get(member.defaultTrainerStaffId) || 0) + 1);
-    });
 
-    const nextTrainer = branchCoaches
-      .slice()
-      .sort((left, right) => {
-        const leftCount = assignmentCount.get(left.id) || 0;
-        const rightCount = assignmentCount.get(right.id) || 0;
-        if (leftCount !== rightCount) {
-          return leftCount - rightCount;
+      const assignmentCount = new Map<string, number>();
+      branchMembers.forEach((member) => {
+        if (!member.defaultTrainerStaffId) {
+          return;
         }
-        return left.name.localeCompare(right.name);
-      })[0];
+        assignmentCount.set(member.defaultTrainerStaffId, (assignmentCount.get(member.defaultTrainerStaffId) || 0) + 1);
+      });
 
-    setAssignedTrainer(nextTrainer || null);
+      const nextTrainer = branchCoaches
+        .slice()
+        .sort((left, right) => {
+          const leftCount = assignmentCount.get(left.id) || 0;
+          const rightCount = assignmentCount.get(right.id) || 0;
+          if (leftCount !== rightCount) {
+            return leftCount - rightCount;
+          }
+          return left.name.localeCompare(right.name);
+        })[0];
+
+      setAssignedTrainer(nextTrainer || null);
+      return;
+    }
+
+    // Transformation: clear auto-assign, trainer is selected manually via dropdown
+    if (isTransformationVariant(selectedPrimaryVariant)) {
+      setAssignedTrainer(null);
+      // Don't clear manualTrainerId — keep user's selection if they already chose one
+      return;
+    }
+
+    // All other categories: no trainer needed
+    setAssignedTrainer(null);
+    setManualTrainerId("");
   }, [branchCoaches, branchMembers, selectedPrimaryVariant]);
 
   const customEntitlements = useMemo(() => {
@@ -1006,7 +1042,11 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         emergencyContactName: toOptionalString(memberForm.emergencyContactName),
         emergencyContactPhone: toOptionalString(memberForm.emergencyContactPhone),
         emergencyContactRelation: toOptionalString(memberForm.emergencyContactRelation),
-        defaultTrainerStaffId: isFlagshipVariant(selectedPrimaryVariant) && assignedTrainer ? assignedTrainer.id : undefined,
+        defaultTrainerStaffId: isFlagshipVariant(selectedPrimaryVariant) && assignedTrainer
+          ? assignedTrainer.id
+          : isTransformationVariant(selectedPrimaryVariant) && manualTrainerId
+            ? manualTrainerId
+            : undefined,
       };
 
       if (!memberRecord) {
@@ -1062,6 +1102,26 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
       await subscriptionService.convertInquiry(token, String(sourceInquiryId), { memberId });
 
+      // Auto-enroll in matching program for GROUP_CLASS subscriptions
+      let enrolledProgramName: string | null = null;
+      if (isGroupClassVariant(selectedPrimaryVariant)) {
+        try {
+          const programsPage = await trainingService.listPrograms(token, 0, 100);
+          const programs = programsPage.content || [];
+          const productName = (selectedPrimaryProduct?.productName || selectedPrimaryVariant.productCode || "").replace(/_/g, " ").toLowerCase().replace(/fomo\s*/i, "").trim();
+          const matchingProgram = programs.find((p) => {
+            const pName = (p.name || "").toLowerCase().replace(/fomo\s*/i, "").trim();
+            return pName.includes(productName) || productName.includes(pName);
+          });
+          if (matchingProgram) {
+            await trainingService.enrollProgramMember(token, String(matchingProgram.id), String(memberId));
+            enrolledProgramName = matchingProgram.name;
+          }
+        } catch {
+          // Non-critical — admin can enroll manually later
+        }
+      }
+
       setCompletedOnboarding({
         memberId,
         memberSubscriptionId,
@@ -1076,16 +1136,17 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         balanceAmount: paymentReceipt?.balanceAmount ?? subscriptionResponse.balanceAmount ?? invoiceTotal,
       });
 
+      const enrollmentNote = enrolledProgramName ? ` Enrolled in ${enrolledProgramName} program.` : "";
       setToast({
         kind: "success",
         message:
           pricingPreview.receivedAmount > 0
             ? resumedExistingMember
-              ? "Recovered the existing member record, invoiced it, and recorded payment."
-              : "Member created, invoiced, and payment recorded."
+              ? `Recovered the existing member record, invoiced it, and recorded payment.${enrollmentNote}`
+              : `Member created, invoiced, and payment recorded.${enrollmentNote}`
             : resumedExistingMember
-              ? "Recovered the existing member record and generated the invoice. No payment received yet, so access remains pending."
-              : "Member created and invoiced. No payment received yet, so access remains pending.",
+              ? `Recovered the existing member record and generated the invoice. No payment received yet, so access remains pending.${enrollmentNote}`
+              : `Member created and invoiced. No payment received yet, so access remains pending.${enrollmentNote}`,
       });
     } catch (submitError) {
       if (submitError instanceof ApiError && submitError.message.toLowerCase().includes("mobile number already exists")) {
@@ -1123,13 +1184,18 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     ? formatMemberCode(inquiry.inquiryId, { branchCode: inquiry.branchCode, createdAt: inquiry.createdAt || inquiry.inquiryAt })
     : "Generated after conversion";
   const selectedFamilyLabel = productFamilyLabel(selectedPrimaryVariant?.categoryCode || selectedPrimaryProduct?.categoryCode);
+  const selectedManualTrainer = branchCoaches.find((c) => c.id === manualTrainerId) || null;
   const trainerAssistLabel = !selectedPrimaryVariant
     ? "Pick a plan to evaluate trainer assignment."
-    : !isFlagshipVariant(selectedPrimaryVariant)
-      ? "Trainer assignment is not required for this plan family."
-      : assignedTrainer
+    : isFlagshipVariant(selectedPrimaryVariant)
+      ? assignedTrainer
         ? `Auto-assigned to ${assignedTrainer.name}`
-        : "No active internal coach available for this branch.";
+        : "No active internal coach available for this branch."
+      : isTransformationVariant(selectedPrimaryVariant)
+        ? selectedManualTrainer
+          ? `Trainer: ${selectedManualTrainer.name}`
+          : "Select a trainer for this transformation program."
+        : "Trainer assignment is not required for this plan family.";
 
   return (
     <div className="space-y-5">
@@ -1501,7 +1567,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                 </p>
                                 <p className="mt-1 text-xs text-slate-400">
                                   {selectedPrimaryVariant
-                                    ? `${selectedPrimaryVariant.variantName} · ${selectedPrimaryVariant.validityDays} days validity`
+                                    ? `${normalizeDisplayVariantName(selectedPrimaryVariant.variantName)} · ${selectedPrimaryVariant.validityDays} days validity`
                                     : "Pick a variant below to load pricing and benefits."}
                                 </p>
                               </div>
@@ -1539,11 +1605,11 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                       <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
                                         {productFamilyLabel(variant.categoryCode)}
                                       </p>
-                                      <h5 className="mt-2 text-lg font-semibold text-white">{variant.variantName}</h5>
+                                      <h5 className="mt-2 text-lg font-semibold text-white">{normalizeDisplayVariantName(variant.variantName)}</h5>
                                       <p className="mt-1 text-sm text-slate-400">{variantProduct?.productName || variant.productCode}</p>
                                     </div>
                                     <span className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] ${statusBadgeClass(active)}`}>
-                                      {active ? "Selected" : `${variant.durationMonths}M`}
+                                      {active ? "Selected" : `${variant.durationMonths} months`}
                                     </span>
                                   </div>
                                   <div className="mt-5 flex items-end justify-between gap-3">
@@ -1652,7 +1718,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                 <div className="rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3">
                                   <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Add-on Summary</p>
                                   <p className="mt-2 text-sm font-semibold text-white">
-                                    {selectedAddOnVariants[0]?.variantName || "No add-on selected"}
+                                    {selectedAddOnVariants[0] ? normalizeDisplayVariantName(selectedAddOnVariants[0].variantName) : "No add-on selected"}
                                   </p>
                                   <p className="mt-1 text-xs text-slate-400">
                                     {selectedAddOnVariants[0]
@@ -1683,7 +1749,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                       }}
                                       className={`rounded-2xl border p-4 text-left transition ${active ? "border-[#c42924]/50 bg-[#1b1114]" : "border-white/10 bg-[#111821] hover:border-white/20"}`}
                                     >
-                                      <p className="text-sm font-semibold text-white">{variant.variantName}</p>
+                                      <p className="text-sm font-semibold text-white">{normalizeDisplayVariantName(variant.variantName)}</p>
                                       <p className="mt-1 text-xs text-slate-400">{formatCurrency(variant.basePrice)} · {variant.includedPtSessions} PT sessions</p>
                                     </button>
                                   );
@@ -1797,14 +1863,48 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                               <ShieldCheck className="h-5 w-5 text-[#ffb4b1]" />
                               <div>
                                 <h4 className="text-sm font-semibold text-white">Trainer Assignment</h4>
-                                <p className="text-xs text-slate-400">Auto-assignment is now limited to flagship subscriptions only.</p>
+                                <p className="text-xs text-slate-400">Auto-assigned for Flagship. Manual selection for Transformation.</p>
                               </div>
                             </div>
                             {!selectedPrimaryVariant ? (
                               <p className="rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-4 text-sm text-slate-300">
                                 Choose a primary plan to evaluate trainer assignment.
                               </p>
-                            ) : !isFlagshipVariant(selectedPrimaryVariant) ? (
+                            ) : isTransformationVariant(selectedPrimaryVariant) ? (
+                              <div className="space-y-3">
+                                <div className="rounded-2xl border border-violet-400/20 bg-violet-400/10 p-4">
+                                  <p className="text-sm font-semibold text-violet-100">Select Trainer for Transformation</p>
+                                  <p className="mt-2 text-sm text-violet-50/80">
+                                    Transformation programs require a dedicated trainer. Please select the coach who will conduct this program.
+                                  </p>
+                                </div>
+                                {branchCoaches.length > 0 ? (
+                                  <select
+                                    value={manualTrainerId}
+                                    onChange={(e) => setManualTrainerId(e.target.value)}
+                                    className="w-full rounded-xl border border-white/10 bg-[#111821] px-3 py-2.5 text-sm text-white focus:border-[#c42924] focus:outline-none focus:ring-1 focus:ring-[#c42924]"
+                                  >
+                                    <option value="">Choose a trainer...</option>
+                                    {branchCoaches.map((coach) => (
+                                      <option key={coach.id} value={coach.id}>
+                                        {coach.name} — {coach.designation || "COACH"} · {coach.mobile}
+                                      </option>
+                                    ))}
+                                  </select>
+                                ) : (
+                                  <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4">
+                                    <p className="text-sm font-semibold text-amber-100">No coaches available</p>
+                                    <p className="mt-2 text-sm text-amber-50/80">No active internal coach is currently available in this branch.</p>
+                                  </div>
+                                )}
+                                {selectedManualTrainer ? (
+                                  <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
+                                    <p className="text-sm font-semibold text-emerald-100">{selectedManualTrainer.name}</p>
+                                    <p className="mt-1 text-sm text-emerald-50/80">{selectedManualTrainer.designation || "COACH"} · {selectedManualTrainer.mobile}</p>
+                                  </div>
+                                ) : null}
+                              </div>
+                            ) : !needsTrainerAssignment(selectedPrimaryVariant) ? (
                               <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/10 p-4">
                                 <p className="text-sm font-semibold text-cyan-100">Trainer not required</p>
                                 <p className="mt-2 text-sm text-cyan-50/80">
@@ -1999,7 +2099,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
                     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
                       {[
-                        { label: "Selected Plan", value: selectedPrimaryVariant?.variantName || "Not chosen" },
+                        { label: "Selected Plan", value: selectedPrimaryVariant ? normalizeDisplayVariantName(selectedPrimaryVariant.variantName) : "Not chosen" },
                         { label: "Plan Family", value: selectedFamilyLabel },
                         { label: "Default Trainer", value: selectedPrimaryVariant ? (isFlagshipVariant(selectedPrimaryVariant) ? assignedTrainer?.name || "Pending coach" : "Not required") : "Pending plan" },
                         { label: "Payment Status", value: formatPaymentCollectionStatus(pricingPreview.receivedAmount, pricingPreview.balanceAmount) },

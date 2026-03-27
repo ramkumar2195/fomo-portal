@@ -232,13 +232,13 @@ export default function BillingPage() {
               {
                 key: "memberName",
                 header: "Member",
-                render: (r) => str(r, "memberName", "member", "customerName"),
+                render: (r) => str(r, "memberName", "member", "customerName", "memberId"),
               },
               {
                 key: "amount",
                 header: "Amount",
                 render: (r) =>
-                  formatCurrency(num(r, "amount", "totalAmount", "invoiceAmount")),
+                  formatCurrency(num(r, "total", "amount", "totalAmount", "invoiceAmount", "invoiceTotal")),
               },
               {
                 key: "status",
@@ -256,12 +256,12 @@ export default function BillingPage() {
               {
                 key: "dueDate",
                 header: "Due Date",
-                render: (r) => formatDateTime(str(r, "dueDate", "due")),
+                render: (r) => formatDateTime(str(r, "dueAt", "dueDate", "due")),
               },
               {
                 key: "createdAt",
                 header: "Created",
-                render: (r) => formatDateTime(str(r, "createdAt", "invoiceDate")),
+                render: (r) => formatDateTime(str(r, "issuedAt", "createdAt", "invoiceDate")),
               },
             ]}
             data={state.invoices}
@@ -281,13 +281,13 @@ export default function BillingPage() {
               {
                 key: "memberName",
                 header: "Member",
-                render: (r) => str(r, "memberName", "member"),
+                render: (r) => str(r, "memberName", "member", "memberId"),
               },
               {
                 key: "amount",
                 header: "Amount",
                 render: (r) =>
-                  formatCurrency(num(r, "amount", "paidAmount", "receiptAmount")),
+                  formatCurrency(num(r, "paidAmount", "amount", "receiptAmount", "total")),
               },
               {
                 key: "paymentMode",
@@ -312,19 +312,19 @@ export default function BillingPage() {
               {
                 key: "memberName",
                 header: "Member",
-                render: (r) => str(r, "memberName", "member"),
+                render: (r) => str(r, "memberName", "member", "memberId"),
               },
               {
                 key: "totalDue",
                 header: "Balance Due",
                 render: (r) =>
-                  formatCurrency(num(r, "totalDue", "balanceDue", "outstanding")),
+                  formatCurrency(num(r, "outstandingAmount", "totalDue", "balanceDue", "outstanding")),
               },
               {
                 key: "lastPaymentDate",
                 header: "Last Payment",
                 render: (r) =>
-                  formatDateTime(str(r, "lastPaymentDate", "lastPaidAt")),
+                  formatDateTime(str(r, "lastPaymentDate", "lastPaidAt", "paidAt")),
               },
               {
                 key: "overdueDays",
@@ -344,12 +344,12 @@ export default function BillingPage() {
               {
                 key: "memberName",
                 header: "Member",
-                render: (r) => str(r, "memberName", "member"),
+                render: (r) => str(r, "memberName", "member", "memberId"),
               },
               {
                 key: "planName",
                 header: "Plan",
-                render: (r) => str(r, "planName", "productName", "plan"),
+                render: (r) => str(r, "planName", "variantName", "productName", "plan"),
               },
               {
                 key: "status",
@@ -379,7 +379,7 @@ export default function BillingPage() {
                 key: "amount",
                 header: "Amount",
                 render: (r) =>
-                  formatCurrency(num(r, "amount", "totalAmount", "price")),
+                  formatCurrency(num(r, "total", "invoiceTotal", "amount", "totalAmount", "price")),
               },
             ]}
             data={state.subscriptions}
@@ -394,7 +394,7 @@ export default function BillingPage() {
               {
                 key: "memberName",
                 header: "Member",
-                render: (r) => str(r, "memberName", "member"),
+                render: (r) => str(r, "memberName", "member", "memberId"),
               },
               {
                 key: "discountAmount",

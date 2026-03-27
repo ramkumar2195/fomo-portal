@@ -1,6 +1,7 @@
 "use client";
 
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { PageLoader } from "@/components/common/page-loader";
 import { SectionCard } from "@/components/common/section-card";
@@ -115,6 +116,8 @@ interface UserManagementPageProps {
   leaveTitle: string;
   leaveSubtitle: string;
   showClientAttendance?: boolean;
+  /** Base route for profile navigation, e.g. "/portal/trainers". User ID is appended. */
+  profileRoute?: string;
 }
 
 type JsonRecord = Record<string, unknown>;
@@ -176,7 +179,9 @@ export function UserManagementPage({
   leaveTitle,
   leaveSubtitle,
   showClientAttendance = false,
+  profileRoute,
 }: UserManagementPageProps) {
+  const router = useRouter();
   const { token, user, accessMetadata } = useAuth();
 
   const canView = hasCapability(user, accessMetadata, requiredViewCapabilities, true);
@@ -621,7 +626,11 @@ export function UserManagementPage({
                 </tr>
               ) : (
                 users.map((item) => (
-                  <tr key={item.id} className="hover:bg-gray-50/50">
+                  <tr
+                    key={item.id}
+                    className={`hover:bg-gray-50/50${profileRoute ? " cursor-pointer" : ""}`}
+                    onClick={profileRoute ? () => router.push(`${profileRoute}/${item.id}`) : undefined}
+                  >
                     <td className="px-4 py-3">
                       <p className="font-semibold text-gray-900">{item.name}</p>
                       <p className="text-xs text-gray-500">{item.email || "-"}</p>
