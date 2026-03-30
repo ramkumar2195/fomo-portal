@@ -6,7 +6,6 @@ import { subscriptionFollowUpService } from "@/lib/api/services/subscription-fol
 import { CatalogVariant, subscriptionService } from "@/lib/api/services/subscription-service";
 import { usersService } from "@/lib/api/services/users-service";
 import { resolveStaffId } from "@/lib/staff-id";
-import type { FollowUpChannel } from "@/types/follow-up";
 import type { InquiryResponseType } from "@/types/inquiry";
 import type { AuthUser } from "@/types/auth";
 import {
@@ -18,6 +17,12 @@ import {
   REFERRED_BY_TYPE_OPTIONS,
   RESPONSE_TYPE_OPTIONS,
   deriveInquiryStatusFromResponseType,
+  followUpResponseOpensOnboarding,
+  followUpResponseRequiresAssignment,
+  followUpResponseRequiresCloseReason,
+  followUpResponseRequiresComment,
+  followUpResponseRequiresSchedule,
+  followUpResponseRequiresTrialDetails,
 } from "./inquiry-form-constants";
 import type {
   FollowUpPlanValues,
@@ -270,13 +275,27 @@ export function CreateInquiryModal({
         const next = { ...prev, [key]: value };
         if (key === "responseType") {
           const responseType = value as InquiryResponseType;
-          if (responseType !== "REQUESTED_TRIAL") {
+          if (!followUpResponseRequiresTrialDetails(responseType)) {
             next.trialGiven = false;
             next.trialDays = "";
             next.trialExpiryAt = "";
           }
-          if (responseType !== "ASKED_CALLBACK" && responseType !== "NEEDS_DETAILS") {
+          if (!followUpResponseRequiresSchedule(responseType)) {
             next.followUpAt = "";
+          }
+          if (!followUpResponseRequiresComment(responseType)) {
+            next.followUpComment = "";
+          }
+          if (!followUpResponseRequiresCloseReason(responseType)) {
+            next.closeReason = "";
+          }
+          if (!followUpResponseRequiresAssignment(responseType)) {
+            next.assignedToStaffId = "";
+          } else if (!next.assignedToStaffId && initialStaffId) {
+            next.assignedToStaffId = String(initialStaffId);
+          }
+          if (followUpResponseRequiresSchedule(responseType) && !next.contactType) {
+            next.contactType = "CALL";
           }
         }
         if (key === "trialGiven" && value === false) {
@@ -286,14 +305,15 @@ export function CreateInquiryModal({
         return next;
       });
     },
-    [],
+    [initialStaffId],
   );
 
   const isNextFollowUpRequired =
-    followUpPlan.responseType === "ASKED_CALLBACK"
-    || followUpPlan.responseType === "NEEDS_DETAILS"
-    || followUpPlan.responseType === "REQUESTED_TRIAL";
-  const isTrialGivenRequired = followUpPlan.responseType === "REQUESTED_TRIAL";
+    followUpResponseRequiresSchedule(followUpPlan.responseType);
+  const isTrialGivenRequired = followUpResponseRequiresTrialDetails(followUpPlan.responseType);
+  const isFollowUpCommentRequired = followUpResponseRequiresComment(followUpPlan.responseType);
+  const isCloseReasonRequired = followUpResponseRequiresCloseReason(followUpPlan.responseType);
+  const isAssignmentRequired = followUpResponseRequiresAssignment(followUpPlan.responseType);
 
   // -- referred-by options ---------------------------------------------------
   useEffect(() => {
@@ -345,9 +365,10 @@ export function CreateInquiryModal({
   const validateStep = useCallback(
     (s: number): string[] => {
       const missing: string[] = [];
+      const customerName = buildFullName(newInquiry);
 
       if (s === 1) {
-        if (!newInquiry.firstName.trim()) missing.push("Customer Name");
+        if (!customerName.trim()) missing.push("Customer Name");
         if (newInquiry.mobileNumber.trim().length !== 10) missing.push("Mobile Number (10 digits)");
         if (!newInquiry.gender) missing.push("Gender");
       }
@@ -364,13 +385,14 @@ export function CreateInquiryModal({
         if (isTrialGivenRequired && !followUpPlan.trialGiven) missing.push("Trial Given");
         if (isTrialGivenRequired && followUpPlan.trialGiven && !followUpPlan.trialDays.trim()) missing.push("Trial Days");
         if (isTrialGivenRequired && followUpPlan.trialGiven && !toIsoDatetime(followUpPlan.trialExpiryAt)) missing.push("Trial Expiry");
-        if (!followUpPlan.followUpComment.trim()) missing.push("Follow-up Comment");
-        if (followUpPlan.responseType === "NOT_INTERESTED" && !newInquiry.closeReason.trim()) missing.push("Close Reason");
+        if (isFollowUpCommentRequired && !followUpPlan.followUpComment.trim()) missing.push("Follow-up Comment");
+        if (isCloseReasonRequired && !followUpPlan.closeReason.trim()) missing.push("Close Reason");
+        if (isAssignmentRequired && !followUpPlan.assignedToStaffId.trim()) missing.push("Assigned Staff");
       }
 
       return missing;
     },
-    [followUpPlan, isNextFollowUpRequired, isTrialGivenRequired, newInquiry],
+    [followUpPlan, isCloseReasonRequired, isFollowUpCommentRequired, isNextFollowUpRequired, isTrialGivenRequired, newInquiry],
   );
 
   const goNext = useCallback(() => {
@@ -387,6 +409,17 @@ export function CreateInquiryModal({
     setStepErrors([]);
     setStep((s) => Math.max(1, s - 1));
   }, []);
+
+  useEffect(() => {
+    if (!open || !isAssignmentRequired || followUpPlan.assignedToStaffId || !initialStaffId) {
+      return;
+    }
+
+    setFollowUpPlan((current) => ({
+      ...current,
+      assignedToStaffId: String(initialStaffId),
+    }));
+  }, [followUpPlan.assignedToStaffId, initialStaffId, isAssignmentRequired, open]);
 
   const navigateToStep = useCallback(
     (target: number) => {
@@ -432,11 +465,11 @@ export function CreateInquiryModal({
       try {
         const fullName = buildFullName(newInquiry);
         const dueAt = toIsoDatetime(followUpPlan.followUpAt);
-        const assignedToStaffId = parseNumeric(followUpPlan.assignedToStaffId);
-        const createdByStaffId = resolveStaffId(user) ?? assignedToStaffId;
+        const assignedToStaffId = isAssignmentRequired ? parseNumeric(followUpPlan.assignedToStaffId) : undefined;
+        const createdByStaffId = resolveStaffId(user) ?? parseNumeric(newInquiry.clientRepStaffId);
 
         if (
-          (toIsoDatetime(followUpPlan.followUpAt) && assignedToStaffId === undefined) ||
+          (isAssignmentRequired && assignedToStaffId === undefined) ||
           createdByStaffId === undefined ||
           Number.isNaN(Number(createdByStaffId))
         ) {
@@ -451,11 +484,12 @@ export function CreateInquiryModal({
           status: deriveInquiryStatusFromResponseType(followUpPlan.responseType),
           branchCode: newInquiry.branchCode || effectiveBranchCode,
           responseType: followUpPlan.responseType,
-          preferredContactChannel: followUpPlan.contactType,
+          preferredContactChannel: followUpResponseRequiresSchedule(followUpPlan.responseType) ? followUpPlan.contactType : "CALL",
           trialGiven: followUpPlan.trialGiven,
           trialDays: followUpPlan.trialDays,
           trialExpiryAt: followUpPlan.trialExpiryAt,
-          followUpComment: followUpPlan.followUpComment,
+          followUpComment: isFollowUpCommentRequired ? followUpPlan.followUpComment : "",
+          closeReason: isCloseReasonRequired ? followUpPlan.closeReason : "",
         };
 
         const created = await subscriptionService.createInquiry(token, {
@@ -468,7 +502,7 @@ export function CreateInquiryModal({
           throw new Error("Enquiry created but enquiryId was missing in response.");
         }
 
-        if (dueAt && assignedToStaffId !== undefined) {
+        if (isNextFollowUpRequired && dueAt && assignedToStaffId !== undefined) {
           await subscriptionFollowUpService.createFollowUp(token, inquiryId, {
             dueAt: dueAt,
             channel: followUpPlan.contactType,
@@ -481,7 +515,7 @@ export function CreateInquiryModal({
 
         await Promise.resolve(onCreated());
 
-        if (followUpPlan.responseType === "READY_TO_PAY") {
+        if (followUpResponseOpensOnboarding(followUpPlan.responseType)) {
           const params = new URLSearchParams();
           params.set("sourceInquiryId", String(inquiryId));
           if (fullName.trim()) {
@@ -502,7 +536,21 @@ export function CreateInquiryModal({
         setIsSubmitting(false);
       }
     },
-    [newInquiry, followUpPlan, token, user, effectiveBranchCode, effectiveBranchId, validateStep, onCreated, router],
+    [
+      effectiveBranchCode,
+      effectiveBranchId,
+      isAssignmentRequired,
+      isCloseReasonRequired,
+      isFollowUpCommentRequired,
+      isNextFollowUpRequired,
+      newInquiry,
+      followUpPlan,
+      onCreated,
+      router,
+      token,
+      user,
+      validateStep,
+    ],
   );
 
   // -- convertibility pill styles -------------------------------------------
@@ -520,15 +568,6 @@ export function CreateInquiryModal({
       GENDER_OPTIONS.map((g) => ({
         label: g.label,
         value: g.value,
-      })),
-    [],
-  );
-
-  const contactChannelPills: PillOption[] = useMemo(
-    () =>
-      PREFERRED_CONTACT_CHANNEL_OPTIONS.map((c) => ({
-        label: c.label,
-        value: c.value,
       })),
     [],
   );
@@ -947,18 +986,10 @@ export function CreateInquiryModal({
                         ))}
                       </select>
                     </div>
-                    {/* Preferred Contact Channel (NEW — pills) */}
-                    <div className="xl:col-span-2">
-                      <FieldLabel>Preferred Contact</FieldLabel>
-                      <PillSelector
-                        options={contactChannelPills}
-                        value={followUpPlan.contactType}
-                        onChange={(v) => setFollowUpField("contactType", v as FollowUpChannel)}
-                      />
-                    </div>
                     {/* Assign To */}
+                    {isAssignmentRequired ? (
                     <div>
-                      <FieldLabel>Assign To</FieldLabel>
+                      <FieldLabel>Assigned Staff</FieldLabel>
                       <select
                         className={SELECT_CLASS}
                         value={followUpPlan.assignedToStaffId}
@@ -972,16 +1003,36 @@ export function CreateInquiryModal({
                         ))}
                       </select>
                     </div>
+                    ) : null}
+                    {isNextFollowUpRequired ? (
+                    <div>
+                      <FieldLabel>Preferred Contact</FieldLabel>
+                      <select
+                        className={SELECT_CLASS}
+                        value={followUpPlan.contactType}
+                        onChange={(e) => setFollowUpField("contactType", e.target.value as FollowUpPlanValues["contactType"])}
+                      >
+                        {PREFERRED_CONTACT_CHANNEL_OPTIONS.map((option) => (
+                          <option key={`follow-contact-${option.value}`} value={option.value}>
+                            {option.label}
+                          </option>
+                        ))}
+                      </select>
+                    </div>
+                    ) : null}
+                    {!followUpResponseOpensOnboarding(followUpPlan.responseType) ? (
                     <div>
                       <FieldLabel>Resulting Enquiry Status</FieldLabel>
                       <div className="rounded-lg border border-emerald-700/50 bg-emerald-900/30 px-3 py-2 text-sm font-semibold text-emerald-400">
                         {deriveInquiryStatusFromResponseType(followUpPlan.responseType).replace(/_/g, " ")}
                       </div>
                     </div>
+                    ) : null}
                   </div>
                 </section>
 
                 {/* Follow-up date with quick picks */}
+                {isNextFollowUpRequired ? (
                 <section className="rounded-xl border border-white/10 bg-[#111821] p-4">
                   <h3 className="text-sm font-semibold text-white">Schedule</h3>
                   <div className="mt-3 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
@@ -1019,8 +1070,11 @@ export function CreateInquiryModal({
                       </div>
                     </div>
                   </div>
+                </section>
+                ) : null}
 
-                  {/* Trial section */}
+                {/* Trial section */}
+                {isTrialGivenRequired ? (
                   <div className="mt-4 rounded-lg border border-white/10 bg-[#111821] p-3">
                     <label className="flex items-center gap-2 text-xs font-semibold text-slate-300">
                       <input
@@ -1058,34 +1112,38 @@ export function CreateInquiryModal({
                       </div>
                     )}
                   </div>
-                </section>
+                ) : null}
 
                 {/* Comments */}
-                <section className="rounded-xl border border-white/10 bg-[#111821] p-4">
-                  <div>
-                    <FieldLabel required>Follow-up Comment</FieldLabel>
-                    <input
-                      className={INPUT_CLASS}
-                      value={followUpPlan.followUpComment}
-                      required
-                      placeholder="Brief summary of the follow-up plan..."
-                      onChange={(e) => setFollowUpField("followUpComment", e.target.value)}
-                    />
-                  </div>
-                  {followUpPlan.responseType === "NOT_INTERESTED" ? (
-                    <div className="mt-3">
-                      <FieldLabel required>Close Reason</FieldLabel>
-                      <textarea
+                {isFollowUpCommentRequired || isCloseReasonRequired ? (
+                  <section className="rounded-xl border border-white/10 bg-[#111821] p-4">
+                    {isFollowUpCommentRequired ? (
+                    <div>
+                      <FieldLabel required>Follow-up Comment</FieldLabel>
+                      <input
                         className={INPUT_CLASS}
-                        rows={2}
-                        value={newInquiry.closeReason}
-                        onChange={(e) => setIntakeField("closeReason", e.target.value)}
-                        placeholder="Required when the enquiry is marked as not interested"
+                        value={followUpPlan.followUpComment}
                         required
+                        placeholder="Brief summary of the follow-up plan..."
+                        onChange={(e) => setFollowUpField("followUpComment", e.target.value)}
                       />
                     </div>
-                  ) : null}
-                </section>
+                    ) : null}
+                    {isCloseReasonRequired ? (
+                      <div className={isFollowUpCommentRequired ? "mt-3" : ""}>
+                        <FieldLabel required>Close Reason</FieldLabel>
+                        <textarea
+                          className={INPUT_CLASS}
+                          rows={2}
+                          value={followUpPlan.closeReason}
+                          onChange={(e) => setFollowUpField("closeReason", e.target.value)}
+                          placeholder="Required when the enquiry is marked as not interested"
+                          required
+                        />
+                      </div>
+                    ) : null}
+                  </section>
+                ) : null}
               </div>
             )}
           </div>
@@ -1136,6 +1194,8 @@ export function CreateInquiryModal({
                   ? "Creating..."
                   : followUpPlan.responseType === "READY_TO_PAY"
                     ? "Create & Convert"
+                    : followUpPlan.responseType === "NOT_INTERESTED"
+                      ? "Create & Close"
                     : "Create Enquiry"}
               </button>
             )}

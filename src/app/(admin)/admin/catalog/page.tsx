@@ -341,6 +341,15 @@ export default function CatalogPage() {
       .filter((group) => group.products.length > 0);
   }, [categoryFilter, products, variants]);
 
+  const catalogStats = useMemo(
+    () => ({
+      categories: new Set(products.map((product) => product.categoryCode)).size,
+      products: products.length,
+      variants: variants.length,
+    }),
+    [products, variants],
+  );
+
   const resetForm = useCallback((nextProductCode?: string) => {
     setSelectedVariant(null);
     setForm({
@@ -467,7 +476,7 @@ export default function CatalogPage() {
 
   if (!user || !canManagePlans(user)) {
     return (
-      <AdminPageFrame title="Catalog & Plans" description="Manage sellable plan variants">
+      <AdminPageFrame title="Packages & Plans" description="Manage the live package catalog and sellable plan variants">
         <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
           Only super-admin can manage the membership catalog.
         </div>
@@ -480,8 +489,8 @@ export default function CatalogPage() {
       {toast ? <ToastBanner kind={toast.kind} message={toast.message} onClose={() => setToast(null)} /> : null}
 
       <AdminPageFrame
-        title="Catalog & Plans"
-        description="Manage product families and exact sellable variants. For client-choice bundles like Move, Core Rhythm, and Combat, save the final track as its own variant."
+        title="Packages & Plans"
+        description="View and manage the live package catalog, product families, and exact sellable variants."
         searchPlaceholder="Search by product, variant code, or features..."
         searchValue={search}
         onSearchChange={setSearch}
@@ -515,6 +524,24 @@ export default function CatalogPage() {
         }
       >
         {error ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div> : null}
+
+        <div className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Categories</p>
+            <p className="mt-2 text-2xl font-bold text-slate-900">{catalogStats.categories}</p>
+            <p className="mt-1 text-sm text-slate-500">Active package families available in the system.</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Products</p>
+            <p className="mt-2 text-2xl font-bold text-slate-900">{catalogStats.products}</p>
+            <p className="mt-1 text-sm text-slate-500">Sellable package lines across flagship, PT, flex, and classes.</p>
+          </div>
+          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Variants</p>
+            <p className="mt-2 text-2xl font-bold text-slate-900">{catalogStats.variants}</p>
+            <p className="mt-1 text-sm text-slate-500">Duration- and entitlement-specific plans ready for billing.</p>
+          </div>
+        </div>
 
         <SurfaceCard title="Product Families">
           <div className="space-y-4">
@@ -643,7 +670,7 @@ export default function CatalogPage() {
                                   <span className="rounded-full bg-slate-100 px-2.5 py-1">PT {variant.includedPtSessions}</span>
                                 ) : null}
                                 {variant.passBenefitDays > 0 ? (
-                                  <span className="rounded-full bg-slate-100 px-2.5 py-1">PAUUC pass {variant.passBenefitDays} days</span>
+                                  <span className="rounded-full bg-slate-100 px-2.5 py-1">PAUSE benefit {variant.passBenefitDays} days</span>
                                 ) : null}
                                 {variant.includedCredits > 0 ? (
                                   <span className="rounded-full bg-slate-100 px-2.5 py-1">Credits {variant.includedCredits}</span>
@@ -867,7 +894,7 @@ export default function CatalogPage() {
           ) : null}
 
           {formProfile.showPassBenefitDays ? (
-            <FormField label="PAUUC Pass Benefit Days">
+            <FormField label="PAUSE Benefit Days">
               <input
                 value={form.passBenefitDays}
                 onChange={(event) => setForm((current) => ({ ...current, passBenefitDays: event.target.value.replace(/[^0-9]/g, "") }))}

@@ -136,9 +136,9 @@ export function DonutLegendChart({
   });
 
   return (
-    <div className="rounded-2xl border border-white/8 bg-[#131925] p-4 shadow-[0_18px_45px_rgba(0,0,0,0.24)]">
+    <div className="h-full rounded-2xl border border-white/8 bg-[#131925] p-4 shadow-[0_18px_45px_rgba(0,0,0,0.24)]">
       <p className="text-sm font-semibold text-white">{title}</p>
-      <div className="mt-4 flex items-center gap-4">
+      <div className="mt-4 flex items-start gap-4">
         <svg viewBox="0 0 120 120" className="h-28 w-28">
           <circle cx="60" cy="60" r={radius} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="14" />
           {slices.map((slice, index) => {

@@ -1449,4 +1449,46 @@ export const usersService = {
     const payload = unwrapData<unknown>(response);
     return typeof payload === "object" && payload !== null ? (payload as Record<string, unknown>) : {};
   },
+
+  // ── Staff Permissions ─────────────────────────────────────────────
+
+  async getStaffPermissionMatrix(token: string): Promise<Record<string, unknown[]>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "users",
+      path: `${USERS_API_PREFIX}/settings/permissions`,
+      token,
+    });
+    const payload = unwrapData<unknown>(response);
+    return typeof payload === "object" && payload !== null ? (payload as Record<string, unknown[]>) : {};
+  },
+
+  async updateStaffPermission(
+    token: string,
+    body: { designation: string; actionCode: string; allowed: boolean; maxValue?: number },
+  ): Promise<Record<string, unknown[]>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "users",
+      path: `${USERS_API_PREFIX}/settings/permissions`,
+      token,
+      method: "PATCH",
+      body,
+    });
+    const payload = unwrapData<unknown>(response);
+    return typeof payload === "object" && payload !== null ? (payload as Record<string, unknown[]>) : {};
+  },
+
+  async deleteStaffPermissionOverride(
+    token: string,
+    designation: string,
+    actionCode: string,
+  ): Promise<Record<string, unknown[]>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "users",
+      path: `${USERS_API_PREFIX}/settings/permissions/${designation}/${actionCode}`,
+      token,
+      method: "DELETE",
+    });
+    const payload = unwrapData<unknown>(response);
+    return typeof payload === "object" && payload !== null ? (payload as Record<string, unknown[]>) : {};
+  },
 };

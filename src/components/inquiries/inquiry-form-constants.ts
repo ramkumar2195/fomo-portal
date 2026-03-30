@@ -74,6 +74,30 @@ export function deriveInquiryStatusFromResponseType(responseType?: InquiryRespon
   }
 }
 
+export function followUpResponseRequiresSchedule(responseType?: InquiryResponseType): boolean {
+  return responseType === "ASKED_CALLBACK" || responseType === "NEEDS_DETAILS" || responseType === "REQUESTED_TRIAL";
+}
+
+export function followUpResponseRequiresTrialDetails(responseType?: InquiryResponseType): boolean {
+  return responseType === "REQUESTED_TRIAL";
+}
+
+export function followUpResponseRequiresComment(responseType?: InquiryResponseType): boolean {
+  return responseType === "ASKED_CALLBACK" || responseType === "NEEDS_DETAILS" || responseType === "REQUESTED_TRIAL";
+}
+
+export function followUpResponseRequiresCloseReason(responseType?: InquiryResponseType): boolean {
+  return responseType === "NOT_INTERESTED";
+}
+
+export function followUpResponseRequiresAssignment(responseType?: InquiryResponseType): boolean {
+  return followUpResponseRequiresSchedule(responseType);
+}
+
+export function followUpResponseOpensOnboarding(responseType?: InquiryResponseType): boolean {
+  return responseType === "READY_TO_PAY";
+}
+
 export const OTHER_REFERRAL_OPTIONS: SelectOption[] = [
   { label: "Friend", value: "Friend" },
   { label: "Family", value: "Family" },

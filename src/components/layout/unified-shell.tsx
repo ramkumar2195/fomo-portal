@@ -129,7 +129,7 @@ const NAV_SECTIONS: NavSection[] = [
     label: "Catalog",
     icon: <Package2 className="h-4 w-4" />,
     children: [
-      { href: "/admin/catalog", label: "Products & Plans", icon: <Package2 className="h-4 w-4" /> },
+      { href: "/admin/catalog", label: "Packages & Plans", icon: <Package2 className="h-4 w-4" /> },
       { href: "/admin/credits", label: "Credits & Wallet", icon: <Wallet className="h-4 w-4" /> },
     ],
   },
@@ -165,14 +165,46 @@ const NAV_SECTIONS: NavSection[] = [
     label: "Settings",
     icon: <SettingsIcon className="h-4 w-4" />,
     children: [
-      { href: "/portal/settings", label: "General Settings", icon: <SettingsIcon className="h-4 w-4" /> },
+      { href: "/portal/settings", label: "My Profile", icon: <SettingsIcon className="h-4 w-4" /> },
       {
         href: "/admin/settings?tab=billing",
         accessHref: "/admin/settings",
-        label: "Billing Settings",
-        icon: <SettingsIcon className="h-4 w-4" />,
+        label: "Billing",
+        icon: <CreditCard className="h-4 w-4" />,
         queryKey: "tab",
         queryValues: ["billing"],
+      },
+      {
+        href: "/admin/settings?tab=membership-policy",
+        accessHref: "/admin/settings",
+        label: "Membership Policy",
+        icon: <BookOpen className="h-4 w-4" />,
+        queryKey: "tab",
+        queryValues: ["membership-policy"],
+      },
+      {
+        href: "/admin/settings?tab=staff-permissions",
+        accessHref: "/admin/settings",
+        label: "Staff Permissions",
+        icon: <StaffIcon className="h-4 w-4" />,
+        queryKey: "tab",
+        queryValues: ["staff-permissions"],
+      },
+      {
+        href: "/admin/settings?tab=communication",
+        accessHref: "/admin/settings",
+        label: "Communication",
+        icon: <Bell className="h-4 w-4" />,
+        queryKey: "tab",
+        queryValues: ["communication"],
+      },
+      {
+        href: "/admin/settings?tab=rules",
+        accessHref: "/admin/settings",
+        label: "Automation Rules",
+        icon: <SettingsIcon className="h-4 w-4" />,
+        queryKey: "tab",
+        queryValues: ["rules", "at-risk", "leaderboard"],
       },
     ],
   },
@@ -267,6 +299,8 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
   const isAdmin = user?.role === "ADMIN";
   const brandTitle = isAdmin ? "FOMO HQ" : "FOMO Training";
   const brandSubtitle = isAdmin ? "Multi-Branch Control Center" : "Staff Operations";
+  const calendarHref = user?.role === "ADMIN" ? "/admin/classes" : "/portal/class-schedule";
+  const notificationHref = user?.role === "ADMIN" ? "/admin/notifications" : "/portal/notifications";
 
   const offsetClass = collapsed ? "md:pl-24" : "md:pl-72";
   const headerOffsetClass = collapsed ? "md:left-24" : "md:left-72";
@@ -481,7 +515,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                   <span className="shrink-0">{section.icon}</span>
                   {!collapsed ? (
                     <>
-                      <span className="truncate text-xs font-bold uppercase tracking-[0.18em]">{section.label}</span>
+                      <span className="truncate text-sm font-semibold tracking-[0.02em] text-slate-200">{section.label}</span>
                       <ChevronDown
                         className={`ml-auto h-4 w-4 transition-transform ${sectionOpen ? "rotate-180" : ""}`}
                       />
@@ -548,7 +582,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
       <div className={`${offsetClass} transition-all duration-200`}>
         {/* Header */}
         <header
-          className={`fixed top-0 right-0 z-30 h-16 border-b border-white/8 bg-[#0c1016] ${headerOffsetClass} left-0 md:left-auto transition-all duration-200`}
+          className={`fixed top-0 right-0 z-30 h-16 border-b border-white/[0.05] bg-[#0f141d]/94 shadow-[0_12px_40px_rgba(0,0,0,0.2)] backdrop-blur-xl supports-[backdrop-filter]:bg-[#0f141d]/88 ${headerOffsetClass} left-0 md:left-auto transition-all duration-200`}
         >
           <div className="mx-auto flex h-full max-w-[1500px] items-center justify-between px-4 md:px-6">
             <div className="flex items-center gap-3">
@@ -581,7 +615,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                         setGlobalSearchOpen(true);
                       }
                     }}
-                    className="w-full rounded-xl border border-white/8 bg-white/[0.04] py-2 pr-4 pl-9 text-sm text-slate-100 outline-none focus:border-[#c42924]"
+                    className="relative z-10 w-full rounded-xl border border-white/10 bg-[#131b26] py-2 pr-4 pl-9 text-sm text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition focus:border-[#c42924] focus:bg-[#172230]"
                   />
                   {globalSearchOpen ? (
                     <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-50 overflow-hidden rounded-2xl border border-white/8 bg-[#131925] shadow-[0_24px_60px_rgba(0,0,0,0.42)]">
@@ -630,7 +664,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
               {branches.length > 0 ? (
                 canSwitchBranches && branches.length > 1 ? (
                   <select
-                    className="rounded-lg border border-white/8 bg-white/[0.04] px-3 py-2 text-sm text-slate-100"
+                    className="rounded-lg border border-white/10 bg-[#131b26] px-3 py-2 text-sm text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
                     value={selectedBranchId}
                     onChange={(e) => selectBranch(e.target.value)}
                   >
@@ -641,26 +675,28 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                     ))}
                   </select>
                 ) : (
-                  <div className="rounded-lg border border-white/8 bg-white/[0.04] px-3 py-2 text-sm font-medium text-slate-100">
+                  <div className="rounded-lg border border-white/10 bg-[#131b26] px-3 py-2 text-sm font-medium text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
                     {selectedBranchName || branches[0]?.name || "Branch"}
                   </div>
                 )
               ) : null}
 
-              <button
-                type="button"
+              <Link
+                href={calendarHref}
                 aria-label="Calendar"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/8 text-slate-300 hover:bg-white/[0.06]"
+                title="Open class calendar"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-[#131b26] text-slate-300 transition hover:bg-[#1a2534] hover:text-white"
               >
                 <CalendarDays className="h-4 w-4" />
-              </button>
-              <button
-                type="button"
+              </Link>
+              <Link
+                href={notificationHref}
                 aria-label="Notifications"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/8 text-slate-300 hover:bg-white/[0.06]"
+                title="Open notifications"
+                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-[#131b26] text-slate-300 transition hover:bg-[#1a2534] hover:text-white"
               >
                 <Bell className="h-4 w-4" />
-              </button>
+              </Link>
             </div>
           </div>
         </header>

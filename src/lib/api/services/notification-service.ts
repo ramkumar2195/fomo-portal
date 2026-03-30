@@ -131,4 +131,45 @@ export const notificationService = {
       body: {},
     });
   },
+
+  // ── Communication Settings ──────────────────────────────────────────
+
+  async getCommunicationSettings(token: string): Promise<CommunicationSettings> {
+    const response = await apiRequest<ApiResponse<CommunicationSettings> | CommunicationSettings>({
+      service: "notification",
+      path: "/api/notifications/settings",
+      token,
+    });
+    return unwrapData<CommunicationSettings>(response);
+  },
+
+  async updateCommunicationSettings(
+    token: string,
+    payload: Partial<CommunicationSettings>,
+  ): Promise<CommunicationSettings> {
+    const response = await apiRequest<ApiResponse<CommunicationSettings> | CommunicationSettings>({
+      service: "notification",
+      path: "/api/notifications/settings",
+      token,
+      method: "PATCH",
+      body: payload,
+    });
+    return unwrapData<CommunicationSettings>(response);
+  },
 };
+
+export interface CommunicationSettings {
+  smsProvider: string;
+  smsApiKeyMasked?: string;
+  smsSenderId?: string;
+  smsEnabled: boolean;
+  whatsappEnabled: boolean;
+  whatsappApiKeyMasked?: string;
+  autoSmsPaymentConfirmation: boolean;
+  autoSmsExpiryReminder: boolean;
+  expiryReminderDaysBefore: number;
+  autoSmsBirthday: boolean;
+  autoSmsFollowUpReminder: boolean;
+  autoSmsMissedAttendance: boolean;
+  missedAttendanceDaysThreshold: number;
+}

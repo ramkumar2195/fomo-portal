@@ -22,6 +22,7 @@ import { usersService } from "@/lib/api/services/users-service";
 import { trainingService } from "@/lib/api/services/training-service";
 import { engagementService } from "@/lib/api/services/engagement-service";
 import { ToastBanner } from "@/components/common/toast-banner";
+import { Modal } from "@/components/common/modal";
 
 /* ── helpers ─────────────────────────────────────────────────── */
 
@@ -99,6 +100,12 @@ export default function TrainerProfilePage() {
   const [attendanceData, setAttendanceData] = useState<unknown[]>([]);
   const [ptSessions, setPtSessions] = useState<unknown[]>([]);
   const [tabLoading, setTabLoading] = useState<Record<string, boolean>>({});
+  const [toast, setToast] = useState<{ kind: "success" | "error"; message: string } | null>(null);
+
+  // Reschedule modal
+  const [rescheduleSessionId, setRescheduleSessionId] = useState<number | null>(null);
+  const [rescheduleForm, setRescheduleForm] = useState({ newDate: "", newTime: "", reason: "" });
+  const [actionLoading, setActionLoading] = useState(false);
 
   // Load trainer profile
   useEffect(() => {
@@ -186,6 +193,46 @@ export default function TrainerProfilePage() {
     }
   }, [activeTab]); // eslint-disable-line react-hooks/exhaustive-deps
 
+  // Session action handlers
+  const handleSessionAction = async (sessionId: number, action: "complete" | "cancel" | "no-show") => {
+    if (!token || actionLoading) return;
+    setActionLoading(true);
+    try {
+      if (action === "complete") await trainingService.markSessionComplete(token, sessionId);
+      else if (action === "cancel") await trainingService.cancelPtSession(token, sessionId);
+      else if (action === "no-show") await trainingService.markSessionNoShow(token, sessionId);
+      setToast({ kind: "success", message: `Session ${action === "complete" ? "completed" : action === "cancel" ? "cancelled" : "marked no-show"}` });
+      setTabLoading((prev) => ({ ...prev, sessions: false }));
+      void loadTab("sessions");
+    } catch {
+      setToast({ kind: "error", message: `Failed to ${action} session` });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
+  const handleReschedule = async () => {
+    if (!token || !rescheduleSessionId || !rescheduleForm.newDate || !rescheduleForm.newTime) return;
+    setActionLoading(true);
+    try {
+      await trainingService.rescheduleSession(token, rescheduleSessionId, {
+        newDate: rescheduleForm.newDate,
+        newTime: rescheduleForm.newTime + ":00",
+        reason: rescheduleForm.reason || undefined,
+      });
+      setToast({ kind: "success", message: "Session rescheduled" });
+      setRescheduleSessionId(null);
+      setRescheduleForm({ newDate: "", newTime: "", reason: "" });
+      setTabLoading((prev) => ({ ...prev, sessions: false }));
+      void loadTab("sessions");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Failed to reschedule";
+      setToast({ kind: "error", message: msg });
+    } finally {
+      setActionLoading(false);
+    }
+  };
+
   // Derive trainer info
   const t = trainer || {};
   const name = str(t, "name", "fullName", "displayName");
@@ -243,6 +290,31 @@ export default function TrainerProfilePage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 px-4 py-6">
+      {toast && <ToastBanner kind={toast.kind} message={toast.message} onClose={() => setToast(null)} />}
+
+      {/* Reschedule Modal */}
+      <Modal open={rescheduleSessionId !== null} onClose={() => setRescheduleSessionId(null)} title="Reschedule PT Session" size="sm">
+        <div className="space-y-4">
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">New Date</label>
+            <input type="date" value={rescheduleForm.newDate} onChange={(e) => setRescheduleForm((f) => ({ ...f, newDate: e.target.value }))} className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">New Time</label>
+            <input type="time" value={rescheduleForm.newTime} onChange={(e) => setRescheduleForm((f) => ({ ...f, newTime: e.target.value }))} className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white" />
+          </div>
+          <div>
+            <label className="mb-1 block text-xs font-semibold uppercase tracking-wide text-slate-400">Reason</label>
+            <input type="text" value={rescheduleForm.reason} onChange={(e) => setRescheduleForm((f) => ({ ...f, reason: e.target.value }))} placeholder="Optional" className="w-full rounded-lg border border-white/10 bg-white/5 px-3 py-2 text-sm text-white" />
+          </div>
+          <p className="text-xs text-slate-500">Rescheduling must be done at least 8 hours before the session.</p>
+          <div className="flex justify-end gap-2">
+            <button type="button" onClick={() => setRescheduleSessionId(null)} className="rounded-lg border border-white/10 px-4 py-2 text-sm text-slate-300">Cancel</button>
+            <button type="button" onClick={() => void handleReschedule()} disabled={actionLoading || !rescheduleForm.newDate || !rescheduleForm.newTime} className="rounded-lg bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50">{actionLoading ? "Saving..." : "Reschedule"}</button>
+          </div>
+        </div>
+      </Modal>
+
       {/* Back link */}
       <Link href="/portal/trainers" className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-white/10">
         <ArrowLeft className="h-4 w-4" /> Back To Trainers
@@ -494,17 +566,20 @@ export default function TrainerProfilePage() {
                             <th className="px-4 py-3">Duration</th>
                             <th className="px-4 py-3">Status</th>
                             <th className="px-4 py-3">Notes</th>
+                            <th className="px-4 py-3">Actions</th>
                           </tr>
                         </thead>
                         <tbody className="divide-y divide-white/5">
                           {ptSessions.map((session, i) => {
                             const r = toRec(session);
+                            const sessionId = num(r, "id");
                             const memberName = str(r, "memberName", "clientName");
                             const date = str(r, "sessionDate", "date", "scheduledAt");
-                            const timeSlot = str(r, "timeSlot", "startTime", "scheduledTime");
-                            const duration = str(r, "duration", "sessionDuration", "durationMinutes");
+                            const timeSlot = str(r, "sessionTime", "timeSlot", "startTime", "scheduledTime");
+                            const duration = str(r, "durationMinutes", "duration", "sessionDuration");
                             const status = str(r, "status", "sessionStatus");
                             const notes = str(r, "notes", "trainerNotes", "remarks");
+                            const isScheduled = status.toUpperCase() === "SCHEDULED" || status.toUpperCase() === "UPCOMING" || status.toUpperCase() === "PENDING";
                             return (
                               <tr key={i} className="text-slate-300 hover:bg-white/5">
                                 <td className="px-4 py-3 font-medium text-white">{memberName}</td>
@@ -514,12 +589,23 @@ export default function TrainerProfilePage() {
                                 <td className="px-4 py-3">
                                   <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
                                     status.toUpperCase() === "COMPLETED" || status.toUpperCase() === "DONE" ? "bg-emerald-500/10 text-emerald-400" :
-                                    status.toUpperCase() === "CANCELLED" || status.toUpperCase() === "CANCELED" ? "bg-rose-500/10 text-rose-400" :
-                                    status.toUpperCase() === "SCHEDULED" || status.toUpperCase() === "UPCOMING" ? "bg-blue-500/10 text-blue-400" :
+                                    status.toUpperCase() === "CANCELLED" || status.toUpperCase() === "CANCELED" || status.toUpperCase() === "RESCHEDULED" ? "bg-rose-500/10 text-rose-400" :
+                                    status.toUpperCase() === "NO_SHOW" ? "bg-orange-500/10 text-orange-400" :
+                                    isScheduled ? "bg-blue-500/10 text-blue-400" :
                                     "bg-amber-500/10 text-amber-400"
                                   }`}>{humanize(status)}</span>
                                 </td>
                                 <td className="px-4 py-3 max-w-[200px] truncate">{notes}</td>
+                                <td className="px-4 py-3">
+                                  {isScheduled && sessionId > 0 && (
+                                    <div className="flex gap-2">
+                                      <button type="button" onClick={() => void handleSessionAction(sessionId, "complete")} disabled={actionLoading} className="text-xs font-semibold text-emerald-400 hover:text-emerald-300">Done</button>
+                                      <button type="button" onClick={() => { setRescheduleSessionId(sessionId); setRescheduleForm({ newDate: "", newTime: "", reason: "" }); }} className="text-xs font-semibold text-blue-400 hover:text-blue-300">Resched.</button>
+                                      <button type="button" onClick={() => void handleSessionAction(sessionId, "no-show")} disabled={actionLoading} className="text-xs font-semibold text-orange-400 hover:text-orange-300">No-Show</button>
+                                      <button type="button" onClick={() => void handleSessionAction(sessionId, "cancel")} disabled={actionLoading} className="text-xs font-semibold text-rose-400 hover:text-rose-300">Cancel</button>
+                                    </div>
+                                  )}
+                                </td>
                               </tr>
                             );
                           })}

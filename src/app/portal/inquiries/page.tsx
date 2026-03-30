@@ -13,6 +13,7 @@ import { usersService } from "@/lib/api/services/users-service";
 import { toDateTimeLocalInput } from "@/lib/formatters";
 import { formatInquiryCode } from "@/lib/inquiry-code";
 import { resolveStaffId } from "@/lib/staff-id";
+import { normalizeInquirySourceLabel } from "@/lib/inquiry-source";
 import { FollowUpChannel, FollowUpRecord } from "@/types/follow-up";
 import {
   InquiryCustomerStatus,
@@ -97,6 +98,7 @@ interface QuickFollowUpForm {
   trialDays: string;
   trialExpiryAt: string;
   notes: string;
+  closeReason: string;
 }
 
 interface CloseInquiryForm {
@@ -251,17 +253,7 @@ function formatStatusLabel(status?: string): string {
 }
 
 function formatSourceLabel(source?: string): string {
-  const value = (source || "").trim();
-  if (!value) {
-    return "Walk-in";
-  }
-
-  const normalized = value.replace(/_/g, " ").toLowerCase();
-  return normalized
-    .split(" ")
-    .filter((part) => part.length > 0)
-    .map((part) => part.slice(0, 1).toUpperCase() + part.slice(1))
-    .join(" ");
+  return normalizeInquirySourceLabel(source);
 }
 
 function formatResponseTypeLabel(responseType?: InquiryResponseType): string {
@@ -414,6 +406,18 @@ function followUpRequiresDueDate(responseType: InquiryResponseType): boolean {
 
 function followUpRequiresTrialGiven(responseType: InquiryResponseType): boolean {
   return responseType === "REQUESTED_TRIAL";
+}
+
+function followUpRequiresComment(responseType: InquiryResponseType): boolean {
+  return responseType === "ASKED_CALLBACK" || responseType === "NEEDS_DETAILS" || responseType === "REQUESTED_TRIAL";
+}
+
+function followUpRequiresAssignment(responseType: InquiryResponseType): boolean {
+  return followUpRequiresDueDate(responseType);
+}
+
+function followUpRequiresCloseReason(responseType: InquiryResponseType): boolean {
+  return responseType === "NOT_INTERESTED";
 }
 
 export default function InquiriesPage() {
@@ -794,7 +798,7 @@ export default function InquiriesPage() {
     await loadInquiries(undefined, 1);
     await loadInquiryAnalysis();
     setIsCreateModalOpen(false);
-    setToast({ kind: "success", message: "Enquiry created and follow-up scheduled" });
+    setToast({ kind: "success", message: "Enquiry created." });
   }, [loadInquiries, loadInquiryAnalysis]);
 
   const openInquiryEditor = (inquiry: InquiryRecord) => {
@@ -864,6 +868,7 @@ export default function InquiriesPage() {
       trialDays: "",
       trialExpiryAt: "",
       notes: "",
+      closeReason: "",
     });
     setQuickFollowUpHistory([]);
 
@@ -893,12 +898,17 @@ export default function InquiriesPage() {
 
     const requiresDueDate = followUpRequiresDueDate(quickFollowUpForm.responseType);
     const requiresTrialGiven = followUpRequiresTrialGiven(quickFollowUpForm.responseType);
-    const dueAt = requiresDueDate ? toIsoDatetime(quickFollowUpForm.dueAt) : new Date().toISOString();
-    const assignedToStaffId = parseNumeric(quickFollowUpForm.assignedToStaffId);
-    const createdByStaffId = resolveStaffId(user) ?? assignedToStaffId;
+    const requiresComment = followUpRequiresComment(quickFollowUpForm.responseType);
+    const requiresAssignment = followUpRequiresAssignment(quickFollowUpForm.responseType);
+    const requiresCloseReason = followUpRequiresCloseReason(quickFollowUpForm.responseType);
+    const dueAt = requiresDueDate ? toIsoDatetime(quickFollowUpForm.dueAt) : undefined;
+    const assignedToStaffId = requiresAssignment ? parseNumeric(quickFollowUpForm.assignedToStaffId) : undefined;
     const inquiry = inquiries.find((item) => item.inquiryId === quickFollowUpForm.inquiryId);
+    const createdByStaffId =
+      resolveStaffId(user) ??
+      (inquiry?.clientRepStaffId !== undefined ? parseNumeric(String(inquiry.clientRepStaffId)) : undefined);
 
-    if ((!dueAt && requiresDueDate) || assignedToStaffId === undefined || createdByStaffId === undefined) {
+    if ((!dueAt && requiresDueDate) || (requiresAssignment && assignedToStaffId === undefined) || createdByStaffId === undefined) {
       setToast({ kind: "error", message: "Assigned staff and next follow-up date are required." });
       return;
     }
@@ -915,6 +925,14 @@ export default function InquiriesPage() {
       setToast({ kind: "error", message: "Trial expiry is required for requested trial follow-ups." });
       return;
     }
+    if (requiresComment && !quickFollowUpForm.notes.trim()) {
+      setToast({ kind: "error", message: "Follow-up comment is required for this response type." });
+      return;
+    }
+    if (requiresCloseReason && !quickFollowUpForm.closeReason.trim()) {
+      setToast({ kind: "error", message: "Close reason is required when the enquiry is not interested." });
+      return;
+    }
 
     if (inquiry && isConvertedInquiry(inquiry)) {
       setToast({ kind: "error", message: "Follow-up cannot be added for converted inquiries." });
@@ -923,23 +941,31 @@ export default function InquiriesPage() {
 
     setRowActionLoadingId(quickFollowUpForm.inquiryId);
     try {
-      await subscriptionFollowUpService.createFollowUp(token, quickFollowUpForm.inquiryId, {
-        dueAt: dueAt || new Date().toISOString(),
-        channel: quickFollowUpForm.channel,
-        assignedToStaffId,
-        createdByStaffId,
-        notes: toOptionalString(quickFollowUpForm.notes),
-        responseType: quickFollowUpForm.responseType,
-      });
+      if (quickFollowUpForm.responseType === "NOT_INTERESTED") {
+        await subscriptionService.closeInquiry(token, quickFollowUpForm.inquiryId, {
+          status: "NOT_INTERESTED",
+          closeReason: quickFollowUpForm.closeReason.trim(),
+          remarks: quickFollowUpForm.closeReason.trim(),
+        });
+      } else if (requiresDueDate && assignedToStaffId !== undefined && dueAt) {
+        await subscriptionFollowUpService.createFollowUp(token, quickFollowUpForm.inquiryId, {
+          dueAt,
+          channel: quickFollowUpForm.channel,
+          assignedToStaffId,
+          createdByStaffId,
+          notes: toOptionalString(quickFollowUpForm.notes),
+          responseType: quickFollowUpForm.responseType,
+        });
+      }
 
-      if (quickFollowUpForm.responseType === "REQUESTED_TRIAL") {
+      if (quickFollowUpForm.responseType === "REQUESTED_TRIAL" || quickFollowUpForm.responseType === "READY_TO_PAY") {
         await subscriptionService.updateInquiry(token, quickFollowUpForm.inquiryId, {
           responseType: quickFollowUpForm.responseType,
           preferredContactChannel: quickFollowUpForm.channel,
           trialGiven: quickFollowUpForm.trialGiven,
           trialDays: parseNumeric(quickFollowUpForm.trialDays),
           trialExpiryAt: toIsoDatetime(quickFollowUpForm.trialExpiryAt) || dueAt || undefined,
-          followUpComment: toOptionalString(quickFollowUpForm.notes),
+          followUpComment: requiresComment ? toOptionalString(quickFollowUpForm.notes) : undefined,
         });
       }
 
@@ -951,8 +977,8 @@ export default function InquiriesPage() {
             ? {
                 ...item,
                 responseType: quickFollowUpForm.responseType,
-                preferredContactChannel: quickFollowUpForm.channel,
-                followUpComment: quickFollowUpForm.notes.trim() || item.followUpComment,
+                preferredContactChannel: requiresDueDate ? quickFollowUpForm.channel : item.preferredContactChannel,
+                followUpComment: requiresComment ? quickFollowUpForm.notes.trim() || item.followUpComment : item.followUpComment,
                 trialGiven:
                   quickFollowUpForm.responseType === "REQUESTED_TRIAL"
                     ? quickFollowUpForm.trialGiven
@@ -965,12 +991,13 @@ export default function InquiriesPage() {
                   quickFollowUpForm.responseType === "REQUESTED_TRIAL"
                     ? toIsoDatetime(quickFollowUpForm.trialExpiryAt) || nextDueAt || item.trialExpiryAt
                     : item.trialExpiryAt,
-                status: nextStatus,
+                status: quickFollowUpForm.responseType === "NOT_INTERESTED" ? "NOT_INTERESTED" : nextStatus,
+                closeReason: quickFollowUpForm.responseType === "NOT_INTERESTED" ? quickFollowUpForm.closeReason.trim() : item.closeReason,
               }
             : item,
         ),
       );
-      if (nextDueAt) {
+      if (nextDueAt && assignedToStaffId !== undefined) {
         setFollowUpByInquiry((prev) => ({
           ...prev,
           [quickFollowUpForm.inquiryId]: {
@@ -980,10 +1007,16 @@ export default function InquiriesPage() {
             status: "SCHEDULED",
             channel: quickFollowUpForm.channel,
             responseType: quickFollowUpForm.responseType,
-            notes: quickFollowUpForm.notes.trim() || undefined,
+            notes: requiresComment ? quickFollowUpForm.notes.trim() || undefined : undefined,
             overdue: false,
           },
         }));
+      } else if (quickFollowUpForm.responseType === "NOT_INTERESTED" || quickFollowUpForm.responseType === "READY_TO_PAY") {
+        setFollowUpByInquiry((prev) => {
+          const next = { ...prev };
+          delete next[quickFollowUpForm.inquiryId];
+          return next;
+        });
       }
 
       setQuickFollowUpForm(null);
@@ -997,7 +1030,7 @@ export default function InquiriesPage() {
         return;
       }
 
-      setToast({ kind: "success", message: "Follow-up added." });
+      setToast({ kind: "success", message: quickFollowUpForm.responseType === "NOT_INTERESTED" ? "Enquiry closed." : "Follow-up saved." });
     } catch (followUpError) {
       const message = followUpError instanceof Error ? followUpError.message : "Unable to add follow-up";
       setToast({ kind: "error", message });
@@ -1193,7 +1226,20 @@ export default function InquiriesPage() {
     return map;
   }, [staffOptions]);
 
-  const tableRows = useMemo(() => inquiries, [inquiries]);
+  const tableRows = useMemo(() => {
+    const shouldHideClosedByDefault = !filters.status && filters.converted === "false";
+    if (!shouldHideClosedByDefault) {
+      return inquiries;
+    }
+
+    return inquiries.filter((inquiry) => {
+      const displayStatus = deriveDisplayInquiryStatus(
+        inquiry.status,
+        followUpByInquiry[inquiry.inquiryId]?.responseType || inquiry.responseType,
+      );
+      return !isConvertedInquiry(inquiry) && !isClosedInquiryStatus(displayStatus);
+    });
+  }, [filters.converted, filters.status, followUpByInquiry, inquiries]);
   const displayViewStatusHistory = useMemo(
     () => buildDisplayStatusHistoryRows(viewStatusHistory, viewingInquiry),
     [viewStatusHistory, viewingInquiry],
@@ -1591,24 +1637,30 @@ export default function InquiriesPage() {
                     setFilters((prev) => ({ ...prev, closeReason: event.target.value }));
                   }}
                 />
-                <input
-                  type="date"
-                  className="rounded-lg border border-white/10 bg-[#121a25] px-3 py-2 text-sm text-white"
-                  value={filters.fromDate}
-                  onChange={(event) => {
-                    setCurrentPage(1);
-                    setFilters((prev) => ({ ...prev, fromDate: event.target.value }));
-                  }}
-                />
-                <input
-                  type="date"
-                  className="rounded-lg border border-white/10 bg-[#121a25] px-3 py-2 text-sm text-white"
-                  value={filters.toDate}
-                  onChange={(event) => {
-                    setCurrentPage(1);
-                    setFilters((prev) => ({ ...prev, toDate: event.target.value }));
-                  }}
-                />
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-400">From Date</label>
+                  <input
+                    type="date"
+                    className="w-full rounded-lg border border-white/10 bg-[#121a25] px-3 py-2 text-sm text-white"
+                    value={filters.fromDate}
+                    onChange={(event) => {
+                      setCurrentPage(1);
+                      setFilters((prev) => ({ ...prev, fromDate: event.target.value }));
+                    }}
+                  />
+                </div>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-400">To Date</label>
+                  <input
+                    type="date"
+                    className="w-full rounded-lg border border-white/10 bg-[#121a25] px-3 py-2 text-sm text-white"
+                    value={filters.toDate}
+                    onChange={(event) => {
+                      setCurrentPage(1);
+                      setFilters((prev) => ({ ...prev, toDate: event.target.value }));
+                    }}
+                  />
+                </div>
                 <select
                   className="rounded-lg border border-white/10 bg-[#121a25] px-3 py-2 text-sm text-white"
                   value={filters.clientRepStaffId}
@@ -2118,6 +2170,15 @@ export default function InquiriesPage() {
                               ...(event.target.value === "REQUESTED_TRIAL"
                                 ? {}
                                 : { trialGiven: false, trialDays: "", trialExpiryAt: "" }),
+                              ...(followUpRequiresDueDate(event.target.value as InquiryResponseType)
+                                ? {}
+                                : { dueAt: "", assignedToStaffId: "" }),
+                              ...(followUpRequiresComment(event.target.value as InquiryResponseType)
+                                ? {}
+                                : { notes: "" }),
+                              ...(followUpRequiresCloseReason(event.target.value as InquiryResponseType)
+                                ? {}
+                                : { closeReason: "" }),
                             }
                           : prev,
                       )
@@ -2144,6 +2205,7 @@ export default function InquiriesPage() {
                   />
                 </div>
                 ) : null}
+                {followUpRequiresDueDate(quickFollowUpForm.responseType) ? (
                 <div>
                   <label className="mb-1 block text-xs font-semibold text-slate-600">Preferred Contact</label>
                   <select
@@ -2155,12 +2217,14 @@ export default function InquiriesPage() {
                       )
                     }
                   >
-                    <option value="CALL">Call</option>
-                    <option value="WHATSAPP">WhatsApp</option>
-                    <option value="SMS">SMS</option>
-                    <option value="EMAIL">Email</option>
+                    {PREFERRED_CONTACT_CHANNEL_OPTIONS.map((option) => (
+                      <option key={`quick-contact-${option.value}`} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
                   </select>
                 </div>
+                ) : null}
                 {followUpRequiresTrialGiven(quickFollowUpForm.responseType) ? (
                   <div className="sm:col-span-2">
                     <label className="flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm font-semibold text-slate-700">
@@ -2216,6 +2280,7 @@ export default function InquiriesPage() {
                     </div>
                   </>
                 ) : null}
+                {followUpRequiresAssignment(quickFollowUpForm.responseType) ? (
                 <div className="sm:col-span-2">
                   <label className="mb-1 block text-xs font-semibold text-slate-600">Assign To</label>
                   <select
@@ -2236,6 +2301,8 @@ export default function InquiriesPage() {
                     ))}
                   </select>
                 </div>
+                ) : null}
+                {followUpRequiresComment(quickFollowUpForm.responseType) ? (
                 <div className="sm:col-span-2">
                   <label className="mb-1 block text-xs font-semibold text-slate-600">Notes</label>
                   <textarea
@@ -2247,6 +2314,20 @@ export default function InquiriesPage() {
                     }
                   />
                 </div>
+                ) : null}
+                {followUpRequiresCloseReason(quickFollowUpForm.responseType) ? (
+                <div className="sm:col-span-2">
+                  <label className="mb-1 block text-xs font-semibold text-slate-600">Close Reason</label>
+                  <textarea
+                    rows={2}
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    value={quickFollowUpForm.closeReason}
+                    onChange={(event) =>
+                      setQuickFollowUpForm((prev) => (prev ? { ...prev, closeReason: event.target.value } : prev))
+                    }
+                  />
+                </div>
+                ) : null}
               </div>
               <button
                 type="submit"
@@ -2257,6 +2338,8 @@ export default function InquiriesPage() {
                   ? "Saving..."
                   : quickFollowUpForm.responseType === "READY_TO_PAY"
                     ? "Save and Convert"
+                    : quickFollowUpForm.responseType === "NOT_INTERESTED"
+                      ? "Close Enquiry"
                     : "Save Follow-up"}
               </button>
             </form>
@@ -2330,13 +2413,14 @@ export default function InquiriesPage() {
           <div className="h-full w-full max-w-3xl overflow-y-auto bg-white p-4 shadow-xl sm:p-6">
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-lg font-semibold text-slate-900">
-                  Edit {formatInquiryCode(selectedInquiry.inquiryId, {
+                <h2 className="text-lg font-semibold text-slate-900">Edit Inquiry</h2>
+                <p className="text-sm text-slate-500">
+                  {selectedInquiry.fullName || "Enquiry"} •{" "}
+                  {formatInquiryCode(selectedInquiry.inquiryId, {
                     branchCode: selectedInquiry.branchCode,
                     createdAt: selectedInquiry.createdAt || selectedInquiry.inquiryAt,
                   })}
-                </h2>
-                <p className="text-sm text-slate-500">Update intake fields and status via PATCH API.</p>
+                </p>
               </div>
               <button
                 type="button"

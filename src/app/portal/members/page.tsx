@@ -1,6 +1,4 @@
 "use client";
-
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ShieldCheck, Users, XCircle } from "lucide-react";
@@ -395,9 +393,7 @@ export default function MembersPage() {
     <div className="space-y-8">
       <div className="space-y-2">
         <h1 className="text-2xl font-bold text-white">All Members</h1>
-        <p className="text-slate-400">
-          Clean directory view for branch members. Open any row to get the full member profile.
-        </p>
+        <p className="text-slate-400">Clean directory view for branch members.</p>
       </div>
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-4">
@@ -534,13 +530,12 @@ export default function MembersPage() {
                 <th className="px-4 py-3">Membership</th>
                 <th className="px-4 py-3">Added By</th>
                 <th className="px-4 py-3">Check-in Status</th>
-                <th className="px-4 py-3">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/8">
               {filteredMembers.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-4 text-slate-400" colSpan={6}>
+                  <td className="px-4 py-4 text-slate-400" colSpan={5}>
                     No members found.
                   </td>
                 </tr>
@@ -575,26 +570,6 @@ export default function MembersPage() {
                       </td>
                       <td className="px-4 py-3 text-slate-300">{details ? details.addedByLabel : loadingSummaries ? "..." : "-"}</td>
                       <td className="px-4 py-3 text-slate-300">{details ? details.checkInStatus : loadingSummaries ? "..." : "-"}</td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-wrap gap-2">
-                          <Link
-                            href={`/admin/members/${member.id}`}
-                            onClick={(event) => event.stopPropagation()}
-                            className="inline-flex rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
-                          >
-                            Open Profile
-                          </Link>
-                          {member.sourceInquiryId ? (
-                            <Link
-                              href={`/portal/inquiries?query=${encodeURIComponent(member.mobile || member.name)}`}
-                              onClick={(event) => event.stopPropagation()}
-                              className="inline-flex rounded-xl border border-[#c42924]/30 bg-[#c42924]/10 px-3 py-2 text-sm font-semibold text-[#ffd6d4] hover:bg-[#c42924]/20"
-                            >
-                              Find Enquiry
-                            </Link>
-                          ) : null}
-                        </div>
-                      </td>
                     </tr>
                   );
                 })

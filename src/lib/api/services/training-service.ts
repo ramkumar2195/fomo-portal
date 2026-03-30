@@ -292,6 +292,17 @@ export const trainingService = {
     return mapPageRecord(unwrapData<unknown>(response), mapProgramSummary);
   },
 
+  async getMemberProgramEnrollments(token: string, memberId: string | number): Promise<unknown[]> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/programs/member/${memberId}`,
+      token,
+    });
+
+    const payload = unwrapData<unknown>(response);
+    return Array.isArray(payload) ? payload : [];
+  },
+
   async createProgram(token: string, payload: ProgramWriteRequest): Promise<TrainingProgramSummary> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "training",
@@ -641,6 +652,173 @@ export const trainingService = {
       service: "training",
       path: `/api/training/class-schedules/${scheduleId}`,
       method: "DELETE",
+      token,
+    });
+    return unwrapData<unknown>(response);
+  },
+
+  // ── PT Session Actions ──────────────────────────────────────────
+
+  async rescheduleSession(
+    token: string,
+    sessionId: number | string,
+    payload: { newDate: string; newTime: string; reason?: string },
+  ): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/pt-sessions/${sessionId}/reschedule`,
+      method: "PATCH",
+      token,
+      body: payload,
+    });
+    return unwrapData<unknown>(response);
+  },
+
+  async markSessionComplete(token: string, sessionId: number | string): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/pt-sessions/${sessionId}/complete`,
+      method: "PATCH",
+      token,
+    });
+    return unwrapData<unknown>(response);
+  },
+
+  async markSessionNoShow(token: string, sessionId: number | string): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/pt-sessions/${sessionId}/no-show`,
+      method: "PATCH",
+      token,
+    });
+    return unwrapData<unknown>(response);
+  },
+
+  async getSessionSummaryByAssignment(
+    token: string,
+    assignmentId: number | string,
+  ): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/pt-sessions/summary/assignment/${assignmentId}`,
+      token,
+    });
+    const data = unwrapData<unknown>(response);
+    return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
+  },
+
+  async getSessionSummaryByMember(
+    token: string,
+    memberId: number | string,
+  ): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/pt-sessions/summary/member/${memberId}`,
+      token,
+    });
+    const data = unwrapData<unknown>(response);
+    return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
+  },
+
+  async getSessionsByMember(token: string, memberId: number | string): Promise<unknown[]> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/pt-sessions/member/${memberId}`,
+      token,
+    });
+    const data = unwrapData<unknown>(response);
+    return Array.isArray(data) ? data : [];
+  },
+
+  // ── PT Slot Management ─────────────────────────────────────────
+
+  async createPTSlot(
+    token: string,
+    payload: { memberId: number; assignmentId: number; dayOfWeek: string; slotStartTime: string; slotEndTime: string },
+  ): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: "/api/training/pt-slots",
+      method: "POST",
+      token,
+      body: payload,
+    });
+    return unwrapData<unknown>(response);
+  },
+
+  async getSlotsByAssignment(token: string, assignmentId: number | string): Promise<unknown[]> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/pt-slots/assignment/${assignmentId}`,
+      token,
+    });
+    const data = unwrapData<unknown>(response);
+    return Array.isArray(data) ? data : [];
+  },
+
+  async getSlotsByMember(token: string, memberId: number | string): Promise<unknown[]> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/pt-slots/member/${memberId}`,
+      token,
+    });
+    const data = unwrapData<unknown>(response);
+    return Array.isArray(data) ? data : [];
+  },
+
+  async deletePTSlot(token: string, slotId: number | string): Promise<void> {
+    await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/pt-slots/${slotId}`,
+      method: "DELETE",
+      token,
+    });
+  },
+
+  // ── Session Recording (Start/End) ──────────────────────────────
+
+  async startSession(token: string, sessionId: number | string, startedBy: string): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/pt-sessions/${sessionId}/start`,
+      method: "PATCH",
+      token,
+      body: { startedBy },
+    });
+    return unwrapData<unknown>(response);
+  },
+
+  async endSession(token: string, sessionId: number | string, endedBy: string, notes?: string): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/pt-sessions/${sessionId}/end`,
+      method: "PATCH",
+      token,
+      body: { endedBy, notes },
+    });
+    return unwrapData<unknown>(response);
+  },
+
+  async generateSessionsFromSlots(
+    token: string,
+    payload: { assignmentId: number; fromDate: string; toDate: string },
+  ): Promise<unknown[]> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: "/api/training/pt-sessions/generate",
+      method: "POST",
+      token,
+      body: payload,
+    });
+    const data = unwrapData<unknown>(response);
+    return Array.isArray(data) ? data : [];
+  },
+
+  async processNoShows(token: string): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: "/api/training/pt-sessions/process-no-shows",
+      method: "POST",
       token,
     });
     return unwrapData<unknown>(response);

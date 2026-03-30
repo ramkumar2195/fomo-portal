@@ -57,6 +57,7 @@ export interface FollowUpPlanValues {
   trialGiven: boolean;
   trialDays: string;
   trialExpiryAt: string;
+  closeReason: string;
 }
 
 export interface StaffOption {

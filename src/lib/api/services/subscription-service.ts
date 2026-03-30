@@ -136,6 +136,42 @@ export interface BillingSettings {
   receiptPrefix: string;
   nextReceiptNumber: number;
   receiptSequenceYear: number;
+  paymentModesEnabled?: string;
+  maxDiscountPercent?: number;
+  lateFeeEnabled?: boolean;
+  lateFeePercentPerDay?: number;
+  invoiceFooterText?: string;
+  hsnSacCode?: string;
+}
+
+export interface MembershipPolicySettings {
+  freezeMinDays: number;
+  freezeMaxDays: number;
+  maxFreezesPerSubscription: number;
+  freezeCooldownDays: number;
+  upgradeWindowShortDays: number;
+  upgradeWindowMediumDays: number;
+  upgradeWindowLongDays: number;
+  gracePeriodDays: number;
+  autoRenewalEnabled: boolean;
+  renewalReminderDaysBefore: number;
+  transferEnabled: boolean;
+  minPartialPaymentPercent: number;
+}
+
+export interface UpdateMembershipPolicyRequest {
+  freezeMinDays?: number;
+  freezeMaxDays?: number;
+  maxFreezesPerSubscription?: number;
+  freezeCooldownDays?: number;
+  upgradeWindowShortDays?: number;
+  upgradeWindowMediumDays?: number;
+  upgradeWindowLongDays?: number;
+  gracePeriodDays?: number;
+  autoRenewalEnabled?: boolean;
+  renewalReminderDaysBefore?: number;
+  transferEnabled?: boolean;
+  minPartialPaymentPercent?: number;
 }
 
 export interface CreatedSubscriptionItem {
@@ -399,6 +435,30 @@ function mapBillingSettings(payload: unknown): BillingSettings {
     receiptPrefix: toString(record, ["receiptPrefix"]) || "RCPT",
     nextReceiptNumber: toNumber(record, ["nextReceiptNumber"]) || 1,
     receiptSequenceYear: toNumber(record, ["receiptSequenceYear"]) || new Date().getFullYear(),
+    paymentModesEnabled: toString(record, ["paymentModesEnabled"]) || "CASH,UPI,CARD,BANK_TRANSFER",
+    maxDiscountPercent: toOptionalNumber(record, ["maxDiscountPercent"]) ?? 100,
+    lateFeeEnabled: toBoolean(record, ["lateFeeEnabled"]),
+    lateFeePercentPerDay: toOptionalNumber(record, ["lateFeePercentPerDay"]) ?? 0,
+    invoiceFooterText: toString(record, ["invoiceFooterText"]) || undefined,
+    hsnSacCode: toString(record, ["hsnSacCode"]) || undefined,
+  };
+}
+
+function mapMembershipPolicySettings(payload: unknown): MembershipPolicySettings {
+  const record = toRecord(payload);
+  return {
+    freezeMinDays: toNumber(record, ["freezeMinDays"]) || 7,
+    freezeMaxDays: toNumber(record, ["freezeMaxDays"]) || 28,
+    maxFreezesPerSubscription: toNumber(record, ["maxFreezesPerSubscription"]) || 4,
+    freezeCooldownDays: toNumber(record, ["freezeCooldownDays"]),
+    upgradeWindowShortDays: toNumber(record, ["upgradeWindowShortDays"]) || 7,
+    upgradeWindowMediumDays: toNumber(record, ["upgradeWindowMediumDays"]) || 15,
+    upgradeWindowLongDays: toNumber(record, ["upgradeWindowLongDays"]) || 28,
+    gracePeriodDays: toNumber(record, ["gracePeriodDays"]) || 7,
+    autoRenewalEnabled: toBoolean(record, ["autoRenewalEnabled"]),
+    renewalReminderDaysBefore: toNumber(record, ["renewalReminderDaysBefore"]) || 7,
+    transferEnabled: toBoolean(record, ["transferEnabled"]),
+    minPartialPaymentPercent: toNumber(record, ["minPartialPaymentPercent"]) || 50,
   };
 }
 
@@ -899,6 +959,12 @@ export const subscriptionService = {
       nextInvoiceNumber?: number;
       receiptPrefix?: string;
       nextReceiptNumber?: number;
+      paymentModesEnabled?: string;
+      maxDiscountPercent?: number;
+      lateFeeEnabled?: boolean;
+      lateFeePercentPerDay?: number;
+      invoiceFooterText?: string;
+      hsnSacCode?: string;
     },
   ): Promise<BillingSettings> {
     const response = await apiRequest<unknown | { data: unknown }>({
@@ -1084,6 +1150,31 @@ export const subscriptionService = {
       body: {},
     });
     return unwrapData<unknown>(response);
+  },
+
+  // ── Membership Policy Settings ──────────────────────────────────────
+
+  async getMembershipPolicySettings(token: string): Promise<MembershipPolicySettings> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: "/api/subscriptions/v2/settings/membership-policy",
+      token,
+    });
+    return mapMembershipPolicySettings(unwrapData<unknown>(response));
+  },
+
+  async updateMembershipPolicySettings(
+    token: string,
+    payload: UpdateMembershipPolicyRequest,
+  ): Promise<MembershipPolicySettings> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: "/api/subscriptions/v2/settings/membership-policy",
+      token,
+      method: "PATCH",
+      body: payload,
+    });
+    return mapMembershipPolicySettings(unwrapData<unknown>(response));
   },
 
 };

@@ -15,6 +15,7 @@ import { useAuth } from "@/contexts/auth-context";
 import { useBranch } from "@/contexts/branch-context";
 import { ApiError } from "@/lib/api/http-client";
 import { usersService } from "@/lib/api/services/users-service";
+import { normalizeInquirySourceLabel } from "@/lib/inquiry-source";
 import { DashboardDrilldownMetricKey, SuperAdminDashboardResponse } from "@/types/models";
 
 type JsonRecord = Record<string, unknown>;
@@ -325,6 +326,10 @@ function toLabel(value: string): string {
   return value.replace(/_/g, " ");
 }
 
+function formatSourceLabel(value?: string): string {
+  return normalizeInquirySourceLabel(value);
+}
+
 function toRecord(payload: unknown): JsonRecord {
   return typeof payload === "object" && payload !== null ? (payload as JsonRecord) : {};
 }
@@ -502,11 +507,17 @@ export default function AdminDashboardPage({
 
   const sourceSlices = useMemo(() => {
     const palette = ["#C42429", "#F97316", "#16A34A", "#0284C7", "#7C3AED", "#475569"];
-    return [...sourceDistribution.entries()]
+    const normalizedCounts = [...sourceDistribution.entries()].reduce<Map<string, number>>((bucket, [label, value]) => {
+      const normalizedLabel = formatSourceLabel(label);
+      bucket.set(normalizedLabel, (bucket.get(normalizedLabel) || 0) + value);
+      return bucket;
+    }, new Map());
+
+    return [...normalizedCounts.entries()]
       .sort((a, b) => b[1] - a[1])
       .slice(0, 6)
       .map(([label, value], index) => ({
-        label: label || "Unknown",
+        label,
         value,
         color: palette[index % palette.length],
       }));
@@ -813,10 +824,10 @@ export default function AdminDashboardPage({
         </div>
       </section>
 
-      <section className="grid gap-4 xl:grid-cols-12">
-        <div className="xl:col-span-7">
+      <section className="grid gap-4 lg:grid-cols-12">
+        <div className="lg:col-span-8">
           <SurfaceCard title="CRM">
-            <div className="grid gap-4 lg:grid-cols-[1.2fr_0.8fr]">
+            <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.95fr)]">
               <div className="space-y-4">
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                   <SnapshotStat label="Total Enquiries" value={formatCount(inquiryTotal)} subtitle="CRM pipeline volume" tone="blue" />
@@ -847,7 +858,7 @@ export default function AdminDashboardPage({
                   </div>
                 </div>
               </div>
-              <div className="space-y-4">
+              <div className="h-full">
                 <DonutLegendChart
                   title="Top Sources"
                   slices={
@@ -867,7 +878,7 @@ export default function AdminDashboardPage({
           </SurfaceCard>
         </div>
 
-        <div className="xl:col-span-5">
+        <div className="lg:col-span-4">
           <SurfaceCard title="Revenue">
             <div className="grid gap-3 sm:grid-cols-2">
               {revenueCards.map((card) => (

@@ -1,15 +1,14 @@
 "use client";
-
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import {
-  ArrowRight,
-  CalendarDays,
   CheckCircle2,
   CreditCard,
+  Download,
+  ExternalLink,
   Layers3,
   Phone,
+  Share2,
   ShieldCheck,
   Sparkles,
   UserRound,
@@ -21,8 +20,8 @@ import { useAuth } from "@/contexts/auth-context";
 import { useBranch } from "@/contexts/branch-context";
 import { hasCapability } from "@/lib/access-policy";
 import { ApiError } from "@/lib/api/http-client";
-import { BillingSettings, CatalogProduct, CatalogVariant, subscriptionService } from "@/lib/api/services/subscription-service";
-import { formatInquiryCode, formatMemberCode } from "@/lib/inquiry-code";
+import { BillingSettings, CatalogProduct, CatalogVariant, MembershipPolicySettings, subscriptionService } from "@/lib/api/services/subscription-service";
+import { formatInquiryCode } from "@/lib/inquiry-code";
 import { trainingService } from "@/lib/api/services/training-service";
 import { RegisterUserRequest, usersService } from "@/lib/api/services/users-service";
 import { resolveStaffId } from "@/lib/staff-id";
@@ -51,10 +50,13 @@ interface MemberFormState {
 
 interface SubscriptionFormState {
   productVariantId: string;
+  includeAddOn: boolean;
   addOnVariantId: string;
   startDate: string;
-  sellingPrice: string;
-  discountPercent: string;
+  primarySellingPrice: string;
+  primaryDiscountPercent: string;
+  addOnSellingPrice: string;
+  addOnDiscountPercent: string;
   paymentMode: string;
   receivedAmount: string;
 }
@@ -95,8 +97,31 @@ interface CompletedOnboardingState {
   balanceAmount: number;
 }
 
+interface StepItem {
+  step: OnboardingStep;
+  label: string;
+  description: string;
+}
+
+interface MembershipLineItem {
+  lineType: "PRIMARY" | "PT_ADD_ON";
+  categoryCode: string;
+  productCode: string;
+  productName: string;
+  variantId: string;
+  variantName: string;
+  basePrice: number;
+  sellingPrice: number;
+  discountPercent: number;
+}
+
 type OnboardingStep = 1 | 2 | 3;
-type PricingInputMode = "sellingPrice" | "discountPercent" | null;
+interface CommercialBreakdown {
+  baseAmount: number;
+  sellingPrice: number;
+  discountPercent: number;
+  discountAmount: number;
+}
 
 const CREATE_MEMBER_CAPABILITIES = [
   "MEMBER_CREATE",
@@ -135,10 +160,13 @@ function toOptionalString(value: string): string | undefined {
 }
 
 function formatPaymentCollectionStatus(receivedAmount: number, balanceAmount: number): string {
-  if (receivedAmount <= 0) {
+  const roundedReceivedAmount = Math.round(receivedAmount || 0);
+  const roundedBalanceAmount = Math.round(balanceAmount || 0);
+
+  if (roundedReceivedAmount <= 0) {
     return "Pending";
   }
-  if (balanceAmount > 0) {
+  if (roundedBalanceAmount > 0) {
     return "Pending";
   }
   return "Paid";
@@ -190,8 +218,8 @@ function formatCurrency(value: number): string {
   return new Intl.NumberFormat("en-IN", {
     style: "currency",
     currency: "INR",
-    minimumFractionDigits: 2,
-    maximumFractionDigits: 2,
+    minimumFractionDigits: 0,
+    maximumFractionDigits: 0,
   }).format(value || 0);
 }
 
@@ -208,12 +236,54 @@ function sanitizeNumericString(value: string): string {
   return value.replace(/[^0-9.]/g, "");
 }
 
+function sanitizeIntegerString(value: string): string {
+  return value.replace(/[^0-9]/g, "");
+}
+
 function formatDecimalInput(value: number): string {
   const rounded = Number(value.toFixed(2));
   if (Number.isInteger(rounded)) {
     return String(rounded);
   }
   return rounded.toFixed(2).replace(/\.?0+$/, "");
+}
+
+function resolveCommercialBreakdown(baseAmount: number, sellingPriceValue?: string, discountPercentValue?: string): CommercialBreakdown {
+  const normalizedBaseAmount = Math.max(0, Number(baseAmount || 0));
+  const parsedDiscountPercent = toNumber(discountPercentValue || "");
+  const parsedSellingPrice = toNumber(sellingPriceValue || "");
+
+  if (parsedDiscountPercent !== undefined) {
+    const normalizedDiscountPercent = Math.min(100, Math.max(0, Number(parsedDiscountPercent.toFixed(2))));
+    const sellingPrice = Number((normalizedBaseAmount * (1 - normalizedDiscountPercent / 100)).toFixed(2));
+    const discountAmount = Number((normalizedBaseAmount - sellingPrice).toFixed(2));
+    return {
+      baseAmount: normalizedBaseAmount,
+      sellingPrice,
+      discountPercent: normalizedDiscountPercent,
+      discountAmount,
+    };
+  }
+
+  if (parsedSellingPrice !== undefined) {
+    const sellingPrice = Math.min(normalizedBaseAmount, Math.max(0, Number(parsedSellingPrice.toFixed(2))));
+    const discountAmount = Number((normalizedBaseAmount - sellingPrice).toFixed(2));
+    const discountPercent =
+      normalizedBaseAmount > 0 ? Number(((discountAmount / normalizedBaseAmount) * 100).toFixed(2)) : 0;
+    return {
+      baseAmount: normalizedBaseAmount,
+      sellingPrice,
+      discountPercent,
+      discountAmount,
+    };
+  }
+
+  return {
+    baseAmount: normalizedBaseAmount,
+    sellingPrice: normalizedBaseAmount,
+    discountPercent: 0,
+    discountAmount: 0,
+  };
 }
 
 function normalizeBranchId(value?: string | number | null): string {
@@ -270,6 +340,55 @@ function isGroupClassVariant(variant: CatalogVariant | undefined): boolean {
   return Boolean(variant && variant.categoryCode?.toUpperCase() === "GROUP_CLASS");
 }
 
+function deriveProgramKeywords(product: CatalogProduct | undefined, variant: CatalogVariant | undefined): string[] {
+  if (!variant) {
+    return [];
+  }
+
+  const keywords = new Set<string>();
+  const productCode = String(product?.productCode || variant.productCode || "").toUpperCase();
+  const productName = String(product?.productName || "").toUpperCase();
+  const variantName = String(variant.variantName || "").toUpperCase();
+  const features = splitFeatures(variant.includedFeatures || "").map((feature) => feature.toUpperCase());
+
+  const featureToKeyword: Array<[string, string]> = [
+    ["YOGA_ACCESS", "yoga"],
+    ["ZUMBA_ACCESS", "zumba"],
+    ["HIIT_ACCESS", "hiit"],
+    ["COREFLEX_ACCESS", "coreflex"],
+    ["CROSSFIT_ACCESS", "crossfit"],
+    ["BOXING_ACCESS", "boxing"],
+    ["KICKBOXING_ACCESS", "kickboxing"],
+    ["CALISTHENICS_ACCESS", "calisthenics"],
+  ];
+
+  featureToKeyword.forEach(([feature, keyword]) => {
+    if (features.includes(feature)) {
+      keywords.add(keyword);
+    }
+  });
+
+  if (productCode.includes("CALISTHENICS") || variantName.includes("CALISTHENICS")) {
+    keywords.add("calisthenics");
+  }
+  if (productCode.includes("BOXING") || variantName.includes("BOXING")) {
+    keywords.add("boxing");
+  }
+  if (productCode.includes("KICKBOXING") || variantName.includes("KICKBOXING")) {
+    keywords.add("kickboxing");
+  }
+  if (productCode.includes("FOMO_MOVE") || productCode.includes("RHYTHM") || productName.includes("YOGA") || variantName.includes("YOGA")) {
+    if (variantName.includes("YOGA") || features.includes("YOGA_ACCESS")) {
+      keywords.add("yoga");
+    }
+    if (variantName.includes("ZUMBA") || features.includes("ZUMBA_ACCESS")) {
+      keywords.add("zumba");
+    }
+  }
+
+  return Array.from(keywords);
+}
+
 function initialComplementaryState(): ComplementaryState {
   return {
     steam: { enabled: false, count: "1", recurrence: "MONTHLY" },
@@ -291,6 +410,33 @@ function defaultBillingSettings(): BillingSettings {
     nextReceiptNumber: 1,
     receiptSequenceYear: year,
   };
+}
+
+function defaultMembershipPolicySettings(): MembershipPolicySettings {
+  return {
+    freezeMinDays: 7,
+    freezeMaxDays: 28,
+    maxFreezesPerSubscription: 4,
+    freezeCooldownDays: 0,
+    upgradeWindowShortDays: 7,
+    upgradeWindowMediumDays: 15,
+    upgradeWindowLongDays: 28,
+    gracePeriodDays: 7,
+    autoRenewalEnabled: false,
+    renewalReminderDaysBefore: 7,
+    transferEnabled: true,
+    minPartialPaymentPercent: 50,
+  };
+}
+
+function meetsActivationThreshold(totalPayable: number, paidAmount: number, minimumPercent: number): boolean {
+  const normalizedTotal = Math.max(0, Number(totalPayable || 0));
+  const normalizedPaid = Math.max(0, Number(paidAmount || 0));
+  const normalizedPercent = Math.min(100, Math.max(0, Number(minimumPercent || 0)));
+  if (normalizedTotal <= 0) {
+    return false;
+  }
+  return normalizedPaid >= Number(((normalizedTotal * normalizedPercent) / 100).toFixed(2));
 }
 
 function productFamilyLabel(categoryCode?: string): string {
@@ -320,20 +466,10 @@ function statusBadgeClass(active: boolean): string {
     : "border-white/10 bg-white/[0.04] text-slate-300";
 }
 
-function initials(value: string): string {
-  return value
-    .split(" ")
-    .map((part) => part.trim())
-    .filter(Boolean)
-    .slice(0, 2)
-    .map((part) => part[0]?.toUpperCase() || "")
-    .join("");
-}
-
 export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardingProps) {
   const router = useRouter();
   const { token, user, accessMetadata } = useAuth();
-  const { effectiveBranchId, selectedBranchId } = useBranch();
+  const { effectiveBranchId, selectedBranchId, selectedBranchName } = useBranch();
 
   const canCreateMember = hasCapability(user, accessMetadata, CREATE_MEMBER_CAPABILITIES, true);
   const canConvertInquiry = hasCapability(user, accessMetadata, INQUIRY_CONVERT_CAPABILITIES, true);
@@ -351,9 +487,13 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   const [assignedTrainer, setAssignedTrainer] = useState<UserDirectoryItem | null>(null);
   const [manualTrainerId, setManualTrainerId] = useState<string>("");
   const [billingSettings, setBillingSettings] = useState<BillingSettings>(defaultBillingSettings);
+  const [membershipPolicySettings, setMembershipPolicySettings] = useState<MembershipPolicySettings>(defaultMembershipPolicySettings);
   const [currentStep, setCurrentStep] = useState<OnboardingStep>(1);
-  const [pricingInputMode, setPricingInputMode] = useState<PricingInputMode>(null);
   const [completedOnboarding, setCompletedOnboarding] = useState<CompletedOnboardingState | null>(null);
+  const [documentBusyKey, setDocumentBusyKey] = useState<string | null>(null);
+  const [membershipLineItems, setMembershipLineItems] = useState<MembershipLineItem[]>([]);
+  const membershipTableRef = useRef<HTMLDivElement | null>(null);
+  const [showPtComposer, setShowPtComposer] = useState(false);
   const [primaryCategoryFilter, setPrimaryCategoryFilter] = useState("");
   const [primaryProductFilter, setPrimaryProductFilter] = useState("");
   const [addOnCategoryFilter, setAddOnCategoryFilter] = useState("");
@@ -376,10 +516,13 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
   const [subscriptionForm, setSubscriptionForm] = useState<SubscriptionFormState>({
     productVariantId: "",
+    includeAddOn: false,
     addOnVariantId: "",
     startDate: new Date().toISOString().slice(0, 10),
-    sellingPrice: "",
-    discountPercent: "",
+    primarySellingPrice: "",
+    primaryDiscountPercent: "",
+    addOnSellingPrice: "",
+    addOnDiscountPercent: "",
     paymentMode: "UPI",
     receivedAmount: "",
   });
@@ -396,6 +539,13 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   }, [toast]);
 
   useEffect(() => {
+    if (!completedOnboarding) {
+      return;
+    }
+    router.push(`/admin/members/${completedOnboarding.memberId}`);
+  }, [completedOnboarding, router]);
+
+  useEffect(() => {
     if (!token) {
       return;
     }
@@ -405,11 +555,12 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       setLoading(true);
       setError(null);
       try {
-        const [inquiryResult, productsResult, variantsResult, billingSettingsResult] = await Promise.allSettled([
+        const [inquiryResult, productsResult, variantsResult, billingSettingsResult, membershipPolicyResult] = await Promise.allSettled([
           subscriptionService.getInquiryById(token, sourceInquiryId),
           subscriptionService.getCatalogProducts(token),
           subscriptionService.getCatalogVariants(token),
           subscriptionService.getBillingSettings(token),
+          subscriptionService.getMembershipPolicySettings(token),
         ]);
 
         if (!active) {
@@ -446,6 +597,11 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
           billingSettingsResult.status === "fulfilled"
             ? billingSettingsResult.value
             : defaultBillingSettings(),
+        );
+        setMembershipPolicySettings(
+          membershipPolicyResult.status === "fulfilled"
+            ? membershipPolicyResult.value
+            : defaultMembershipPolicySettings(),
         );
       } catch (loadError) {
         if (!active) {
@@ -501,6 +657,9 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
   const filteredPrimaryProducts = useMemo(
     () =>
+      !primaryCategoryFilter
+        ? []
+        :
       products
         .filter((product) => product.categoryCode === primaryCategoryFilter)
         .filter((product) => primaryVariants.some((variant) => variant.productCode === product.productCode))
@@ -510,6 +669,9 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
   const filteredPrimaryVariants = useMemo(
     () =>
+      !primaryCategoryFilter || !primaryProductFilter
+        ? []
+        :
       primaryVariants.filter((variant) => {
         if (primaryCategoryFilter && variant.categoryCode !== primaryCategoryFilter) {
           return false;
@@ -532,6 +694,9 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
   const filteredAddOnProducts = useMemo(
     () =>
+      !addOnCategoryFilter
+        ? []
+        :
       products
         .filter((product) => product.categoryCode === addOnCategoryFilter)
         .filter((product) => addOnVariants.some((variant) => variant.productCode === product.productCode))
@@ -541,6 +706,9 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
   const filteredAddOnVariants = useMemo(
     () =>
+      !addOnCategoryFilter || !addOnProductFilter
+        ? []
+        :
       addOnVariants.filter((variant) => {
         if (addOnCategoryFilter && variant.categoryCode !== addOnCategoryFilter) {
           return false;
@@ -553,9 +721,24 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     [addOnCategoryFilter, addOnProductFilter, addOnVariants],
   );
 
-  const selectedPrimaryVariant = useMemo(
+  const primaryLineItem = useMemo(
+    () => membershipLineItems.find((item) => item.lineType === "PRIMARY") || null,
+    [membershipLineItems],
+  );
+
+  const ptLineItem = useMemo(
+    () => membershipLineItems.find((item) => item.lineType === "PT_ADD_ON") || null,
+    [membershipLineItems],
+  );
+
+  const draftPrimaryVariant = useMemo(
     () => primaryVariants.find((variant) => variant.variantId === subscriptionForm.productVariantId),
     [primaryVariants, subscriptionForm.productVariantId],
+  );
+
+  const selectedPrimaryVariant = useMemo(
+    () => primaryVariants.find((variant) => variant.variantId === (primaryLineItem?.variantId || draftPrimaryVariant?.variantId)),
+    [draftPrimaryVariant?.variantId, primaryLineItem?.variantId, primaryVariants],
   );
 
   const selectedPrimaryProduct = useMemo(
@@ -563,26 +746,21 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     [products, selectedPrimaryVariant?.productCode],
   );
 
-  const selectedAddOnVariants = useMemo(
-    () => addOnVariants.filter((variant) => variant.variantId === subscriptionForm.addOnVariantId),
-    [addOnVariants, subscriptionForm.addOnVariantId],
-  );
+  const canAddPrimaryMembership = !primaryLineItem;
+  const canAddPtMembership = Boolean(primaryLineItem && isFlagshipVariant(selectedPrimaryVariant) && !ptLineItem);
 
   useEffect(() => {
-    if (selectedPrimaryVariant) {
-      if (primaryCategoryFilter !== selectedPrimaryVariant.categoryCode) {
-        setPrimaryCategoryFilter(selectedPrimaryVariant.categoryCode);
+    if (draftPrimaryVariant) {
+      if (primaryCategoryFilter !== draftPrimaryVariant.categoryCode) {
+        setPrimaryCategoryFilter(draftPrimaryVariant.categoryCode);
       }
-      if (primaryProductFilter !== selectedPrimaryVariant.productCode) {
-        setPrimaryProductFilter(selectedPrimaryVariant.productCode);
+      if (primaryProductFilter !== draftPrimaryVariant.productCode) {
+        setPrimaryProductFilter(draftPrimaryVariant.productCode);
       }
       return;
     }
 
-    if (!primaryCategoryFilter && primaryCategoryOptions.length > 0) {
-      setPrimaryCategoryFilter(primaryCategoryOptions[0]);
-    }
-  }, [primaryCategoryFilter, primaryCategoryOptions, primaryProductFilter, selectedPrimaryVariant]);
+  }, [draftPrimaryVariant, primaryCategoryFilter, primaryCategoryOptions, primaryProductFilter]);
 
   useEffect(() => {
     if (!primaryCategoryFilter) {
@@ -592,9 +770,8 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       return;
     }
 
-    const firstProduct = filteredPrimaryProducts[0]?.productCode || "";
-    if (!primaryProductFilter || !filteredPrimaryProducts.some((product) => product.productCode === primaryProductFilter)) {
-      setPrimaryProductFilter(firstProduct);
+    if (primaryProductFilter && !filteredPrimaryProducts.some((product) => product.productCode === primaryProductFilter)) {
+      setPrimaryProductFilter("");
     }
   }, [filteredPrimaryProducts, primaryCategoryFilter, primaryProductFilter]);
 
@@ -606,14 +783,30 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       setSubscriptionForm((current) => ({
         ...current,
         productVariantId: "",
-        sellingPrice: "",
-        discountPercent: "",
+        primarySellingPrice: "",
+        primaryDiscountPercent: "",
       }));
-      setPricingInputMode(null);
     }
   }, [filteredPrimaryVariants, subscriptionForm.productVariantId]);
 
   useEffect(() => {
+    if (!canAddPtMembership) {
+      if (showPtComposer) {
+        setShowPtComposer(false);
+      }
+      if (addOnCategoryFilter || addOnProductFilter || subscriptionForm.addOnVariantId || subscriptionForm.addOnSellingPrice || subscriptionForm.addOnDiscountPercent) {
+        setAddOnCategoryFilter("");
+        setAddOnProductFilter("");
+        setSubscriptionForm((current) => ({
+          ...current,
+          addOnVariantId: "",
+          addOnSellingPrice: "",
+          addOnDiscountPercent: "",
+        }));
+      }
+      return;
+    }
+
     if (subscriptionForm.addOnVariantId) {
       const selectedAddOn = addOnVariants.find((variant) => variant.variantId === subscriptionForm.addOnVariantId);
       if (selectedAddOn) {
@@ -627,10 +820,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       }
     }
 
-    if (!addOnCategoryFilter && addOnCategoryOptions.length > 0) {
-      setAddOnCategoryFilter(addOnCategoryOptions[0]);
-    }
-  }, [addOnCategoryFilter, addOnCategoryOptions, addOnProductFilter, addOnVariants, subscriptionForm.addOnVariantId]);
+  }, [addOnCategoryFilter, addOnCategoryOptions, addOnProductFilter, addOnVariants, canAddPtMembership, showPtComposer, subscriptionForm.addOnDiscountPercent, subscriptionForm.addOnSellingPrice, subscriptionForm.addOnVariantId]);
 
   useEffect(() => {
     if (!addOnCategoryFilter) {
@@ -640,9 +830,8 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       return;
     }
 
-    const firstProduct = filteredAddOnProducts[0]?.productCode || "";
-    if (!addOnProductFilter || !filteredAddOnProducts.some((product) => product.productCode === addOnProductFilter)) {
-      setAddOnProductFilter(firstProduct);
+    if (addOnProductFilter && !filteredAddOnProducts.some((product) => product.productCode === addOnProductFilter)) {
+      setAddOnProductFilter("");
     }
   }, [addOnCategoryFilter, addOnProductFilter, filteredAddOnProducts]);
 
@@ -651,87 +840,58 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       (variant) => variant.variantId === subscriptionForm.addOnVariantId,
     );
     if (!selectedVariantStillVisible && subscriptionForm.addOnVariantId) {
-      setSubscriptionForm((current) => ({ ...current, addOnVariantId: "" }));
+      setSubscriptionForm((current) => ({
+        ...current,
+        addOnVariantId: "",
+        addOnSellingPrice: "",
+        addOnDiscountPercent: "",
+      }));
     }
   }, [filteredAddOnVariants, subscriptionForm.addOnVariantId]);
 
-  const baseCatalogAmount = useMemo(
-    () =>
-      [
-        selectedPrimaryVariant?.basePrice || 0,
-        ...selectedAddOnVariants.map((variant) => variant.basePrice || 0),
-      ].reduce((sum, amount) => sum + amount, 0),
-    [selectedAddOnVariants, selectedPrimaryVariant?.basePrice],
+  const draftSelectedAddOnVariant = useMemo(
+    () => addOnVariants.find((variant) => variant.variantId === subscriptionForm.addOnVariantId),
+    [addOnVariants, subscriptionForm.addOnVariantId],
   );
 
-  useEffect(() => {
-    if (pricingInputMode === "discountPercent") {
-      const percentValue = toNumber(subscriptionForm.discountPercent);
-      if (percentValue === undefined || baseCatalogAmount <= 0) {
-        if (subscriptionForm.sellingPrice !== "") {
-          setSubscriptionForm((current) => ({ ...current, sellingPrice: "" }));
-        }
-        return;
-      }
-
-      const normalizedPercent = Math.min(100, Math.max(0, percentValue));
-      const nextSellingPrice = formatDecimalInput(baseCatalogAmount * (1 - normalizedPercent / 100));
-      const nextDiscountPercent = formatDecimalInput(normalizedPercent);
-      if (subscriptionForm.sellingPrice !== nextSellingPrice || subscriptionForm.discountPercent !== nextDiscountPercent) {
-        setSubscriptionForm((current) => ({
-          ...current,
-          sellingPrice: nextSellingPrice,
-          discountPercent: nextDiscountPercent,
-        }));
-      }
-      return;
-    }
-
-    if (pricingInputMode === "sellingPrice") {
-      const sellingPriceValue = toNumber(subscriptionForm.sellingPrice);
-      if (sellingPriceValue === undefined || baseCatalogAmount <= 0) {
-        if (subscriptionForm.discountPercent !== "") {
-          setSubscriptionForm((current) => ({ ...current, discountPercent: "" }));
-        }
-        return;
-      }
-
-      const normalizedSellingPrice = Math.min(baseCatalogAmount, Math.max(0, sellingPriceValue));
-      const discountPercent =
-        baseCatalogAmount <= 0 ? 0 : ((baseCatalogAmount - normalizedSellingPrice) / baseCatalogAmount) * 100;
-      const nextSellingPrice = formatDecimalInput(normalizedSellingPrice);
-      const nextDiscountPercent = formatDecimalInput(discountPercent);
-      if (subscriptionForm.sellingPrice !== nextSellingPrice || subscriptionForm.discountPercent !== nextDiscountPercent) {
-        setSubscriptionForm((current) => ({
-          ...current,
-          sellingPrice: nextSellingPrice,
-          discountPercent: nextDiscountPercent,
-        }));
-      }
-    }
-  }, [baseCatalogAmount, pricingInputMode, subscriptionForm.discountPercent, subscriptionForm.sellingPrice]);
+  const selectedAddOnVariant = useMemo(
+    () => addOnVariants.find((variant) => variant.variantId === (ptLineItem?.variantId || draftSelectedAddOnVariant?.variantId)),
+    [addOnVariants, draftSelectedAddOnVariant?.variantId, ptLineItem?.variantId],
+  );
 
   const pricingPreview = useMemo(() => {
-    const baseAmount = baseCatalogAmount;
-    const discountPercentInput = toNumber(subscriptionForm.discountPercent);
-    const sellingPriceInput = toNumber(subscriptionForm.sellingPrice);
-    const resolvedDiscountPercent =
-      discountPercentInput === undefined
-        ? undefined
-        : Math.min(100, Math.max(0, Number(discountPercentInput.toFixed(2))));
-    const netSaleAmount =
-      resolvedDiscountPercent !== undefined
-        ? Number((baseAmount * (1 - resolvedDiscountPercent / 100)).toFixed(2))
-        : sellingPriceInput === undefined
-          ? baseAmount
-          : Math.min(baseAmount, Math.max(0, Number(sellingPriceInput.toFixed(2))));
-    const discountAmount = Math.max(0, Number((baseAmount - netSaleAmount).toFixed(2)));
+    const primaryCommercial = primaryLineItem
+      ? {
+          baseAmount: primaryLineItem.basePrice,
+          sellingPrice: primaryLineItem.sellingPrice,
+          discountPercent: primaryLineItem.discountPercent,
+          discountAmount: Number((primaryLineItem.basePrice - primaryLineItem.sellingPrice).toFixed(2)),
+        }
+      : resolveCommercialBreakdown(0);
+    const addOnCommercial = ptLineItem
+      ? {
+          baseAmount: ptLineItem.basePrice,
+          sellingPrice: ptLineItem.sellingPrice,
+          discountPercent: ptLineItem.discountPercent,
+          discountAmount: Number((ptLineItem.basePrice - ptLineItem.sellingPrice).toFixed(2)),
+        }
+      : resolveCommercialBreakdown(0);
+
+    const baseAmount = Number((primaryCommercial.baseAmount + addOnCommercial.baseAmount).toFixed(2));
+    const discountAmount = Number((primaryCommercial.discountAmount + addOnCommercial.discountAmount).toFixed(2));
+    const netSaleAmount = Number((baseAmount - discountAmount).toFixed(2));
     const effectiveDiscountPercent =
       baseAmount > 0 ? Number(((discountAmount / baseAmount) * 100).toFixed(2)) : 0;
-    const gstAmount = Number(((netSaleAmount * (billingSettings.gstPercentage || 0)) / 100).toFixed(2));
-    const totalPayable = Number((netSaleAmount + gstAmount).toFixed(2));
-    const receivedAmount = Math.max(0, Math.min(totalPayable, toNumber(subscriptionForm.receivedAmount) || 0));
-    const balanceAmount = Number((totalPayable - receivedAmount).toFixed(2));
+    const gstRate = billingSettings.gstPercentage || 0;
+    const cgstAmount = Number(((netSaleAmount * gstRate) / 200).toFixed(2));
+    const sgstAmount = Number(((netSaleAmount * gstRate) / 200).toFixed(2));
+    const gstAmount = Number((cgstAmount + sgstAmount).toFixed(2));
+    const rawTotalPayable = Number((netSaleAmount + gstAmount).toFixed(2));
+    const totalPayable = Math.round(rawTotalPayable);
+    const enteredReceivedAmount = Math.max(0, Math.round(toNumber(subscriptionForm.receivedAmount) || 0));
+    const receivedAmount = Math.max(0, Math.min(totalPayable, enteredReceivedAmount));
+    const submittedReceivedAmount = Math.min(rawTotalPayable, receivedAmount);
+    const balanceAmount = Math.max(0, totalPayable - receivedAmount);
 
     let paymentStatus = "UNPAID";
     if (receivedAmount > 0 && balanceAmount > 0) {
@@ -748,21 +908,35 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       : "";
 
     return {
+      primaryCommercial,
+      addOnCommercial,
       baseAmount,
       sellingPrice: netSaleAmount,
       discountPercent: effectiveDiscountPercent,
       discountAmount,
       netSaleAmount,
-      gstPercentage: billingSettings.gstPercentage || 0,
+      gstPercentage: gstRate,
+      cgstAmount,
+      sgstAmount,
       gstAmount,
+      rawTotalPayable,
       totalPayable,
       receivedAmount,
+      submittedReceivedAmount,
       balanceAmount,
       paymentStatus,
       startDate,
       endDate,
     };
-  }, [baseCatalogAmount, billingSettings.gstPercentage, subscriptionForm.discountPercent, subscriptionForm.receivedAmount, subscriptionForm.sellingPrice, subscriptionForm.startDate, selectedPrimaryVariant]);
+  }, [
+    billingSettings.gstPercentage,
+    selectedPrimaryVariant,
+    membershipLineItems,
+    primaryLineItem,
+    ptLineItem,
+    subscriptionForm.receivedAmount,
+    subscriptionForm.startDate,
+  ]);
 
   useEffect(() => {
     if (!token || !memberForm.defaultBranchId) {
@@ -887,7 +1061,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     }
     if (complementaries.passBenefit.enabled) {
       items.push({
-        feature: "PASS_BENEFIT",
+        feature: "PAUSE_BENEFIT",
         includedCount: Number(complementaries.passBenefit.days || 0),
         recurrence: "FULL_TERM",
       });
@@ -896,14 +1070,137 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     return items.filter((item) => Number(item.includedCount || 0) > 0);
   }, [complementaries]);
 
-  const stepItems = useMemo(
+  const stepItems = useMemo<StepItem[]>(
     () => [
-      { step: 1 as OnboardingStep, label: "Member Info" },
-      { step: 2 as OnboardingStep, label: "Subscription" },
-      { step: 3 as OnboardingStep, label: "Payment & Billing" },
+      { step: 1, label: "Member Info", description: "Capture identity, contact, and emergency details." },
+      { step: 2, label: "Membership", description: "Choose memberships, pricing, and trainer assignment." },
+      { step: 3, label: "Payment & Billing", description: "Issue invoice, collect payment, and finalize onboarding." },
     ],
     [],
   );
+
+  const addMembershipLineItem = () => {
+    const focusMembershipTable = () => {
+      window.setTimeout(() => {
+        membershipTableRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
+      }, 60);
+    };
+
+    if (!primaryLineItem) {
+      if (!draftPrimaryVariant) {
+        setToast({ kind: "error", message: "Select a primary membership variant before adding it." });
+        return;
+      }
+
+      const primaryCommercial = resolveCommercialBreakdown(
+        draftPrimaryVariant.basePrice || 0,
+        subscriptionForm.primarySellingPrice,
+        subscriptionForm.primaryDiscountPercent,
+      );
+      const product = products.find((item) => item.productCode === draftPrimaryVariant.productCode);
+
+      setMembershipLineItems([
+        {
+          lineType: "PRIMARY",
+          categoryCode: draftPrimaryVariant.categoryCode,
+          productCode: draftPrimaryVariant.productCode,
+          productName: product?.productName || draftPrimaryVariant.productCode,
+          variantId: draftPrimaryVariant.variantId,
+          variantName: draftPrimaryVariant.variantName,
+          basePrice: draftPrimaryVariant.basePrice || 0,
+          sellingPrice: primaryCommercial.sellingPrice,
+          discountPercent: primaryCommercial.discountPercent,
+        },
+      ]);
+      setPrimaryCategoryFilter("");
+      setPrimaryProductFilter("");
+      setSubscriptionForm((current) => ({
+        ...current,
+        productVariantId: "",
+        primarySellingPrice: "",
+        primaryDiscountPercent: "",
+      }));
+      setToast({ kind: "success", message: "Primary membership added to the billing table." });
+      focusMembershipTable();
+      return;
+    }
+
+    if (!canAddPtMembership) {
+      setToast({ kind: "error", message: "This membership flow cannot accept an additional PT line item." });
+      return;
+    }
+
+    if (!draftSelectedAddOnVariant) {
+      setToast({ kind: "error", message: "Select a PT add-on variant before adding it." });
+      return;
+    }
+
+    const addOnCommercial = resolveCommercialBreakdown(
+      draftSelectedAddOnVariant.basePrice || 0,
+      subscriptionForm.addOnSellingPrice,
+      subscriptionForm.addOnDiscountPercent,
+    );
+    const product = products.find((item) => item.productCode === draftSelectedAddOnVariant.productCode);
+
+    setMembershipLineItems((current) => [
+      ...current.filter((item) => item.lineType !== "PT_ADD_ON"),
+      {
+        lineType: "PT_ADD_ON",
+        categoryCode: draftSelectedAddOnVariant.categoryCode,
+        productCode: draftSelectedAddOnVariant.productCode,
+        productName: product?.productName || draftSelectedAddOnVariant.productCode,
+        variantId: draftSelectedAddOnVariant.variantId,
+        variantName: draftSelectedAddOnVariant.variantName,
+        basePrice: draftSelectedAddOnVariant.basePrice || 0,
+        sellingPrice: addOnCommercial.sellingPrice,
+        discountPercent: addOnCommercial.discountPercent,
+      },
+    ]);
+    setAddOnCategoryFilter("");
+    setAddOnProductFilter("");
+      setSubscriptionForm((current) => ({
+        ...current,
+        addOnVariantId: "",
+        addOnSellingPrice: "",
+        addOnDiscountPercent: "",
+      }));
+      setShowPtComposer(false);
+      setToast({ kind: "success", message: "PT add-on added to the billing table." });
+      focusMembershipTable();
+    };
+
+  const removeMembershipLineItem = (lineType: MembershipLineItem["lineType"]) => {
+    setMembershipLineItems((current) => current.filter((item) => item.lineType !== lineType));
+    if (lineType === "PRIMARY") {
+      setPrimaryCategoryFilter("");
+      setPrimaryProductFilter("");
+      setAddOnCategoryFilter("");
+      setAddOnProductFilter("");
+      setSubscriptionForm((current) => ({
+        ...current,
+        productVariantId: "",
+        addOnVariantId: "",
+        primarySellingPrice: "",
+        primaryDiscountPercent: "",
+        addOnSellingPrice: "",
+        addOnDiscountPercent: "",
+      }));
+      setManualTrainerId("");
+      setComplementaries(initialComplementaryState);
+      setShowPtComposer(false);
+      return;
+    }
+
+    setAddOnCategoryFilter("");
+    setAddOnProductFilter("");
+    setSubscriptionForm((current) => ({
+      ...current,
+      addOnVariantId: "",
+      addOnSellingPrice: "",
+      addOnDiscountPercent: "",
+    }));
+    setShowPtComposer(false);
+  };
 
   const validateStep = (step: OnboardingStep): boolean => {
     if (step === 1) {
@@ -922,24 +1219,24 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     }
 
     if (step === 2) {
-      if (!selectedPrimaryVariant) {
-        setToast({ kind: "error", message: "Select a primary subscription variant." });
+      if (!primaryLineItem || !selectedPrimaryVariant) {
+        setToast({ kind: "error", message: "Add the primary membership before continuing." });
         return false;
       }
       if (!subscriptionForm.startDate) {
-        setToast({ kind: "error", message: "Subscription start date is required." });
+        setToast({ kind: "error", message: "Membership start date is required." });
         return false;
       }
     }
 
     if (step === 3) {
       const receivedAmount = toNumber(subscriptionForm.receivedAmount);
-      const allowedMax = Number(pricingPreview.totalPayable.toFixed(2));
+      const allowedMax = pricingPreview.totalPayable;
       if (receivedAmount === undefined || receivedAmount <= 0) {
         setToast({ kind: "error", message: "Received amount is required to complete onboarding." });
         return false;
       }
-      if (receivedAmount - allowedMax > 0.009) {
+      if (Math.round(receivedAmount) > allowedMax) {
         setToast({ kind: "error", message: "Received amount cannot exceed the total payable amount." });
         return false;
       }
@@ -1073,8 +1370,8 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         productVariantId: Number(selectedPrimaryVariant.variantId),
         startDate: subscriptionForm.startDate,
         inquiryId: sourceInquiryId,
-        addOnVariantIds: subscriptionForm.addOnVariantId ? [Number(subscriptionForm.addOnVariantId)] : undefined,
-        discountPercent: pricingPreview.discountPercent > 0 ? pricingPreview.discountPercent : undefined,
+        addOnVariantIds: selectedAddOnVariant ? [Number(selectedAddOnVariant.variantId)] : undefined,
+        discountAmount: pricingPreview.discountAmount > 0 ? Number(pricingPreview.discountAmount.toFixed(2)) : undefined,
         discountedByStaffId: billedByStaffId ?? undefined,
         billedByStaffId: billedByStaffId ?? undefined,
         customEntitlements: customEntitlements.length > 0 ? customEntitlements : undefined,
@@ -1089,33 +1386,44 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       }
 
       let paymentReceipt: Awaited<ReturnType<typeof subscriptionService.recordPayment>> | null = null;
+      let membershipActivated = false;
       if (pricingPreview.receivedAmount > 0) {
         paymentReceipt = await subscriptionService.recordPayment(token, invoiceId, {
           memberId,
-          amount: pricingPreview.receivedAmount,
+          amount: pricingPreview.submittedReceivedAmount,
           paymentMode: subscriptionForm.paymentMode,
           inquiryId: sourceInquiryId,
         });
 
-        await subscriptionService.activateMembership(token, memberSubscriptionId);
+        const activationThresholdMet = meetsActivationThreshold(
+          invoiceTotal,
+          paymentReceipt?.totalPaidAmount || pricingPreview.submittedReceivedAmount,
+          membershipPolicySettings.minPartialPaymentPercent,
+        );
+        if (activationThresholdMet) {
+          await subscriptionService.activateMembership(token, memberSubscriptionId);
+          membershipActivated = true;
+        }
       }
 
       await subscriptionService.convertInquiry(token, String(sourceInquiryId), { memberId });
 
-      // Auto-enroll in matching program for GROUP_CLASS subscriptions
+      // Auto-enroll class-based memberships into their mapped programs.
       let enrolledProgramName: string | null = null;
-      if (isGroupClassVariant(selectedPrimaryVariant)) {
+      const programKeywords = deriveProgramKeywords(selectedPrimaryProduct, selectedPrimaryVariant);
+      if (programKeywords.length > 0) {
         try {
           const programsPage = await trainingService.listPrograms(token, 0, 100);
           const programs = programsPage.content || [];
-          const productName = (selectedPrimaryProduct?.productName || selectedPrimaryVariant.productCode || "").replace(/_/g, " ").toLowerCase().replace(/fomo\s*/i, "").trim();
-          const matchingProgram = programs.find((p) => {
-            const pName = (p.name || "").toLowerCase().replace(/fomo\s*/i, "").trim();
-            return pName.includes(productName) || productName.includes(pName);
+          const matchingPrograms = programs.filter((program) => {
+            const programName = String(program.name || "").toLowerCase();
+            return programKeywords.some((keyword) => programName.includes(keyword));
           });
-          if (matchingProgram) {
-            await trainingService.enrollProgramMember(token, String(matchingProgram.id), String(memberId));
-            enrolledProgramName = matchingProgram.name;
+          if (matchingPrograms.length > 0) {
+            for (const program of matchingPrograms) {
+              await trainingService.enrollProgramMember(token, String(program.id), String(memberId));
+            }
+            enrolledProgramName = matchingPrograms.map((program) => program.name).join(", ");
           }
         } catch {
           // Non-critical — admin can enroll manually later
@@ -1142,13 +1450,19 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         message:
           pricingPreview.receivedAmount > 0
             ? resumedExistingMember
-              ? `Recovered the existing member record, invoiced it, and recorded payment.${enrollmentNote}`
-              : `Member created, invoiced, and payment recorded.${enrollmentNote}`
+              ? membershipActivated
+                ? `Recovered the existing member record, invoiced it, recorded payment, and activated the membership.${enrollmentNote}`
+                : `Recovered the existing member record and recorded payment. Membership activation is pending until ${membershipPolicySettings.minPartialPaymentPercent}% is collected.${enrollmentNote}`
+              : membershipActivated
+                ? `Member created, invoiced, payment recorded, and membership activated.${enrollmentNote}`
+                : `Member created and invoiced. Payment was recorded, but activation is pending until ${membershipPolicySettings.minPartialPaymentPercent}% is collected.${enrollmentNote}`
             : resumedExistingMember
               ? `Recovered the existing member record and generated the invoice. No payment received yet, so access remains pending.${enrollmentNote}`
               : `Member created and invoiced. No payment received yet, so access remains pending.${enrollmentNote}`,
       });
+      return;
     } catch (submitError) {
+      moveToStep(3);
       if (submitError instanceof ApiError && submitError.message.toLowerCase().includes("mobile number already exists")) {
         try {
           const memberRecord = await findRecoverableMember();
@@ -1180,11 +1494,14 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   const enquiryCodeLabel = inquiry
     ? formatInquiryCode(inquiry.inquiryId, { branchCode: inquiry.branchCode, createdAt: inquiry.createdAt || inquiry.inquiryAt })
     : "Pending";
-  const memberCodePreview = inquiry
-    ? formatMemberCode(inquiry.inquiryId, { branchCode: inquiry.branchCode, createdAt: inquiry.createdAt || inquiry.inquiryAt })
-    : "Generated after conversion";
   const selectedFamilyLabel = productFamilyLabel(selectedPrimaryVariant?.categoryCode || selectedPrimaryProduct?.categoryCode);
   const selectedManualTrainer = branchCoaches.find((c) => c.id === manualTrainerId) || null;
+  const clientRepLabel =
+    inquiry?.clientRepStaffId && inquiry.clientRepStaffId === resolveStaffId(user)
+      ? user?.name || `Staff #${inquiry.clientRepStaffId}`
+      : inquiry?.clientRepStaffId
+        ? `Staff #${inquiry.clientRepStaffId}`
+        : user?.name || "-";
   const trainerAssistLabel = !selectedPrimaryVariant
     ? "Pick a plan to evaluate trainer assignment."
     : isFlagshipVariant(selectedPrimaryVariant)
@@ -1196,24 +1513,98 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
           ? `Trainer: ${selectedManualTrainer.name}`
           : "Select a trainer for this transformation program."
         : "Trainer assignment is not required for this plan family.";
+  const onboardingContext = inquiry
+    ? `Convert this enquiry into a member profile, attach memberships, and capture the first invoice against ${selectedBranchName || inquiry.branchCode || "the current branch"}.`
+    : "Convert this enquiry into a member profile, attach memberships, and capture the first invoice.";
+
+  const viewDocumentPdf = async (type: "invoice" | "receipt", id: number | string) => {
+    if (!token) {
+      return;
+    }
+
+    const busyKey = `${type}-view-${id}`;
+    setDocumentBusyKey(busyKey);
+    try {
+      const blob = type === "invoice"
+        ? await subscriptionService.getInvoicePdf(token, id)
+        : await subscriptionService.getReceiptPdf(token, id);
+      const url = URL.createObjectURL(new Blob([blob], { type: "application/pdf" }));
+      window.open(url, "_blank", "noopener,noreferrer");
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (documentError) {
+      setToast({
+        kind: "error",
+        message: documentError instanceof ApiError ? documentError.message : `Unable to open the ${type} PDF.`,
+      });
+    } finally {
+      setDocumentBusyKey(null);
+    }
+  };
+
+  const downloadDocumentPdf = async (type: "invoice" | "receipt", id: number | string, filename: string) => {
+    if (!token) {
+      return;
+    }
+
+    const busyKey = `${type}-download-${id}`;
+    setDocumentBusyKey(busyKey);
+    try {
+      const blob = type === "invoice"
+        ? await subscriptionService.getInvoicePdf(token, id)
+        : await subscriptionService.getReceiptPdf(token, id);
+      const url = URL.createObjectURL(new Blob([blob], { type: "application/pdf" }));
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename.endsWith(".pdf") ? filename : `${filename}.pdf`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
+    } catch (documentError) {
+      setToast({
+        kind: "error",
+        message: documentError instanceof ApiError ? documentError.message : `Unable to download the ${type} PDF.`,
+      });
+    } finally {
+      setDocumentBusyKey(null);
+    }
+  };
+
+  const shareDocumentPdf = async (type: "invoice" | "receipt", id: number | string, filename: string, title: string) => {
+    if (!token) {
+      return;
+    }
+
+    const busyKey = `${type}-share-${id}`;
+    setDocumentBusyKey(busyKey);
+    try {
+      const blob = type === "invoice"
+        ? await subscriptionService.getInvoicePdf(token, id)
+        : await subscriptionService.getReceiptPdf(token, id);
+      const safeFilename = filename.endsWith(".pdf") ? filename : `${filename}.pdf`;
+      const file = new File([blob], safeFilename, { type: "application/pdf" });
+
+      if (navigator.share && (!navigator.canShare || navigator.canShare({ files: [file] }))) {
+        await navigator.share({ title, files: [file] });
+      } else {
+        await downloadDocumentPdf(type, id, safeFilename);
+      }
+    } catch (documentError) {
+      setToast({
+        kind: "error",
+        message: documentError instanceof ApiError ? documentError.message : `Unable to share the ${type} PDF.`,
+      });
+    } finally {
+      setDocumentBusyKey(null);
+    }
+  };
 
   return (
     <div className="space-y-5">
       {toast ? <ToastBanner kind={toast.kind} message={toast.message} onClose={() => setToast(null)} /> : null}
 
       <SectionCard
-        title="Guided Member Onboarding"
-        subtitle="Convert the enquiry into a fully billed member in one guided flow."
-        actions={
-          <div className="flex flex-wrap gap-2">
-            <Link
-              href="/portal/inquiries"
-              className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-white/[0.08]"
-            >
-              Back to Inquiries
-            </Link>
-          </div>
-        }
+        title="Member Onboarding"
       >
         {!canCreateMember || !canConvertInquiry ? (
           <p className="rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">
@@ -1226,28 +1617,18 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
             <div className="rounded-[30px] border border-white/10 bg-[linear-gradient(135deg,rgba(196,36,41,0.18),rgba(15,18,25,0.92))] p-6">
               <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
                 <div className="space-y-4">
-                  <div className="flex flex-wrap items-center gap-3">
-                    <span className="rounded-full border border-[#c42924]/30 bg-[#c42924]/12 px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-[#ffd6d4]">
-                      Enquiry Conversion
-                    </span>
-                    <span className="rounded-full border border-white/10 bg-white/[0.06] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.24em] text-slate-300">
-                      {selectedFamilyLabel}
-                    </span>
-                  </div>
                   <div>
                     <h3 className="text-2xl font-semibold text-white">
-                      {inquiry ? `${inquiry.fullName || "Prospect"} to member onboarding` : "Member onboarding"}
+                      {inquiry ? inquiry.fullName || "Member onboarding" : "Member onboarding"}
                     </h3>
-                    <p className="mt-2 max-w-2xl text-sm text-slate-300">
-                      We are carrying the enquiry into membership, package billing, and payment capture in one guided path.
-                    </p>
+                    <p className="mt-2 max-w-2xl text-sm text-slate-300">{onboardingContext}</p>
                   </div>
                   <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                     {[
                       { label: "Enquiry Code", value: enquiryCodeLabel, icon: <Layers3 className="h-4 w-4" /> },
-                      { label: "Future Member Code", value: memberCodePreview, icon: <UserRound className="h-4 w-4" /> },
-                      { label: "Branch", value: memberForm.defaultBranchId ? `Branch #${memberForm.defaultBranchId}` : "Current branch", icon: <ShieldCheck className="h-4 w-4" /> },
+                      { label: "Branch", value: selectedBranchName || inquiry?.branchCode || "Current branch", icon: <ShieldCheck className="h-4 w-4" /> },
                       { label: "Primary Contact", value: inquiry?.mobileNumber || memberForm.mobileNumber || "-", icon: <Phone className="h-4 w-4" /> },
+                      { label: "Client Rep", value: clientRepLabel, icon: <UserRound className="h-4 w-4" /> },
                     ].map((item) => (
                       <div key={item.label} className="rounded-2xl border border-white/10 bg-black/15 p-4">
                         <div className="flex items-center gap-2 text-[#ffd6d4]">{item.icon}</div>
@@ -1276,13 +1657,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                           </span>
                         </div>
                         <p className="mt-4 text-sm font-semibold text-white">{item.label}</p>
-                        <p className="mt-1 text-xs text-slate-400">
-                          {item.step === 1
-                            ? "Member identity and contact essentials."
-                            : item.step === 2
-                              ? "Choose plan family, pricing, and benefits."
-                              : "Collect payment and complete the conversion."}
-                        </p>
+	                        <p className="mt-1 text-xs text-slate-400">{item.description}</p>
                       </div>
                     );
                   })}
@@ -1290,42 +1665,10 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
               </div>
             </div>
 
-            <div className="grid gap-6 xl:grid-cols-[minmax(0,1.2fr)_360px]">
-              <div className="space-y-6">
-                {currentStep === 1 ? (
-                  <SectionCard title="Step 1 · Member Info" subtitle="Turn the enquiry into a complete member profile before we touch subscription or billing.">
-                    <div className="grid gap-6 xl:grid-cols-[240px_minmax(0,1fr)]">
-                      <div className="rounded-[24px] border border-white/10 bg-[#161d28] p-5">
-                        <div className="mx-auto flex h-28 w-28 items-center justify-center rounded-[28px] border border-white/10 bg-[linear-gradient(180deg,#25161a_0%,#151a24_100%)] text-3xl font-bold text-white">
-                          {initials(memberForm.fullName || inquiry?.fullName || "M")}
-                        </div>
-                        <div className="mt-4 text-center">
-                          <p className="text-sm font-semibold text-white">{memberForm.fullName || "Member preview"}</p>
-                          <p className="mt-1 text-xs text-slate-400">Photo can be added from the member profile after onboarding.</p>
-                        </div>
-                        <div className="mt-5 space-y-3 rounded-2xl border border-white/8 bg-black/10 p-4">
-                          <div>
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Source</p>
-                            <p className="mt-1 text-sm text-white">{inquiry?.promotionSource || "Walk-in"}</p>
-                          </div>
-                          <div>
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Assigned To</p>
-                            <p className="mt-1 text-sm text-white">
-                              {inquiry?.assignedToStaffId
-                                ? `Staff #${inquiry.assignedToStaffId}`
-                                : inquiry?.clientRepStaffId
-                                  ? `Staff #${inquiry.clientRepStaffId}`
-                                  : user?.name || "-"}
-                            </p>
-                          </div>
-                          <div>
-                            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Enquiry Date</p>
-                            <p className="mt-1 text-sm text-white">{inquiry?.inquiryAt || new Date().toISOString().slice(0, 10)}</p>
-                          </div>
-                        </div>
-                      </div>
-
-                      <div className="space-y-5">
+	            <div className="space-y-6">
+	                {currentStep === 1 ? (
+	                  <SectionCard title="Step 1 · Member Info">
+	                    <div className="space-y-5">
                         <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
                           <div className="mb-4 flex items-center gap-3">
                             <UserRound className="h-5 w-5 text-[#ffb4b1]" />
@@ -1362,16 +1705,8 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                 placeholder="Optional"
                               />
                             </label>
-                            <label className="space-y-2">
-                              <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Member Code</span>
-                              <input
-                                className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-slate-300 outline-none"
-                                value={memberCodePreview}
-                                disabled
-                              />
-                            </label>
-                          </div>
-                        </div>
+	                          </div>
+	                        </div>
 
                         <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
                           <div className="mb-4 flex items-center gap-3">
@@ -1485,20 +1820,27 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                             </label>
                           </div>
                         </div>
-                      </div>
-                    </div>
-                  </SectionCard>
-                ) : null}
+	                    </div>
+	                  </SectionCard>
+	                ) : null}
 
                 {currentStep === 2 ? (
                   <div className="space-y-6">
-                    <SectionCard title="Step 2 · Subscription Details" subtitle="Pick the membership package, tune the commercials, and review the bundled benefits.">
+	                    <SectionCard title="Step 2 · Membership Details">
                       <div className="space-y-6">
                         <div>
                           <div className="mb-4 flex items-center justify-between gap-3">
                             <div>
-                              <h4 className="text-sm font-semibold text-white">Choose Primary Plan</h4>
-                              <p className="text-xs text-slate-400">Guide the operator through category, product, and then variant so the catalog stays easy to scan.</p>
+	                              <h4 className="text-sm font-semibold text-white">
+                                  {canAddPrimaryMembership ? "Add Primary Membership" : showPtComposer ? "Add PT Membership" : "Membership Builder"}
+                                </h4>
+                                <p className="mt-1 text-xs text-slate-400">
+                                  {canAddPrimaryMembership
+                                    ? "Select the base gym, flex, group class, or transformation plan and add it to the table."
+                                    : showPtComposer
+                                      ? "Select the personal training package to add under this member."
+                                      : "Membership lines are already added below. Review the table and continue to billing."}
+                                </p>
                             </div>
                             <label className="space-y-2">
                               <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Start Date</span>
@@ -1511,6 +1853,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                               />
                             </label>
                           </div>
+                          {canAddPrimaryMembership ? (
                           <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
                             <div className="grid gap-4 lg:grid-cols-3">
                               <label className="space-y-2">
@@ -1521,15 +1864,19 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                   onChange={(event) => {
                                     setPrimaryCategoryFilter(event.target.value);
                                     setPrimaryProductFilter("");
-                                    setPricingInputMode(null);
                                     setSubscriptionForm((current) => ({
                                       ...current,
                                       productVariantId: "",
-                                      sellingPrice: "",
-                                      discountPercent: "",
+                                      primarySellingPrice: "",
+                                      primaryDiscountPercent: "",
+                                      includeAddOn: false,
+                                      addOnVariantId: "",
+                                      addOnSellingPrice: "",
+                                      addOnDiscountPercent: "",
                                     }));
                                   }}
                                 >
+                                  <option value="">Select category</option>
                                   {primaryCategoryOptions.map((categoryCode) => (
                                     <option key={categoryCode} value={categoryCode}>
                                       {productFamilyLabel(categoryCode)}
@@ -1542,17 +1889,22 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                 <select
                                   className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
                                   value={primaryProductFilter}
+                                  disabled={!primaryCategoryFilter}
                                   onChange={(event) => {
                                     setPrimaryProductFilter(event.target.value);
-                                    setPricingInputMode(null);
                                     setSubscriptionForm((current) => ({
                                       ...current,
                                       productVariantId: "",
-                                      sellingPrice: "",
-                                      discountPercent: "",
+                                      primarySellingPrice: "",
+                                      primaryDiscountPercent: "",
+                                      includeAddOn: false,
+                                      addOnVariantId: "",
+                                      addOnSellingPrice: "",
+                                      addOnDiscountPercent: "",
                                     }));
                                   }}
                                 >
+                                  <option value="">{primaryCategoryFilter ? "Select product" : "Choose category first"}</option>
                                   {filteredPrimaryProducts.map((product) => (
                                     <option key={product.productCode} value={product.productCode}>
                                       {product.productName}
@@ -1588,14 +1940,13 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                   key={variant.variantId}
                                   type="button"
                                   onClick={() => {
-                                    setPricingInputMode(null);
                                     setPrimaryCategoryFilter(variant.categoryCode);
                                     setPrimaryProductFilter(variant.productCode);
                                     setSubscriptionForm((current) => ({
                                       ...current,
                                       productVariantId: variant.variantId,
-                                      sellingPrice: "",
-                                      discountPercent: "",
+                                      primarySellingPrice: "",
+                                      primaryDiscountPercent: "",
                                     }));
                                   }}
                                   className={`rounded-[24px] border p-5 text-left transition ${active ? "border-[#c42924]/50 bg-[#1b1114] shadow-[0_20px_60px_rgba(196,36,41,0.12)]" : "border-white/10 bg-[#151b26] hover:border-white/20 hover:bg-[#18202c]"}`}
@@ -1619,7 +1970,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                     </div>
                                     <div className="text-right text-xs text-slate-400">
                                       <p>{variant.validityDays} days validity</p>
-                                      <p>{variant.passBenefitDays} pass benefit days</p>
+	                                      <p>{variant.passBenefitDays} pause benefit days</p>
                                     </div>
                                   </div>
                                   <div className="mt-4 flex flex-wrap gap-2">
@@ -1634,63 +1985,180 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                             })}
                             </div>
                           </div>
+                          ) : null}
                         </div>
 
-                        <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
-                          <div className="mb-4 flex items-center gap-3">
-                            <Sparkles className="h-5 w-5 text-[#ffb4b1]" />
-                            <div>
-                              <h4 className="text-sm font-semibold text-white">Pricing & Commercials</h4>
-                              <p className="text-xs text-slate-400">Selling price and discount percent stay in sync automatically.</p>
+                        <div className="space-y-5">
+                          {canAddPrimaryMembership ? (
+                          <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
+                            <div className="mb-4 flex items-center gap-3">
+                              <Sparkles className="h-5 w-5 text-[#ffb4b1]" />
+                              <div>
+	                                <h4 className="text-sm font-semibold text-white">Pricing & Commercials</h4>
+                                <p className="text-xs text-slate-400">Capture the primary membership pricing first. PT add-ons get their own commercial values.</p>
+                              </div>
+                            </div>
+                            <div className="rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
+                              <div className="flex items-center justify-between gap-3">
+                                <div>
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Primary Membership Commercials</p>
+                                  <p className="mt-1 text-sm text-slate-300">
+                                    {selectedPrimaryVariant
+                                      ? `${normalizeDisplayVariantName(selectedPrimaryVariant.variantName)} · ${formatCurrency(selectedPrimaryVariant.basePrice)}`
+                                      : "Select the primary membership variant first."}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                                <label className="space-y-2">
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Primary Selling Price</span>
+                                  <input
+                                    className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
+                                    value={subscriptionForm.primarySellingPrice}
+                                    onChange={(event) => {
+                                      const value = sanitizeIntegerString(event.target.value);
+                                      const baseAmount = selectedPrimaryVariant?.basePrice || 0;
+                                      const sellingPrice = value;
+                                      const discountPercent =
+                                        value === "" || baseAmount <= 0
+                                          ? ""
+                                          : formatDecimalInput(((baseAmount - Math.min(baseAmount, Number(value))) / baseAmount) * 100);
+                                      setSubscriptionForm((current) => ({
+                                        ...current,
+                                        primarySellingPrice: sellingPrice,
+                                        primaryDiscountPercent: discountPercent,
+                                      }));
+                                    }}
+                                    placeholder={selectedPrimaryVariant ? `Default ${formatCurrency(selectedPrimaryVariant.basePrice)}` : "Select a primary plan first"}
+                                    disabled={!selectedPrimaryVariant}
+                                  />
+                                </label>
+                                <label className="space-y-2">
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Primary Discount Percent</span>
+                                  <input
+                                    className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
+                                    value={subscriptionForm.primaryDiscountPercent}
+                                    onChange={(event) => {
+                                      const value = sanitizeNumericString(event.target.value);
+                                      const baseAmount = selectedPrimaryVariant?.basePrice || 0;
+                                      const normalizedPercent =
+                                        value === "" ? undefined : Math.min(100, Math.max(0, Number(value)));
+                                      const sellingPrice =
+                                        normalizedPercent === undefined || baseAmount <= 0
+                                          ? ""
+                                          : formatDecimalInput(baseAmount * (1 - normalizedPercent / 100));
+                                      setSubscriptionForm((current) => ({
+                                        ...current,
+                                        primaryDiscountPercent: value,
+                                        primarySellingPrice: sellingPrice,
+                                      }));
+                                    }}
+                                    placeholder="Leave blank for no discount"
+                                    disabled={!selectedPrimaryVariant}
+                                  />
+                                </label>
+                              </div>
                             </div>
                           </div>
-                          <div className="grid gap-4 md:grid-cols-2">
-                            <label className="space-y-2">
-                              <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Selling Price</span>
-                              <input
-                                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
-                                value={subscriptionForm.sellingPrice}
-                                onChange={(event) => {
-                                  setPricingInputMode("sellingPrice");
-                                  setSubscriptionForm((current) => ({
-                                    ...current,
-                                    sellingPrice: sanitizeNumericString(event.target.value),
-                                  }));
-                                }}
-                                placeholder="Leave blank to use plan amount"
-                              />
-                            </label>
-                            <label className="space-y-2">
-                              <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Discount Percent</span>
-                              <input
-                                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
-                                value={subscriptionForm.discountPercent}
-                                onChange={(event) => {
-                                  setPricingInputMode("discountPercent");
-                                  setSubscriptionForm((current) => ({
-                                    ...current,
-                                    discountPercent: sanitizeNumericString(event.target.value),
-                                  }));
-                                }}
-                                placeholder="Leave blank for no discount"
-                              />
-                            </label>
+                          ) : null}
+
+                          <div ref={membershipTableRef} className="mt-5 rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
+                            <div className="flex items-center justify-between gap-3">
+                              <div>
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Membership Table</p>
+                                <p className="mt-1 text-sm text-slate-300">Add the primary membership first, then attach PT if needed. The table below drives the invoice.</p>
+                              </div>
+                              {(canAddPrimaryMembership || canAddPtMembership) ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    if (canAddPrimaryMembership || showPtComposer) {
+                                      addMembershipLineItem();
+                                      return;
+                                    }
+                                    if (canAddPtMembership) {
+                                      setShowPtComposer(true);
+                                    }
+                                  }}
+                                  className="rounded-2xl bg-[#c42924] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#a81f1c]"
+                                >
+                                  {canAddPrimaryMembership || showPtComposer ? "Add to Table" : "Add PT Membership"}
+                                </button>
+                              ) : null}
+                            </div>
+                            <div className="mt-4 overflow-hidden rounded-2xl border border-white/10">
+                              <table className="min-w-full divide-y divide-white/10 text-sm text-slate-300">
+                                <thead className="bg-white/[0.03] text-xs uppercase tracking-[0.16em] text-slate-400">
+                                  <tr>
+                                    <th className="px-4 py-3 text-left font-semibold">Line</th>
+                                    <th className="px-4 py-3 text-left font-semibold">Product</th>
+                                    <th className="px-4 py-3 text-left font-semibold">Variant</th>
+                                    <th className="px-4 py-3 text-right font-semibold">Plan Price</th>
+                                    <th className="px-4 py-3 text-right font-semibold">Selling Price</th>
+                                    <th className="px-4 py-3 text-right font-semibold">Discount</th>
+                                    <th className="px-4 py-3 text-right font-semibold">Action</th>
+                                  </tr>
+                                </thead>
+                                <tbody className="divide-y divide-white/10 bg-[#101722]">
+                                  {membershipLineItems.length === 0 ? (
+                                    <tr>
+                                      <td colSpan={7} className="px-4 py-6 text-center text-sm text-slate-400">
+                                        No memberships added yet.
+                                      </td>
+                                    </tr>
+                                  ) : (
+                                    membershipLineItems.map((item) => (
+                                      <tr key={item.lineType}>
+                                        <td className="px-4 py-3 text-white">{item.lineType === "PRIMARY" ? "Primary" : "PT Add-on"}</td>
+                                        <td className="px-4 py-3">{item.productName}</td>
+                                        <td className="px-4 py-3">{normalizeDisplayVariantName(item.variantName)}</td>
+                                        <td className="px-4 py-3 text-right">{formatCurrency(item.basePrice)}</td>
+                                        <td className="px-4 py-3 text-right">{formatCurrency(item.sellingPrice)}</td>
+                                        <td className="px-4 py-3 text-right">{Math.round(item.discountPercent)}%</td>
+                                        <td className="px-4 py-3 text-right">
+                                          <button
+                                            type="button"
+                                            onClick={() => removeMembershipLineItem(item.lineType)}
+                                            className="rounded-xl border border-white/10 px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/[0.06]"
+                                          >
+                                            Remove
+                                          </button>
+                                        </td>
+                                      </tr>
+                                    ))
+                                  )}
+                                </tbody>
+                              </table>
+                            </div>
                           </div>
 
-                          {addOnVariants.length > 0 ? (
-                            <div className="mt-5">
+                          {canAddPtMembership && showPtComposer ? (
+                            <div className="mt-5 space-y-4 rounded-[24px] border border-white/8 bg-[#161d28] p-5">
+                              <div className="flex items-center gap-3">
+                                <Sparkles className="h-5 w-5 text-[#ffb4b1]" />
+                                <div>
+                                  <h4 className="text-sm font-semibold text-white">Add Personal Training</h4>
+                                  <p className="text-xs text-slate-400">Choose the PT package the member is purchasing along with the gym membership.</p>
+                                </div>
+                              </div>
                               <div className="grid gap-4 lg:grid-cols-3">
                                 <label className="space-y-2">
-                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Add-on Category</span>
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Category</span>
                                   <select
                                     className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
                                     value={addOnCategoryFilter}
                                     onChange={(event) => {
                                       setAddOnCategoryFilter(event.target.value);
                                       setAddOnProductFilter("");
-                                      setSubscriptionForm((current) => ({ ...current, addOnVariantId: "" }));
+                                      setSubscriptionForm((current) => ({
+                                        ...current,
+                                        addOnVariantId: "",
+                                        addOnSellingPrice: "",
+                                        addOnDiscountPercent: "",
+                                      }));
                                     }}
                                   >
+                                    <option value="">Select category</option>
                                     {addOnCategoryOptions.map((categoryCode) => (
                                       <option key={categoryCode} value={categoryCode}>
                                         {productFamilyLabel(categoryCode)}
@@ -1699,15 +2167,22 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                   </select>
                                 </label>
                                 <label className="space-y-2">
-                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Add-on Product</span>
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Product</span>
                                   <select
                                     className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
                                     value={addOnProductFilter}
+                                    disabled={!addOnCategoryFilter}
                                     onChange={(event) => {
                                       setAddOnProductFilter(event.target.value);
-                                      setSubscriptionForm((current) => ({ ...current, addOnVariantId: "" }));
+                                      setSubscriptionForm((current) => ({
+                                        ...current,
+                                        addOnVariantId: "",
+                                        addOnSellingPrice: "",
+                                        addOnDiscountPercent: "",
+                                      }));
                                     }}
                                   >
+                                    <option value="">{addOnCategoryFilter ? "Select product" : "Choose category first"}</option>
                                     {filteredAddOnProducts.map((product) => (
                                       <option key={product.productCode} value={product.productCode}>
                                         {product.productName}
@@ -1716,28 +2191,27 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                   </select>
                                 </label>
                                 <div className="rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Add-on Summary</p>
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Summary</p>
                                   <p className="mt-2 text-sm font-semibold text-white">
-                                    {selectedAddOnVariants[0] ? normalizeDisplayVariantName(selectedAddOnVariants[0].variantName) : "No add-on selected"}
+                                    {draftSelectedAddOnVariant ? normalizeDisplayVariantName(draftSelectedAddOnVariant.variantName) : "Choose a PT plan"}
                                   </p>
                                   <p className="mt-1 text-xs text-slate-400">
-                                    {selectedAddOnVariants[0]
-                                      ? `${selectedAddOnVariants[0].includedPtSessions} PT sessions · ${formatCurrency(selectedAddOnVariants[0].basePrice)}`
-                                      : "Choose a PT add-on only when the member actually needs one."}
+                                    {draftSelectedAddOnVariant
+                                      ? `${draftSelectedAddOnVariant.includedPtSessions} PT sessions · ${formatCurrency(draftSelectedAddOnVariant.basePrice)}`
+                                      : "Select a PT category, product, and variant to add it below."}
                                   </p>
                                 </div>
                               </div>
-                              <div className="mt-3 grid gap-3 md:grid-cols-2">
-                                <button
-                                  type="button"
-                                  onClick={() => setSubscriptionForm((current) => ({ ...current, addOnVariantId: "" }))}
-                                  className={`rounded-2xl border p-4 text-left transition ${subscriptionForm.addOnVariantId === "" ? "border-[#c42924]/50 bg-[#1b1114]" : "border-white/10 bg-[#111821] hover:border-white/20"}`}
-                                >
-                                  <p className="text-sm font-semibold text-white">No PT Add-on</p>
-                                  <p className="mt-1 text-xs text-slate-400">Keep this member on the primary package only.</p>
-                                </button>
+                              <div className="grid gap-4 lg:grid-cols-2">
+                                {filteredAddOnVariants.length === 0 ? (
+                                  <div className="rounded-[24px] border border-dashed border-white/12 bg-[#101722] p-5 text-sm text-slate-400 lg:col-span-2">
+                                    No PT variants are configured for this product yet.
+                                  </div>
+                                ) : null}
                                 {filteredAddOnVariants.map((variant) => {
                                   const active = subscriptionForm.addOnVariantId === variant.variantId;
+                                  const variantProduct = products.find((product) => product.productCode === variant.productCode);
+                                  const features = splitFeatures(variant.includedFeatures).slice(0, 4);
                                   return (
                                     <button
                                       key={variant.variantId}
@@ -1745,15 +2219,101 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                       onClick={() => {
                                         setAddOnCategoryFilter(variant.categoryCode);
                                         setAddOnProductFilter(variant.productCode);
-                                        setSubscriptionForm((current) => ({ ...current, addOnVariantId: variant.variantId }));
+                                        setSubscriptionForm((current) => ({
+                                          ...current,
+                                          addOnVariantId: variant.variantId,
+                                          addOnSellingPrice: "",
+                                          addOnDiscountPercent: "",
+                                        }));
                                       }}
-                                      className={`rounded-2xl border p-4 text-left transition ${active ? "border-[#c42924]/50 bg-[#1b1114]" : "border-white/10 bg-[#111821] hover:border-white/20"}`}
+                                      className={`rounded-[24px] border p-5 text-left transition ${active ? "border-[#c42924]/50 bg-[#1b1114] shadow-[0_20px_60px_rgba(196,36,41,0.12)]" : "border-white/10 bg-[#151b26] hover:border-white/20 hover:bg-[#18202c]"}`}
                                     >
-                                      <p className="text-sm font-semibold text-white">{normalizeDisplayVariantName(variant.variantName)}</p>
-                                      <p className="mt-1 text-xs text-slate-400">{formatCurrency(variant.basePrice)} · {variant.includedPtSessions} PT sessions</p>
+                                      <div className="flex items-start justify-between gap-3">
+                                        <div>
+                                          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">{productFamilyLabel(variant.categoryCode)}</p>
+                                          <h5 className="mt-2 text-lg font-semibold text-white">{normalizeDisplayVariantName(variant.variantName)}</h5>
+                                          <p className="mt-1 text-sm text-slate-400">{variantProduct?.productName || variant.productCode}</p>
+                                        </div>
+                                        <span className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] ${statusBadgeClass(active)}`}>
+                                          {active ? "Selected" : `${variant.durationMonths} months`}
+                                        </span>
+                                      </div>
+                                      <div className="mt-5 flex items-end justify-between gap-3">
+                                        <div>
+                                          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Base Price</p>
+                                          <p className="mt-1 text-2xl font-semibold text-white">{formatCurrency(variant.basePrice)}</p>
+                                        </div>
+                                        <div className="text-right text-xs text-slate-400">
+                                          <p>{variant.includedPtSessions} PT sessions</p>
+                                          <p>{variant.validityDays} days validity</p>
+                                        </div>
+                                      </div>
+                                      <div className="mt-4 flex flex-wrap gap-2">
+                                        {features.map((feature) => (
+                                          <span key={feature} className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
+                                            {featurePillLabel(feature)}
+                                          </span>
+                                        ))}
+                                      </div>
                                     </button>
                                   );
                                 })}
+                              </div>
+                              <div className="rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Commercials</p>
+                                <p className="mt-1 text-sm text-slate-300">
+                                  {draftSelectedAddOnVariant
+                                    ? `${normalizeDisplayVariantName(draftSelectedAddOnVariant.variantName)} · ${formatCurrency(draftSelectedAddOnVariant.basePrice)}`
+                                    : "Select a PT variant before entering the commercial values."}
+                                </p>
+                                <div className="mt-4 grid gap-4 md:grid-cols-2">
+                                  <label className="space-y-2">
+                                    <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Selling Price</span>
+                                    <input
+                                      className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
+                                      value={subscriptionForm.addOnSellingPrice}
+                                      onChange={(event) => {
+                                        const value = sanitizeIntegerString(event.target.value);
+                                        const baseAmount = draftSelectedAddOnVariant?.basePrice || 0;
+                                        const discountPercent =
+                                          value === "" || baseAmount <= 0
+                                            ? ""
+                                            : formatDecimalInput(((baseAmount - Math.min(baseAmount, Number(value))) / baseAmount) * 100);
+                                        setSubscriptionForm((current) => ({
+                                          ...current,
+                                          addOnSellingPrice: value,
+                                          addOnDiscountPercent: discountPercent,
+                                        }));
+                                      }}
+                                      placeholder={draftSelectedAddOnVariant ? `Default ${formatCurrency(draftSelectedAddOnVariant.basePrice)}` : "Select PT variant first"}
+                                      disabled={!draftSelectedAddOnVariant}
+                                    />
+                                  </label>
+                                  <label className="space-y-2">
+                                    <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Discount Percent</span>
+                                    <input
+                                      className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
+                                      value={subscriptionForm.addOnDiscountPercent}
+                                      onChange={(event) => {
+                                        const value = sanitizeNumericString(event.target.value);
+                                        const baseAmount = draftSelectedAddOnVariant?.basePrice || 0;
+                                        const normalizedPercent =
+                                          value === "" ? undefined : Math.min(100, Math.max(0, Number(value)));
+                                        const sellingPrice =
+                                          normalizedPercent === undefined || baseAmount <= 0
+                                            ? ""
+                                            : formatDecimalInput(baseAmount * (1 - normalizedPercent / 100));
+                                        setSubscriptionForm((current) => ({
+                                          ...current,
+                                          addOnDiscountPercent: value,
+                                          addOnSellingPrice: sellingPrice,
+                                        }));
+                                      }}
+                                      placeholder="Leave blank for no discount"
+                                      disabled={!draftSelectedAddOnVariant}
+                                    />
+                                  </label>
+                                </div>
                               </div>
                             </div>
                           ) : null}
@@ -1764,8 +2324,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                             <div className="mb-4 flex items-center gap-3">
                               <Layers3 className="h-5 w-5 text-[#ffb4b1]" />
                               <div>
-                                <h4 className="text-sm font-semibold text-white">Complementary Benefits</h4>
-                                <p className="text-xs text-slate-400">Bundle additional benefits that should travel with this subscription.</p>
+	                                <h4 className="text-sm font-semibold text-white">Complimentary Benefits</h4>
                               </div>
                             </div>
                             <div className="grid gap-3 md:grid-cols-2">
@@ -1837,7 +2396,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                       }))
                                     }
                                   />
-                                  Pass Benefit
+	                                  Pause Benefit
                                 </label>
                                 {complementaries.passBenefit.enabled ? (
                                   <div className="mt-3">
@@ -1937,8 +2496,8 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                   </div>
                 ) : null}
 
-                {currentStep === 3 ? (
-                  <SectionCard title="Step 3 · Payment, Invoice, and Receipt" subtitle="Collect payment with a clear invoice-style checkout before completing the conversion.">
+	                {currentStep === 3 ? (
+	                  <SectionCard title="Step 3 · Payment & Billing">
                     <div className="space-y-5">
                       {completedOnboarding ? (
                         <div className="rounded-[24px] border border-emerald-400/20 bg-emerald-400/10 p-4 text-sm text-emerald-100">
@@ -1958,13 +2517,12 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
                       <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
                         <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
-                          <div className="mb-4 flex items-center gap-3">
-                            <CreditCard className="h-5 w-5 text-[#ffb4b1]" />
-                            <div>
-                              <h4 className="text-sm font-semibold text-white">Invoice Summary</h4>
-                              <p className="text-xs text-slate-400">Review the package pricing, GST, and total payable before we issue the invoice.</p>
-                            </div>
-                          </div>
+	                          <div className="mb-4 flex items-center gap-3">
+	                            <CreditCard className="h-5 w-5 text-[#ffb4b1]" />
+	                            <div>
+	                              <h4 className="text-sm font-semibold text-white">Invoice Summary</h4>
+	                            </div>
+	                          </div>
                           <div className="grid gap-3 md:grid-cols-2">
                             <div className="rounded-2xl border border-white/10 bg-[#0f141d] p-4">
                               <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Billing Context</p>
@@ -1974,32 +2532,76 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                 <div className="flex items-center justify-between gap-3"><dt>Start Date</dt><dd>{pricingPreview.startDate || "-"}</dd></div>
                                 <div className="flex items-center justify-between gap-3"><dt>End Date</dt><dd>{pricingPreview.endDate || "-"}</dd></div>
                                 <div className="flex items-center justify-between gap-3"><dt>Bill Rep</dt><dd>{user?.name || "-"}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Invoice Status</dt><dd>{formatInvoiceLifecycleStatus(completedOnboarding?.invoiceStatus, Boolean(completedOnboarding))}</dd></div>
+                                <div className="flex items-center justify-between gap-3"><dt>Invoice Status</dt><dd>{completedOnboarding ? formatInvoiceLifecycleStatus(completedOnboarding.invoiceStatus, true) : "Issued on completion"}</dd></div>
                               </dl>
                             </div>
                             <div className="rounded-2xl border border-white/10 bg-[#0f141d] p-4">
                               <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Commercial Breakdown</p>
-                              <dl className="mt-3 space-y-2 text-sm text-slate-300">
-                                <div className="flex items-center justify-between gap-3"><dt>Plan Price</dt><dd>{formatCurrency(pricingPreview.baseAmount)}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Selling Price</dt><dd>{formatCurrency(pricingPreview.sellingPrice)}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Discount Percent</dt><dd>{pricingPreview.discountPercent.toFixed(2)}%</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Discount Amount</dt><dd>{formatCurrency(pricingPreview.discountAmount)}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Net Sale Amount</dt><dd>{formatCurrency(pricingPreview.netSaleAmount)}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>GST @ {pricingPreview.gstPercentage}%</dt><dd>{formatCurrency(pricingPreview.gstAmount)}</dd></div>
-                                <div className="flex items-center justify-between gap-3 border-t border-white/10 pt-2 text-base font-semibold text-white"><dt>Total Payable</dt><dd>{formatCurrency(pricingPreview.totalPayable)}</dd></div>
-                              </dl>
+                              <div className="mt-3 overflow-hidden rounded-2xl border border-white/10">
+                                <table className="min-w-full divide-y divide-white/10 text-sm text-slate-300">
+                                  <thead className="bg-white/[0.03] text-xs uppercase tracking-[0.18em] text-slate-400">
+                                    <tr>
+                                      <th className="px-4 py-3 text-left font-semibold">Line Item</th>
+                                      <th className="px-4 py-3 text-right font-semibold">Plan Price</th>
+                                      <th className="px-4 py-3 text-right font-semibold">Selling Price</th>
+                                      <th className="px-4 py-3 text-right font-semibold">Discount</th>
+                                    </tr>
+                                  </thead>
+                                  <tbody className="divide-y divide-white/10">
+                                    <tr className="bg-[#101722]">
+                                      <td className="px-4 py-3 text-white">Primary Membership</td>
+                                      <td className="px-4 py-3 text-right">{formatCurrency(pricingPreview.primaryCommercial.baseAmount)}</td>
+                                      <td className="px-4 py-3 text-right">{formatCurrency(pricingPreview.primaryCommercial.sellingPrice)}</td>
+                                      <td className="px-4 py-3 text-right">{Math.round(pricingPreview.primaryCommercial.discountPercent)}%</td>
+                                    </tr>
+                                    {selectedAddOnVariant ? (
+                                      <tr className="bg-[#101722]">
+                                        <td className="px-4 py-3 text-white">PT Add-on</td>
+                                        <td className="px-4 py-3 text-right">{formatCurrency(pricingPreview.addOnCommercial.baseAmount)}</td>
+                                        <td className="px-4 py-3 text-right">{formatCurrency(pricingPreview.addOnCommercial.sellingPrice)}</td>
+                                        <td className="px-4 py-3 text-right">{Math.round(pricingPreview.addOnCommercial.discountPercent)}%</td>
+                                      </tr>
+                                    ) : null}
+                                  </tbody>
+                                  <tfoot className="divide-y divide-white/10 bg-black/10">
+                                    <tr>
+                                      <td className="px-4 py-3 font-semibold text-white">Total Plan Price</td>
+                                      <td className="px-4 py-3 text-right font-semibold text-white">{formatCurrency(pricingPreview.baseAmount)}</td>
+                                      <td className="px-4 py-3 text-right font-semibold text-white">{formatCurrency(pricingPreview.netSaleAmount)}</td>
+                                      <td className="px-4 py-3 text-right font-semibold text-white">{formatCurrency(pricingPreview.discountAmount)}</td>
+                                    </tr>
+                                    <tr>
+                                      <td className="px-4 py-3">CGST @ {pricingPreview.gstPercentage / 2}%</td>
+                                      <td className="px-4 py-3" />
+                                      <td className="px-4 py-3 text-right">{formatCurrency(pricingPreview.cgstAmount)}</td>
+                                      <td className="px-4 py-3" />
+                                    </tr>
+                                    <tr>
+                                      <td className="px-4 py-3">SGST @ {pricingPreview.gstPercentage / 2}%</td>
+                                      <td className="px-4 py-3" />
+                                      <td className="px-4 py-3 text-right">{formatCurrency(pricingPreview.sgstAmount)}</td>
+                                      <td className="px-4 py-3" />
+                                    </tr>
+                                    <tr className="text-base">
+                                      <td className="px-4 py-3 font-semibold text-white">Total Payable</td>
+                                      <td className="px-4 py-3" />
+                                      <td className="px-4 py-3 text-right font-semibold text-white">{formatCurrency(pricingPreview.totalPayable)}</td>
+                                      <td className="px-4 py-3" />
+                                    </tr>
+                                  </tfoot>
+                                </table>
+                              </div>
                             </div>
                           </div>
                         </div>
 
                         <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
-                          <div className="mb-4 flex items-center gap-3">
-                            <Wallet className="h-5 w-5 text-[#ffb4b1]" />
-                            <div>
-                              <h4 className="text-sm font-semibold text-white">Payment Collection</h4>
-                              <p className="text-xs text-slate-400">Capture the amount now. Partial payment keeps the subscription active while the balance stays pending.</p>
-                            </div>
-                          </div>
+	                          <div className="mb-4 flex items-center gap-3">
+	                            <Wallet className="h-5 w-5 text-[#ffb4b1]" />
+	                            <div>
+	                              <h4 className="text-sm font-semibold text-white">Payment Collection</h4>
+	                            </div>
+	                          </div>
 
                           <div className="space-y-4">
                             <label className="space-y-2">
@@ -2010,7 +2612,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                 onChange={(event) =>
                                   setSubscriptionForm((current) => ({
                                     ...current,
-                                    receivedAmount: event.target.value.replace(/[^0-9.]/g, ""),
+                                    receivedAmount: sanitizeIntegerString(event.target.value),
                                   }))
                                 }
                                 placeholder="Enter collected amount"
@@ -2046,119 +2648,14 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                               </dl>
                             </div>
                           </div>
-                        </div>
-                      </div>
+	                        </div>
+	                      </div>
+	                    </div>
+	                  </SectionCard>
+	                ) : null}
+	              </div>
 
-                      <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5 text-sm text-slate-300">
-                        <p className="font-semibold text-white">What happens on completion</p>
-                        <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                          {[
-                            "Create the member profile",
-                            "Create the subscription and issue the invoice",
-                            "Record the received amount and generate the receipt",
-                            "Activate the membership when payment is collected",
-                            "Convert the enquiry into a member relationship",
-                            "Open the member profile for final verification",
-                          ].map((item) => (
-                            <div key={item} className="flex items-start gap-3 rounded-2xl border border-white/10 bg-[#0f141d] p-4">
-                              <ArrowRight className="mt-0.5 h-4 w-4 flex-none text-[#ffb4b1]" />
-                              <span>{item}</span>
-                            </div>
-                          ))}
-                        </div>
-                      </div>
-                    </div>
-                  </SectionCard>
-                ) : null}
-              </div>
-
-              <aside className="space-y-6 xl:sticky xl:top-24 xl:self-start">
-                <div className="rounded-[28px] border border-white/10 bg-[#141a25] p-5 shadow-[0_24px_80px_rgba(0,0,0,0.32)]">
-                  <div className="flex items-center gap-3">
-                    <div className="flex h-12 w-12 items-center justify-center rounded-2xl border border-[#c42924]/30 bg-[#c42924]/10 text-[#ffd6d4]">
-                      <UserRound className="h-5 w-5" />
-                    </div>
-                    <div>
-                      <p className="text-sm font-semibold text-white">{memberForm.fullName || inquiry?.fullName || "Member preview"}</p>
-                      <p className="text-xs text-slate-400">{memberForm.mobileNumber || inquiry?.mobileNumber || "Awaiting primary contact"}</p>
-                    </div>
-                  </div>
-
-                  <div className="mt-5 space-y-3">
-                    <div className="rounded-2xl border border-white/8 bg-[#0f141d] p-4">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Current Step</p>
-                      <p className="mt-2 text-lg font-semibold text-white">{stepItems.find((item) => item.step === currentStep)?.label}</p>
-                      <p className="mt-2 text-sm text-slate-400">
-                        {currentStep === 1
-                          ? "Clean up member identity, contact, and emergency details."
-                          : currentStep === 2
-                            ? "Choose the plan, apply pricing, and confirm benefits."
-                            : "Review the invoice, collect payment, and complete onboarding."}
-                      </p>
-                    </div>
-
-                    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-                      {[
-                        { label: "Selected Plan", value: selectedPrimaryVariant ? normalizeDisplayVariantName(selectedPrimaryVariant.variantName) : "Not chosen" },
-                        { label: "Plan Family", value: selectedFamilyLabel },
-                        { label: "Default Trainer", value: selectedPrimaryVariant ? (isFlagshipVariant(selectedPrimaryVariant) ? assignedTrainer?.name || "Pending coach" : "Not required") : "Pending plan" },
-                        { label: "Payment Status", value: formatPaymentCollectionStatus(pricingPreview.receivedAmount, pricingPreview.balanceAmount) },
-                      ].map((item) => (
-                        <div key={item.label} className="rounded-2xl border border-white/8 bg-[#0f141d] p-4">
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">{item.label}</p>
-                          <p className="mt-2 text-sm font-semibold text-white">{item.value}</p>
-                        </div>
-                      ))}
-                    </div>
-
-                    <div className="rounded-2xl border border-white/8 bg-[#0f141d] p-4">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Financial Snapshot</p>
-                      <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-1">
-                        <div>
-                          <p className="text-xs text-slate-400">Plan + Add-ons</p>
-                          <p className="mt-1 text-lg font-semibold text-white">{formatCurrency(pricingPreview.baseAmount)}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-slate-400">Total Payable</p>
-                          <p className="mt-1 text-lg font-semibold text-white">{formatCurrency(pricingPreview.totalPayable)}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-slate-400">Collected Now</p>
-                          <p className="mt-1 text-lg font-semibold text-white">{formatCurrency(pricingPreview.receivedAmount)}</p>
-                        </div>
-                        <div>
-                          <p className="text-xs text-slate-400">Balance Pending</p>
-                          <p className="mt-1 text-lg font-semibold text-white">{formatCurrency(pricingPreview.balanceAmount)}</p>
-                        </div>
-                      </div>
-                    </div>
-
-                    <div className="rounded-2xl border border-white/8 bg-[#0f141d] p-4">
-                      <div className="flex items-center gap-2">
-                        <CalendarDays className="h-4 w-4 text-[#ffb4b1]" />
-                        <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Milestones</p>
-                      </div>
-                      <div className="mt-4 space-y-3 text-sm text-slate-300">
-                        <div className="flex items-center justify-between gap-3">
-                          <span>Subscription starts</span>
-                          <span className="font-semibold text-white">{pricingPreview.startDate || "-"}</span>
-                        </div>
-                        <div className="flex items-center justify-between gap-3">
-                          <span>Subscription ends</span>
-                          <span className="font-semibold text-white">{pricingPreview.endDate || "-"}</span>
-                        </div>
-                        <div className="flex items-center justify-between gap-3">
-                          <span>Invoice will be</span>
-                          <span className="font-semibold text-white">{generatedInvoiceNumber}</span>
-                        </div>
-                      </div>
-                    </div>
-                  </div>
-                </div>
-              </aside>
-            </div>
-
-            <div className="flex flex-wrap items-center justify-end gap-3">
+	            <div className="flex flex-wrap items-center justify-end gap-3">
               {currentStep > 1 ? (
                 <button
                   type="button"
@@ -2169,24 +2666,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                   Back
                 </button>
               ) : null}
-              {completedOnboarding ? (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => router.push(`/admin/members/${completedOnboarding.memberId}`)}
-                    className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
-                  >
-                    Open Member Profile
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => router.push("/portal/billing")}
-                    className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-700"
-                  >
-                    Open Billing Register
-                  </button>
-                </>
-              ) : currentStep < 3 ? (
+              {completedOnboarding ? null : currentStep < 3 ? (
                 <button
                   type="button"
                   onClick={onNextStep}
@@ -2210,6 +2690,122 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
         {error ? <p className="mt-3 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">{error}</p> : null}
       </SectionCard>
+
+      {completedOnboarding ? (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/60 px-4 py-8 backdrop-blur-sm">
+          <div className="w-full max-w-3xl rounded-[28px] border border-white/10 bg-[#111821] p-6 shadow-[0_30px_120px_rgba(0,0,0,0.45)]">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-emerald-300">Onboarding Completed</p>
+                <h3 className="mt-2 text-2xl font-semibold text-white">{memberForm.fullName || "Member created"}</h3>
+                <p className="mt-2 text-sm text-slate-300">
+                  The member, invoice, and payment records are ready. You can open the profile directly or distribute the billing documents from here.
+                </p>
+              </div>
+              <div className="rounded-full border border-emerald-400/30 bg-emerald-400/10 p-3 text-emerald-200">
+                <CheckCircle2 className="h-6 w-6" />
+              </div>
+            </div>
+
+            <div className="mt-6 grid gap-4 md:grid-cols-2">
+              <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Billing Records</p>
+                <dl className="mt-3 space-y-2 text-sm text-slate-300">
+                  <div className="flex items-center justify-between gap-3"><dt>Invoice ID</dt><dd className="font-semibold text-white">{completedOnboarding.invoiceId}</dd></div>
+                  <div className="flex items-center justify-between gap-3"><dt>Invoice Number</dt><dd className="font-semibold text-white">{completedOnboarding.invoiceNumber}</dd></div>
+                  <div className="flex items-center justify-between gap-3"><dt>Receipt ID</dt><dd className="font-semibold text-white">{completedOnboarding.receiptId || "-"}</dd></div>
+                  <div className="flex items-center justify-between gap-3"><dt>Receipt Number</dt><dd className="font-semibold text-white">{completedOnboarding.receiptNumber || "-"}</dd></div>
+                  <div className="flex items-center justify-between gap-3"><dt>Payment Status</dt><dd>{formatPaymentCollectionStatus(completedOnboarding.totalPaidAmount, completedOnboarding.balanceAmount)}</dd></div>
+                </dl>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Document Actions</p>
+                <div className="mt-3 space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void viewDocumentPdf("invoice", completedOnboarding.invoiceId)}
+                      disabled={documentBusyKey === `invoice-view-${completedOnboarding.invoiceId}`}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                    >
+                      <ExternalLink className="h-4 w-4" />
+                      View Invoice
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void downloadDocumentPdf("invoice", completedOnboarding.invoiceId, completedOnboarding.invoiceNumber)}
+                      disabled={documentBusyKey === `invoice-download-${completedOnboarding.invoiceId}`}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                    >
+                      <Download className="h-4 w-4" />
+                      Download Invoice
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void shareDocumentPdf("invoice", completedOnboarding.invoiceId, completedOnboarding.invoiceNumber, "Invoice")}
+                      disabled={documentBusyKey === `invoice-share-${completedOnboarding.invoiceId}`}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                    >
+                      <Share2 className="h-4 w-4" />
+                      Share Invoice
+                    </button>
+                  </div>
+                  {completedOnboarding.receiptId ? (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void viewDocumentPdf("receipt", completedOnboarding.receiptId!)}
+                        disabled={documentBusyKey === `receipt-view-${completedOnboarding.receiptId}`}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                      >
+                        <ExternalLink className="h-4 w-4" />
+                        View Receipt
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void downloadDocumentPdf("receipt", completedOnboarding.receiptId!, completedOnboarding.receiptNumber || `receipt-${completedOnboarding.receiptId}`)}
+                        disabled={documentBusyKey === `receipt-download-${completedOnboarding.receiptId}`}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                      >
+                        <Download className="h-4 w-4" />
+                        Download Receipt
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void shareDocumentPdf("receipt", completedOnboarding.receiptId!, completedOnboarding.receiptNumber || `receipt-${completedOnboarding.receiptId}`, "Receipt")}
+                        disabled={documentBusyKey === `receipt-share-${completedOnboarding.receiptId}`}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                      >
+                        <Share2 className="h-4 w-4" />
+                        Share Receipt
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-400">No receipt was generated because no payment was collected.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 flex flex-wrap justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => router.push("/portal/members")}
+                className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
+              >
+                Back to Members
+              </button>
+              <button
+                type="button"
+                onClick={() => router.push(`/admin/members/${completedOnboarding.memberId}`)}
+                className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-700"
+              >
+                Open Member Profile
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   );
 }

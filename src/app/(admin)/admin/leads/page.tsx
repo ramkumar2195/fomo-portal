@@ -10,6 +10,7 @@ import { subscriptionFollowUpService } from "@/lib/api/services/subscription-fol
 import { subscriptionService } from "@/lib/api/services/subscription-service";
 import { usersService } from "@/lib/api/services/users-service";
 import { formatInquiryCode } from "@/lib/inquiry-code";
+import { normalizeInquirySourceLabel } from "@/lib/inquiry-source";
 import { resolveStaffId } from "@/lib/staff-id";
 import { FollowUpChannel, FollowUpRecord } from "@/types/follow-up";
 import {
@@ -1116,7 +1117,7 @@ export default function LeadsPage() {
                             })}
                           </p>
                         </td>
-                        <td className="px-4 py-3 text-slate-700">{row.promotionSource || "-"}</td>
+                        <td className="px-4 py-3 text-slate-700">{normalizeInquirySourceLabel(row.promotionSource)}</td>
                         <td className="px-4 py-3">
                           <span className={`rounded-full px-2 py-1 text-xs font-semibold ${statusColor(row.status)}`}>{row.status}</span>
                         </td>
@@ -1227,7 +1228,7 @@ export default function LeadsPage() {
                       <article key={row.inquiryId} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
                         <p className="text-sm font-semibold text-slate-800">{row.fullName}</p>
                         <p className="text-xs text-slate-500">{row.mobileNumber}</p>
-                        <p className="mt-1 text-[11px] text-slate-500">{row.promotionSource || "-"}</p>
+                        <p className="mt-1 text-[11px] text-slate-500">{normalizeInquirySourceLabel(row.promotionSource)}</p>
                         <p className="mt-1 text-[11px] text-slate-500">{nextFollowUp ? formatDateTime(nextFollowUp.dueAt) : "No follow-up"}</p>
                       </article>
                     );

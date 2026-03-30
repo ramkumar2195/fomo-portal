@@ -34,6 +34,7 @@ export default function StaffPage() {
       subtitle="View, filter and manage staff users"
       addHref="/portal/staff/add"
       addLabel="Add Staff"
+      profileRoute="/portal/staff"
       designationOptions={[
         { label: "GYM_MANAGER", value: "GYM_MANAGER" },
         { label: "SALES_MANAGER", value: "SALES_MANAGER" },

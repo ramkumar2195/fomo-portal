@@ -62,6 +62,7 @@ export function createEmptyFollowUpPlan(initialStaffId?: number | null): FollowU
     trialGiven: false,
     trialDays: "",
     trialExpiryAt: "",
+    closeReason: "",
   };
 }
 

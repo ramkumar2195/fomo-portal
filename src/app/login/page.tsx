@@ -35,7 +35,11 @@ export default function LoginPage() {
       const resolvedUser = await login({ mobileNumber, password });
       router.replace(DEFAULT_ROUTE_BY_ROLE[resolvedUser.role]);
     } catch (submitError) {
-      const message = submitError instanceof Error ? submitError.message : "Unable to login";
+      const rawMessage = submitError instanceof Error ? submitError.message : "Unable to login";
+      const message =
+        /login failed|invalid credentials|unauthorized|401/i.test(rawMessage)
+          ? "Incorrect username or password."
+          : rawMessage;
       if (message.includes("only for ADMIN and STAFF")) {
         router.replace("/unauthorized");
         return;

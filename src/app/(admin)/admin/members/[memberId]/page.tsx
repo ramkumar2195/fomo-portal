@@ -44,6 +44,7 @@ type TabPayloadMap = {
     dashboard: Record<string, unknown>;
     entitlements: unknown[];
     history: unknown[];
+    programEnrollments?: unknown[];
   };
   billing: InvoiceSummary[];
   attendance: unknown[];
@@ -94,6 +95,44 @@ type ActionModalKey =
   | null;
 
 type RecordLike = Record<string, unknown>;
+type MembershipFamily =
+  | "FLAGSHIP"
+  | "FLEX"
+  | "PT"
+  | "TRANSFORMATION"
+  | "GROUP_CLASS"
+  | "CREDIT_PACK"
+  | "UNKNOWN";
+type MembershipActionKey = "renew" | "upgrade" | "downgrade" | "freeze" | "transfer" | "pt";
+
+interface MembershipActionState {
+  key: MembershipActionKey;
+  label: string;
+  enabled: boolean;
+  adminApprovalRequired?: boolean;
+  note?: string;
+}
+
+interface MembershipPortfolioItem {
+  subscriptionId: string;
+  family: MembershipFamily;
+  categoryCode: string;
+  productCode: string;
+  productName: string;
+  variantName: string;
+  status: string;
+  startDate: string;
+  expiryDate: string;
+  durationMonths: number;
+  validityDays: number;
+  branchCode: string;
+  invoiceNumber: string;
+  receiptNumber: string;
+  paymentConfirmed: boolean;
+  checkInsRemaining: number;
+  includedPtSessions: number;
+  entitlements: string[];
+}
 
 function toRecord(payload: unknown): RecordLike {
   return typeof payload === "object" && payload !== null ? (payload as RecordLike) : {};
@@ -109,7 +148,7 @@ function titleize(value: string): string {
 function normalizeDisplayPlanName(value: string): string {
   const trimmed = value.trim();
   if (!trimmed || trimmed === "-") {
-    return "No subscription is active";
+    return "No active membership";
   }
 
   return trimmed
@@ -135,6 +174,8 @@ function cleanEntitlementFeatureLabel(value?: string): string {
   }
   return humanizeLabel(
     value
+      .replace(/PASS_BENEFITS?/gi, "PAUSE_BENEFIT")
+      .replace(/PASS BENEFITS?/gi, "PAUSE BENEFIT")
       .replace(/_ACCESS$/i, "")
       .replace(/ ACCESS$/i, "")
       .replace(/_BENEFIT$/i, "_BENEFIT")
@@ -489,6 +530,140 @@ function formatPlanDuration(durationMonths: number, validityDays: number): strin
   return "-";
 }
 
+function roundAmount(value: number): number {
+  return Math.round(Number.isFinite(value) ? value : 0);
+}
+
+function deriveMembershipFamily(categoryCode?: string, productCode?: string): MembershipFamily {
+  const normalizedCategory = String(categoryCode || "").toUpperCase();
+  const normalizedProduct = String(productCode || "").toUpperCase();
+
+  if (normalizedCategory === "FLAGSHIP") return "FLAGSHIP";
+  if (normalizedCategory === "FLEX" || normalizedProduct.includes("FLEX")) return "FLEX";
+  if (normalizedCategory === "PT" || normalizedProduct.includes("PT")) return "PT";
+  if (normalizedCategory === "TRANSFORMATION") return "TRANSFORMATION";
+  if (normalizedCategory === "GROUP_CLASS") return "GROUP_CLASS";
+  if (normalizedCategory === "CREDIT_PACK") return "CREDIT_PACK";
+  return "UNKNOWN";
+}
+
+function parseFeatureList(value?: string): string[] {
+  if (!value) {
+    return [];
+  }
+
+  return value
+    .split(",")
+    .map((entry) => cleanEntitlementFeatureLabel(entry.trim()))
+    .filter(Boolean)
+    .filter((entry, index, array) => array.indexOf(entry) === index);
+}
+
+function normalizePaymentStatus(currentStatus: string, totalAmount: number, paidAmount: number, balanceAmount: number): string {
+  const roundedTotal = roundAmount(totalAmount);
+  const roundedPaid = roundAmount(paidAmount);
+  const roundedBalance = roundAmount(balanceAmount);
+  const normalizedStatus = String(currentStatus || "").trim().toUpperCase();
+
+  if (roundedTotal > 0 && roundedBalance <= 0) {
+    return "PAID";
+  }
+  if (roundedPaid > 0 && roundedBalance > 0) {
+    return "PARTIALLY_PAID";
+  }
+  if (roundedTotal > 0 && roundedPaid <= 0) {
+    if (normalizedStatus && normalizedStatus !== "-") {
+      return normalizedStatus;
+    }
+    return "UNPAID";
+  }
+  if (normalizedStatus && normalizedStatus !== "-") {
+    return normalizedStatus;
+  }
+  return "-";
+}
+
+function membershipPanelTitle(family: MembershipFamily): string {
+  switch (family) {
+    case "TRANSFORMATION":
+      return "Transformation Membership";
+    case "PT":
+      return "PT Membership";
+    case "GROUP_CLASS":
+      return "Group Class Membership";
+    case "FLEX":
+      return "Flex Membership";
+    case "CREDIT_PACK":
+      return "Credit Pack";
+    default:
+      return "Gym Membership";
+  }
+}
+
+function membershipPanelSubtitle(family: MembershipFamily): string {
+  switch (family) {
+    case "TRANSFORMATION":
+      return "Bundled gym access, PT sessions, and entitlements managed as one membership.";
+    case "PT":
+      return "Personal training membership and operational coaching context.";
+    case "GROUP_CLASS":
+      return "Class-only membership with class-specific access and schedule entitlements.";
+    case "FLEX":
+      return "Check-in based membership with controlled upgrade paths.";
+    case "CREDIT_PACK":
+      return "Wallet-style credits pack. Commercial actions are handled separately from memberships.";
+    default:
+      return "Active membership details, access scope, and operational eligibility.";
+  }
+}
+
+function deriveAccentForMembershipFamily(family: MembershipFamily): "slate" | "lime" | "rose" | "amber" | "cyan" {
+  switch (family) {
+    case "TRANSFORMATION":
+      return "amber";
+    case "PT":
+      return "rose";
+    case "GROUP_CLASS":
+      return "cyan";
+    case "FLEX":
+      return "slate";
+    default:
+      return "lime";
+  }
+}
+
+function extractMembershipPortfolioItem(payload: unknown): MembershipPortfolioItem | null {
+  const record = toRecord(payload);
+  const subscriptionId = pickString(record, ["subscriptionId", "id"]);
+  if (!subscriptionId) {
+    return null;
+  }
+  const familyRaw = pickString(record, ["family", "categoryCode"]);
+  const family = (familyRaw.toUpperCase() || "UNKNOWN") as MembershipFamily;
+  return {
+    subscriptionId,
+    family,
+    categoryCode: pickString(record, ["categoryCode"]),
+    productCode: pickString(record, ["productCode"]),
+    productName: pickString(record, ["productName"]),
+    variantName: pickString(record, ["variantName", "activePlan", "name"]),
+    status: pickString(record, ["subscriptionStatus", "status"]),
+    startDate: pickString(record, ["startDate"]),
+    expiryDate: pickString(record, ["expiryDate", "endDate"]),
+    durationMonths: pickNumber(record, ["durationMonths"]),
+    validityDays: pickNumber(record, ["validityDays"]),
+    branchCode: pickString(record, ["branchCode"]),
+    invoiceNumber: pickString(record, ["invoiceNumber"]),
+    receiptNumber: pickString(record, ["receiptNumber"]),
+    paymentConfirmed: pickBoolean(record, ["paymentConfirmed"]) === true,
+    checkInsRemaining: pickNumber(record, ["checkInsRemaining"]),
+    includedPtSessions: pickNumber(record, ["includedPtSessions"]),
+    entitlements: toArray(record.entitlements)
+      .map((item) => cleanEntitlementFeatureLabel(String(item || "")))
+      .filter((item, index, array) => item !== "-" && array.indexOf(item) === index),
+  };
+}
+
 function deriveUpgradeWindowDays(durationMonths: number, validityDays: number): number {
   if (durationMonths >= 6 || validityDays >= 180) {
     return 28;
@@ -609,10 +784,11 @@ export default function MemberProfilePage() {
     setTabErrors((current) => ({ ...current, subscriptions: undefined }));
 
     try {
-      const [dashboard, entitlements] = await withTabTimeout(
+      const [dashboard, entitlements, programEnrollments] = await withTabTimeout(
         Promise.all([
           subscriptionService.getMemberDashboard(token, memberId),
           subscriptionService.getMemberEntitlements(token, memberId),
+          trainingService.getMemberProgramEnrollments(token, memberId),
         ]),
         "subscriptions",
       );
@@ -623,6 +799,7 @@ export default function MemberProfilePage() {
           dashboard: toRecord(dashboard),
           entitlements: toArray(entitlements),
           history: [],
+          programEnrollments: toArray(programEnrollments),
         },
       }));
     } catch (loadError) {
@@ -855,8 +1032,9 @@ export default function MemberProfilePage() {
             try {
               const ptAssignmentsData = await withTabTimeout(trainingService.getMemberAssignments(token, memberId), "personal training");
               const ptArr = Array.isArray(ptAssignmentsData) ? ptAssignmentsData : [];
-              // For each active assignment, try to fetch sessions
+              // For each active assignment, try to fetch sessions and slots
               let ptSessions: unknown[] = [];
+              let ptSlots: unknown[] = [];
               const activeAssign = ptArr.find((a) => {
                 const rec = toRecord(a);
                 return pickBoolean(rec, ["active"]) === true;
@@ -864,14 +1042,15 @@ export default function MemberProfilePage() {
               if (activeAssign) {
                 const assignId = pickString(toRecord(activeAssign), ["id", "assignmentId"]);
                 if (assignId) {
-                  try {
-                    ptSessions = await trainingService.getPtSessionsByAssignment(token, assignId);
-                  } catch {
-                    ptSessions = [];
-                  }
+                  const [sessionsResult, slotsResult] = await Promise.all([
+                    trainingService.getPtSessionsByAssignment(token, assignId).catch(() => []),
+                    trainingService.getSlotsByAssignment(token, assignId).catch(() => []),
+                  ]);
+                  ptSessions = Array.isArray(sessionsResult) ? sessionsResult : [];
+                  ptSlots = Array.isArray(slotsResult) ? slotsResult : [];
                 }
               }
-              payload = { assignments: ptArr, sessions: Array.isArray(ptSessions) ? ptSessions : [] };
+              payload = { assignments: ptArr, sessions: ptSessions, slots: ptSlots } as unknown as TabPayloadMap["personal-training"];
             } catch {
               // Training service may return 404 when no assignments exist
               payload = { assignments: [], sessions: [] };
@@ -1211,9 +1390,22 @@ export default function MemberProfilePage() {
         latestReceipt: shellLatestReceiptNumber,
         latestIssuedAt: "",
       };
-  const paymentStatus = derivePaymentStatus(shellPaymentStatus, displayInvoiceStats.paid, displayInvoiceStats.balance);
-  const balanceDue = displayInvoiceStats.balance;
-  const roundedBalanceDue = Math.round(balanceDue);
+  const roundedInvoiceStats = {
+    total: roundAmount(displayInvoiceStats.total),
+    paid: roundAmount(displayInvoiceStats.paid),
+    balance: roundAmount(displayInvoiceStats.balance),
+    latestInvoice: displayInvoiceStats.latestInvoice,
+    latestReceipt: displayInvoiceStats.latestReceipt,
+    latestIssuedAt: displayInvoiceStats.latestIssuedAt,
+  };
+  const paymentStatus = normalizePaymentStatus(
+    shellPaymentStatus,
+    displayInvoiceStats.total,
+    displayInvoiceStats.paid,
+    displayInvoiceStats.balance,
+  );
+  const balanceDue = roundedInvoiceStats.balance;
+  const roundedBalanceDue = roundedInvoiceStats.balance;
   const ptTabData = tabData["personal-training"] as { assignments?: unknown[]; sessions?: unknown[] } | undefined;
   const ptAssignments = Array.isArray(ptTabData?.assignments) ? ptTabData.assignments : (Array.isArray(tabData["personal-training"]) ? tabData["personal-training"] as unknown[] : []);
   const ptSessions = Array.isArray(ptTabData?.sessions) ? ptTabData.sessions : [];
@@ -1221,6 +1413,7 @@ export default function MemberProfilePage() {
     const record = toRecord(item);
     return pickBoolean(record, ["active"]) === true;
   });
+  const activePtAssignmentRecord = activePtAssignment ? toRecord(activePtAssignment) : null;
   const entitlementRecords = toArray<RecordLike>(tabData.subscriptions?.entitlements);
   const entitlementFeatures = entitlementRecords.map((entry) => String(entry.feature || "").toUpperCase());
   const hasFreezeEntitlement = entitlementFeatures.some((feature) =>
@@ -1231,12 +1424,13 @@ export default function MemberProfilePage() {
   );
   const normalizedProductCode = currentProductCode.toUpperCase();
   const normalizedCategoryCode = productCategoryCode.toUpperCase();
-  const isGroupClassPlan = normalizedCategoryCode === "GROUP_CLASS";
-  const isFlagshipPlan = normalizedCategoryCode === "FLAGSHIP";
-  const isTransformationPlan = normalizedCategoryCode === "TRANSFORMATION";
-  const isFlexPlan = normalizedProductCode.includes("FLEX") || rawPlanName.toUpperCase().includes("FLEX");
-  const isPtPlan = normalizedCategoryCode === "PT" || normalizedProductCode.includes("PT");
-  const hasMembershipSubscription = Boolean(activeSubscriptionId) && !isPtPlan;
+  const membershipFamily = deriveMembershipFamily(normalizedCategoryCode, normalizedProductCode || rawPlanName);
+  const isGroupClassPlan = membershipFamily === "GROUP_CLASS";
+  const isFlagshipPlan = membershipFamily === "FLAGSHIP";
+  const isTransformationPlan = membershipFamily === "TRANSFORMATION";
+  const isFlexPlan = membershipFamily === "FLEX";
+  const isPtPlan = membershipFamily === "PT";
+  const hasPrimaryMembership = Boolean(activeSubscriptionId) && membershipFamily !== "CREDIT_PACK";
   const upgradeWindowDays = deriveUpgradeWindowDays(durationMonths, validityDays);
   const subscriptionStartDate = startDate ? new Date(startDate) : null;
   const daysSinceSubscriptionStart =
@@ -1245,23 +1439,24 @@ export default function MemberProfilePage() {
       : null;
   const upgradeWindowActive =
     daysSinceSubscriptionStart === null ? true : daysSinceSubscriptionStart <= upgradeWindowDays;
-  const canManageTransfers =
-    user?.role === "ADMIN" ||
-    (user?.role === "STAFF" && user?.designation === "GYM_MANAGER");
-  const canShowFreezeAction = hasMembershipSubscription && hasFreezeEntitlement && !isFlexPlan && !isGroupClassPlan;
-  const canRenewMembership = hasMembershipSubscription;
+  const isAdminOperator = user?.role === "ADMIN";
+  const isStaffOperator = user?.role === "STAFF";
+  const canOperateMemberships = isAdminOperator || isStaffOperator;
+  const canManageTransfers = isAdminOperator || (user?.role === "STAFF" && user?.designation === "GYM_MANAGER");
+  const canShowFreezeAction = hasPrimaryMembership && canOperateMemberships && hasFreezeEntitlement && !isFlexPlan && !isGroupClassPlan && !isPtPlan;
+  const canRenewMembership = hasPrimaryMembership;
   const canUpgradeMembership =
-    hasMembershipSubscription &&
-    (isFlagshipPlan || isGroupClassPlan || isFlexPlan || isTransformationPlan) &&
-    upgradeWindowActive;
+    hasPrimaryMembership &&
+    (isFlagshipPlan || isGroupClassPlan || isFlexPlan || isTransformationPlan || isPtPlan) &&
+    upgradeWindowActive &&
+    canOperateMemberships;
   const canDowngradeMembership =
-    hasMembershipSubscription &&
-    (isFlagshipPlan || isGroupClassPlan || isTransformationPlan) &&
+    hasPrimaryMembership &&
+    (isFlagshipPlan || isGroupClassPlan || isTransformationPlan || isPtPlan) &&
     (!isGroupClassPlan || durationMonths > 1 || validityDays > 30);
-  const canShowPtActions =
-    Boolean(activePtAssignment) || isFlagshipPlan || isTransformationPlan;
+  const canShowPtActions = Boolean(activePtAssignment) || isFlagshipPlan || isTransformationPlan || isPtPlan;
   const canTransferMembership =
-    hasMembershipSubscription &&
+    hasPrimaryMembership &&
     canManageTransfers &&
     (
       isFlagshipPlan ||
@@ -1269,10 +1464,79 @@ export default function MemberProfilePage() {
       normalizedProductCode.includes("BLACK") ||
       normalizedProductCode.includes("RHYTHM")
     );
+  const currentCatalogProduct = useMemo(
+    () => catalogProducts.find((product) => product.productCode === currentProductCode),
+    [catalogProducts, currentProductCode],
+  );
+  const currentCatalogVariant = useMemo(
+    () =>
+      catalogVariants.find((variant) => String(variant.variantId) === String(activeProductVariantId)) ||
+      catalogVariants.find((variant) => variant.variantCode === rawPlanName || variant.variantName === rawPlanName),
+    [activeProductVariantId, catalogVariants, rawPlanName],
+  );
+  const catalogFeatures = currentCatalogVariant ? parseFeatureList(currentCatalogVariant.includedFeatures) : [];
+  const liveEntitlements = entitlementRecords.map((entry) => cleanEntitlementFeatureLabel(pickString(entry, ["feature"]) || "-"));
+  const membershipFeatures = (liveEntitlements.length ? liveEntitlements : catalogFeatures).filter(
+    (entry, index, array) => entry !== "-" && array.indexOf(entry) === index,
+  );
+  const membershipActions: MembershipActionState[] = useMemo(() => {
+    const actions: MembershipActionState[] = [];
+    if (canRenewMembership) {
+      actions.push({ key: "renew", label: "Renew", enabled: true });
+    }
+    if (canUpgradeMembership) {
+      actions.push({ key: "upgrade", label: "Upgrade", enabled: true, note: upgradeWindowActive ? undefined : `Upgrade window closed after ${upgradeWindowDays} days.` });
+    }
+    if (canDowngradeMembership) {
+      const adminApprovalRequired = !isAdminOperator;
+      actions.push({
+        key: "downgrade",
+        label: adminApprovalRequired ? "Raise Downgrade Request" : "Downgrade",
+        enabled: isAdminOperator,
+        adminApprovalRequired,
+        note: adminApprovalRequired ? "Gym and staff teams can raise this for admin approval once the workflow is introduced." : undefined,
+      });
+    }
+    if (canShowFreezeAction) {
+      actions.push({ key: "freeze", label: "Freeze", enabled: true });
+    }
+    if (canTransferMembership) {
+      const adminApprovalRequired = !isAdminOperator;
+      actions.push({
+        key: "transfer",
+        label: adminApprovalRequired ? "Raise Transfer Request" : "Transfer",
+        enabled: isAdminOperator,
+        adminApprovalRequired,
+        note: adminApprovalRequired ? "Transfer requires admin approval. The request workflow will be introduced separately." : undefined,
+      });
+    }
+    if (canShowPtActions) {
+      actions.push({
+        key: "pt",
+        label: activePtAssignment ? "Renew PT" : "Add PT",
+        enabled: true,
+      });
+    }
+    return actions;
+  }, [
+    activePtAssignment,
+    canDowngradeMembership,
+    canRenewMembership,
+    canShowFreezeAction,
+    canShowPtActions,
+    canTransferMembership,
+    canUpgradeMembership,
+    isAdminOperator,
+    upgradeWindowActive,
+    upgradeWindowDays,
+  ]);
   const filteredLifecycleProducts = useMemo(
     () =>
       catalogProducts.filter((product) => {
-        if (product.categoryCode === "PT" || product.categoryCode === "CREDIT_PACK") {
+        if (product.categoryCode === "CREDIT_PACK") {
+          return false;
+        }
+        if (product.categoryCode === "PT" && !isPtPlan) {
           return false;
         }
 
@@ -1288,6 +1552,9 @@ export default function MemberProfilePage() {
           if (isFlexPlan) {
             return product.categoryCode === "FLAGSHIP" || product.productCode === currentProductCode;
           }
+          if (isPtPlan) {
+            return product.categoryCode === "PT";
+          }
           if (isGroupClassPlan) {
             return product.productCode === currentProductCode;
           }
@@ -1297,6 +1564,9 @@ export default function MemberProfilePage() {
         }
 
         if (actionModal === "downgrade") {
+          if (isPtPlan) {
+            return product.categoryCode === "PT";
+          }
           if (isGroupClassPlan) {
             return product.productCode === currentProductCode;
           }
@@ -1309,6 +1579,9 @@ export default function MemberProfilePage() {
         }
 
         if (actionModal === "renew") {
+          if (isPtPlan) {
+            return product.categoryCode === "PT";
+          }
           if (isGroupClassPlan) {
             return product.productCode === currentProductCode;
           }
@@ -1332,6 +1605,7 @@ export default function MemberProfilePage() {
       isFlagshipPlan,
       isFlexPlan,
       isGroupClassPlan,
+      isPtPlan,
       isTransformationPlan,
       lifecycleForm.categoryCode,
       productCategoryCode,
@@ -1340,7 +1614,10 @@ export default function MemberProfilePage() {
   const filteredLifecycleVariants = useMemo(
     () =>
       catalogVariants.filter((variant) => {
-        if (variant.categoryCode === "PT" || variant.categoryCode === "CREDIT_PACK") {
+        if (variant.categoryCode === "CREDIT_PACK") {
+          return false;
+        }
+        if (variant.categoryCode === "PT" && !isPtPlan) {
           return false;
         }
         const selectedCategory = lifecycleForm.categoryCode || productCategoryCode;
@@ -1383,6 +1660,7 @@ export default function MemberProfilePage() {
       catalogVariants,
       currentProductCode,
       durationMonths,
+      isPtPlan,
       lifecycleForm.categoryCode,
       lifecycleForm.productCode,
       productCategoryCode,
@@ -1395,16 +1673,21 @@ export default function MemberProfilePage() {
         new Set(
           catalogProducts
             .filter((product) => {
-              if (product.categoryCode === "PT" || product.categoryCode === "CREDIT_PACK") {
+              if (product.categoryCode === "CREDIT_PACK") {
+                return false;
+              }
+              if (product.categoryCode === "PT" && !isPtPlan) {
                 return false;
               }
               if (actionModal === "upgrade") {
                 if (isFlagshipPlan) return product.categoryCode === "FLAGSHIP";
                 if (isFlexPlan) return product.categoryCode === "FLAGSHIP";
+                if (isPtPlan) return product.categoryCode === "PT";
                 if (isGroupClassPlan) return product.categoryCode === "GROUP_CLASS";
                 if (isTransformationPlan) return product.categoryCode === "TRANSFORMATION";
               }
               if (actionModal === "downgrade") {
+                if (isPtPlan) return product.categoryCode === "PT";
                 if (isFlagshipPlan) return product.categoryCode === "FLAGSHIP";
                 if (isGroupClassPlan) return product.categoryCode === "GROUP_CLASS";
                 if (isTransformationPlan) return product.categoryCode === "TRANSFORMATION";
@@ -1413,6 +1696,7 @@ export default function MemberProfilePage() {
               if (actionModal === "renew") {
                 if (isFlagshipPlan) return product.categoryCode === "FLAGSHIP";
                 if (isFlexPlan) return product.categoryCode === "FLEX";
+                if (isPtPlan) return product.categoryCode === "PT";
                 if (isGroupClassPlan) return product.categoryCode === "GROUP_CLASS";
                 if (isTransformationPlan) return product.categoryCode === "TRANSFORMATION";
               }
@@ -1421,7 +1705,7 @@ export default function MemberProfilePage() {
             .map((product) => product.categoryCode),
         ),
       ),
-    [actionModal, catalogProducts, isFlagshipPlan, isFlexPlan, isGroupClassPlan, isTransformationPlan, productCategoryCode],
+    [actionModal, catalogProducts, isFlagshipPlan, isFlexPlan, isGroupClassPlan, isPtPlan, isTransformationPlan, productCategoryCode],
   );
   const ptProducts = useMemo(
     () => catalogProducts.filter((product) => product.categoryCode === "PT"),
@@ -1575,15 +1859,19 @@ export default function MemberProfilePage() {
       return;
     }
     if (action === "upgrade" && !canUpgradeMembership) {
-      setActionError(`Upgrade is allowed only within ${upgradeWindowDays} day${upgradeWindowDays === 1 ? "" : "s"} of the current subscription start.`);
+      setActionError(`Upgrade is allowed only within ${upgradeWindowDays} day${upgradeWindowDays === 1 ? "" : "s"} of the current membership start.`);
       return;
     }
     if (action === "downgrade" && !canDowngradeMembership) {
-      setActionError("Downgrade is not available for this subscription.");
+      setActionError("Downgrade is not available for this membership.");
       return;
     }
     if (action === "renew" && !canRenewMembership) {
-      setActionError("Renewal is not available for this subscription.");
+      setActionError("Renewal is not available for this membership.");
+      return;
+    }
+    if (action === "downgrade" && !isAdminOperator) {
+      setActionError("Downgrade needs admin approval. Workflow submission will be added separately.");
       return;
     }
 
@@ -1606,10 +1894,10 @@ export default function MemberProfilePage() {
       }
 
       await reloadShell();
-      setActionSuccess(`Subscription ${action} completed.`);
+      setActionSuccess(`Membership ${action} completed.`);
       setActionModal(null);
     } catch (error) {
-      setActionError(error instanceof ApiError ? error.message : `Unable to ${action} subscription.`);
+      setActionError(error instanceof ApiError ? error.message : `Unable to ${action} membership.`);
     } finally {
       setActionBusy(false);
     }
@@ -1621,7 +1909,11 @@ export default function MemberProfilePage() {
       return;
     }
     if (!canTransferMembership) {
-      setActionError("Transfer is allowed only for eligible flagship subscriptions and authorized users.");
+      setActionError("Transfer is allowed only for eligible memberships and authorized users.");
+      return;
+    }
+    if (!isAdminOperator) {
+      setActionError("Transfer needs admin approval. Workflow submission will be added separately.");
       return;
     }
 
@@ -1636,10 +1928,10 @@ export default function MemberProfilePage() {
         notes: transferForm.notes || undefined,
       });
       await reloadShell();
-      setActionSuccess("Subscription transferred.");
+      setActionSuccess("Membership transferred.");
       setActionModal(null);
     } catch (error) {
-      setActionError(error instanceof ApiError ? error.message : "Unable to transfer subscription.");
+      setActionError(error instanceof ApiError ? error.message : "Unable to transfer membership.");
     } finally {
       setActionBusy(false);
     }
@@ -1650,7 +1942,7 @@ export default function MemberProfilePage() {
       return;
     }
     if (!canShowFreezeAction) {
-      setActionError("Freeze is not available for this subscription.");
+      setActionError("Freeze is not available for this membership.");
       return;
     }
 
@@ -1683,7 +1975,7 @@ export default function MemberProfilePage() {
       return;
     }
     if (!canShowPtActions) {
-      setActionError("Personal training is not available for this subscription.");
+      setActionError("Personal training is not available for this membership.");
       return;
     }
 
@@ -1752,7 +2044,7 @@ export default function MemberProfilePage() {
               <p className="mt-2 text-sm text-slate-300">Category: {humanizeLabel(productCategoryCode)}</p>
             </div>
             <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              <StatPill label="Subscription Status" value={humanizeLabel(membershipStatus)} />
+              <StatPill label="Membership Status" value={humanizeLabel(membershipStatus)} />
               <StatPill label="Duration" value={planDuration} />
               <StatPill label="Start Date" value={formatDateOnly(startDate)} />
               <StatPill label="Expiry Date" value={formatDateOnly(expiryDate)} />
@@ -1769,9 +2061,9 @@ export default function MemberProfilePage() {
         >
           <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
             <StatPill label="Payment Status" value={humanizeLabel(paymentStatus)} />
-            <StatPill label="Amount Paid" value={formatInr(displayInvoiceStats.paid)} />
-            <StatPill label="Balance Due" value={formatRoundedInr(displayInvoiceStats.balance)} />
-            <StatPill label="Billing Rep" value={billingRepName} />
+            <StatPill label="Amount Paid" value={formatRoundedInr(roundedInvoiceStats.paid)} />
+            <StatPill label="Balance Due" value={formatRoundedInr(roundedInvoiceStats.balance)} />
+            <StatPill label="Latest Invoice" value={roundedInvoiceStats.latestInvoice || "-"} />
           </div>
         </ProfilePanel>
       </div>
@@ -1785,7 +2077,6 @@ export default function MemberProfilePage() {
               { label: "Date Of Birth", value: formatDateOnly(dateOfBirth || undefined) },
               { label: "Date Of Enquiry", value: formatDateTime(inquiryDate || undefined) },
               { label: "Client Representative", value: clientRepName },
-              { label: "Billing Representative", value: billingRepName },
               ...(!isFlexPlan ? [{ label: trainerLabel, value: assignedTrainer }] : []),
               { label: "Interested In", value: interestedIn },
               { label: "Emergency Contact", value: emergencyContact },
@@ -1822,15 +2113,23 @@ export default function MemberProfilePage() {
   const renderBilling = () => {
     const invoices = tabData.billing || [];
     const stats = extractInvoiceStats(invoices);
+    const normalizedStats = {
+      total: roundAmount(stats.total),
+      paid: roundAmount(stats.paid),
+      balance: roundAmount(stats.balance),
+      latestInvoice: stats.latestInvoice,
+      latestReceipt: stats.latestReceipt,
+      latestIssuedAt: stats.latestIssuedAt,
+    };
 
     return (
       <div className="space-y-6">
         <div className="grid gap-4 md:grid-cols-4">
           {[
-            { label: "Total Invoiced", value: formatInr(stats.total), icon: <CreditCard className="h-5 w-5 text-cyan-300" /> },
-            { label: "Collected", value: formatInr(stats.paid), icon: <BadgeCheck className="h-5 w-5 text-[#c42924]" /> },
-            { label: "Outstanding", value: formatInr(stats.balance), icon: <AlertTriangle className="h-5 w-5 text-amber-300" /> },
-            { label: "Latest Invoice", value: stats.latestInvoice || "-", icon: <CalendarDays className="h-5 w-5 text-slate-300" /> },
+            { label: "Total Invoiced", value: formatRoundedInr(normalizedStats.total), icon: <CreditCard className="h-5 w-5 text-cyan-300" /> },
+            { label: "Collected", value: formatRoundedInr(normalizedStats.paid), icon: <BadgeCheck className="h-5 w-5 text-[#c42924]" /> },
+            { label: "Outstanding", value: formatRoundedInr(normalizedStats.balance), icon: <AlertTriangle className="h-5 w-5 text-amber-300" /> },
+            { label: "Latest Invoice", value: normalizedStats.latestInvoice || "-", icon: <CalendarDays className="h-5 w-5 text-slate-300" /> },
           ].map((entry) => (
             <ProfilePanel key={entry.label} title={entry.label} accent="slate">
               <div className="flex items-center justify-between gap-3">
@@ -1839,6 +2138,25 @@ export default function MemberProfilePage() {
               </div>
             </ProfilePanel>
           ))}
+        </div>
+
+        <div className="grid gap-6 xl:grid-cols-2">
+          <ProfilePanel title="Billing Contacts" subtitle="Commercial ownership and last issued references" accent="slate">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <StatPill label="Billing Representative" value={billingRepName} />
+              <StatPill label="Client Representative" value={clientRepName} />
+              <StatPill label="Latest Receipt" value={normalizedStats.latestReceipt || "-"} />
+              <StatPill label="Payment Status" value={humanizeLabel(paymentStatus)} />
+            </div>
+          </ProfilePanel>
+          <ProfilePanel title="Billing Rules" subtitle="Rounded values and payment status use the same commercial calculation everywhere on this profile." accent="cyan">
+            <div className="grid gap-3 sm:grid-cols-2">
+              <StatPill label="Rounded Total" value={formatRoundedInr(normalizedStats.total)} />
+              <StatPill label="Rounded Collected" value={formatRoundedInr(normalizedStats.paid)} />
+              <StatPill label="Rounded Outstanding" value={formatRoundedInr(normalizedStats.balance)} />
+              <StatPill label="Status Logic" value={humanizeLabel(paymentStatus)} />
+            </div>
+          </ProfilePanel>
         </div>
 
         {invoices.length === 0 ? (
@@ -1861,14 +2179,26 @@ export default function MemberProfilePage() {
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/6">
-                {invoices.map((invoice) => (
+                {invoices.map((invoice) => {
+                  const invoiceView = {
+                    amount: roundAmount(invoice.amount),
+                    paidAmount: roundAmount(invoice.paidAmount || 0),
+                    balanceAmount: roundAmount(invoice.balanceAmount || 0),
+                    paymentStatus: normalizePaymentStatus(
+                      invoice.status,
+                      invoice.amount,
+                      invoice.paidAmount || 0,
+                      invoice.balanceAmount || 0,
+                    ),
+                  };
+                  return (
                   <tr key={invoice.id} className="hover:bg-white/[0.02]">
                     <td className="px-4 py-3 font-medium text-white">{invoice.invoiceNumber}</td>
-                    <td className="px-4 py-3 text-slate-200">{formatInr(invoice.amount)}</td>
-                    <td className="px-4 py-3 text-slate-200">{formatInr(invoice.paidAmount || 0)}</td>
-                    <td className="px-4 py-3 text-slate-200">{formatInr(invoice.balanceAmount || 0)}</td>
+                    <td className="px-4 py-3 text-slate-200">{formatRoundedInr(invoiceView.amount)}</td>
+                    <td className="px-4 py-3 text-slate-200">{formatRoundedInr(invoiceView.paidAmount)}</td>
+                    <td className="px-4 py-3 text-slate-200">{formatRoundedInr(invoiceView.balanceAmount)}</td>
                     <td className="px-4 py-3 text-slate-200">{invoice.receiptNumber || "-"}</td>
-                    <td className="px-4 py-3 text-slate-200">{invoice.status}</td>
+                    <td className="px-4 py-3 text-slate-200">{humanizeLabel(invoiceView.paymentStatus)}</td>
                     <td className="px-4 py-3 text-slate-200">{formatDateTime(invoice.issuedAt)}</td>
                     <td className="px-4 py-3">
                       <div className="flex flex-wrap gap-2">
@@ -1931,7 +2261,8 @@ export default function MemberProfilePage() {
                       </div>
                     </td>
                   </tr>
-                ))}
+                  );
+                })}
               </tbody>
             </table>
           </div>
@@ -2044,120 +2375,271 @@ export default function MemberProfilePage() {
       case "subscriptions": {
         const data = tabData.subscriptions;
         if (!data) return null;
-        const recentInvoice = toRecord(toRecord(data.dashboard).recentInvoice);
+        const dashboardRecord = toRecord(data.dashboard);
+        const recentInvoice = toRecord(dashboardRecord.recentInvoice);
         const entitlementFeatureRows = toArray<RecordLike>(data.entitlements).map((entry) => ({
           feature: cleanEntitlementFeatureLabel(pickString(entry, ["feature"]) || "-"),
         }));
+        const activeMembershipFeatures = entitlementFeatureRows.length
+          ? entitlementFeatureRows.map((entry) => entry.feature)
+          : membershipFeatures;
+        const primaryMembershipRecord = extractMembershipPortfolioItem(dashboardRecord.primaryMembership);
+        const transformationMembershipRecord = extractMembershipPortfolioItem(dashboardRecord.transformationMembership);
+        const membershipPortfolio = toArray(dashboardRecord.memberships)
+          .map(extractMembershipPortfolioItem)
+          .filter((entry): entry is MembershipPortfolioItem => entry !== null);
+        const secondaryMembershipRecords = toArray(dashboardRecord.secondaryMemberships)
+          .map(extractMembershipPortfolioItem)
+          .filter((entry): entry is MembershipPortfolioItem => entry !== null);
+        const displayedMemberships = transformationMembershipRecord
+          ? [
+              transformationMembershipRecord,
+              ...secondaryMembershipRecords.filter(
+                (entry) =>
+                  entry.subscriptionId !== transformationMembershipRecord.subscriptionId &&
+                  entry.family !== "PT",
+              ),
+            ]
+          : primaryMembershipRecord
+            ? [
+                primaryMembershipRecord,
+                ...secondaryMembershipRecords.filter((entry) => entry.subscriptionId !== primaryMembershipRecord.subscriptionId),
+              ]
+            : membershipPortfolio;
+        const programEnrollmentRecords = toArray<RecordLike>(data.programEnrollments);
+        const ptCompletedSessions = ptSessions.filter((session) => {
+          const status = pickString(toRecord(session), ["status"]).toUpperCase();
+          return status === "COMPLETED" || status === "DONE";
+        }).length;
+        const ptConsumedSessions = ptSessions.filter((session) => {
+          const status = pickString(toRecord(session), ["status"]).toUpperCase();
+          return status === "COMPLETED" || status === "DONE" || status === "NO_SHOW";
+        }).length;
+        const actionHelpText = membershipActions
+          .filter((action) => action.adminApprovalRequired || action.note)
+          .map((action) => action.note || `${action.label} requires admin approval.`)
+          .filter((entry, index, array) => array.indexOf(entry) === index);
+        const resolveTrainerName = (trainerId?: string) => {
+          if (!trainerId) {
+            return "-";
+          }
+          const allPeople = [...coaches, ...staffMembers, ...members];
+          const resolved = allPeople.find((person) => String(person.id) === trainerId);
+          return resolved?.name || `Trainer #${trainerId}`;
+        };
+
         return (
           <div className="space-y-6">
             <div className="grid gap-6 xl:grid-cols-2">
-              <ProfilePanel title="Current Membership" subtitle="Active subscription and current eligibility" accent="lime">
+              {displayedMemberships.length ? displayedMemberships.map((membership) => {
+                const cardTitle = membership.variantName || membership.productName || humanizeLabel(membership.productCode || membership.categoryCode);
+                const isPrimaryCard = primaryMembershipRecord?.subscriptionId === membership.subscriptionId;
+                const isTransformationCard = membership.family === "TRANSFORMATION";
+                const isPtCard = membership.family === "PT";
+                const isGroupClassCard = membership.family === "GROUP_CLASS";
+                const branchValue = branchLabel !== "-" ? branchLabel : membership.branchCode || "-";
+                return (
+                  <ProfilePanel
+                    key={membership.subscriptionId}
+                    title={membershipPanelTitle(membership.family)}
+                    subtitle={membershipPanelSubtitle(membership.family)}
+                    accent={deriveAccentForMembershipFamily(membership.family)}
+                  >
+                    <div className="space-y-4">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <p className="text-3xl font-semibold tracking-tight text-white">{cardTitle}</p>
+                        {isPrimaryCard ? (
+                          <span className="rounded-full border border-lime-400/30 bg-lime-500/15 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-lime-100">
+                            Primary Membership
+                          </span>
+                        ) : null}
+                        {isTransformationCard ? (
+                          <span className="rounded-full border border-amber-400/30 bg-amber-500/15 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-amber-200">
+                            Gym + PT Bundle
+                          </span>
+                        ) : null}
+                        {isPtCard ? (
+                          <span className="rounded-full border border-rose-400/30 bg-rose-500/15 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-rose-200">
+                            Secondary Membership
+                          </span>
+                        ) : null}
+                      </div>
+                      <p className="text-sm text-slate-300">
+                        Category: {humanizeLabel(membership.categoryCode)}{membership.productName ? ` · ${membership.productName}` : ""}
+                      </p>
+                      {isTransformationCard ? (
+                        <p className="text-sm text-amber-200/70">
+                          Transformation is handled as one visible bundle. Gym access, PT delivery, and entitlements move together operationally.
+                        </p>
+                      ) : isPtCard ? (
+                        <p className="text-sm text-slate-300">
+                          PT remains a separate commercial membership with its own billing and session delivery.
+                        </p>
+                      ) : isGroupClassCard ? (
+                        <p className="text-sm text-slate-300">
+                          This membership auto-enrols the member into the mapped training programme rather than directly into class instances.
+                        </p>
+                      ) : null}
+                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+                        <StatPill label="Membership Status" value={humanizeLabel(membership.status || "-")} />
+                        <StatPill label="Duration" value={formatPlanDuration(membership.durationMonths, membership.validityDays)} />
+                        <StatPill label="Start Date" value={formatDateOnly(membership.startDate || undefined)} />
+                        <StatPill label="Expiry Date" value={formatDateOnly(membership.expiryDate || undefined)} />
+                        <StatPill label="Branch" value={branchValue} />
+                        {membership.invoiceNumber ? <StatPill label="Invoice" value={membership.invoiceNumber} /> : null}
+                        {membership.receiptNumber ? <StatPill label="Receipt" value={membership.receiptNumber} /> : null}
+                        {membership.family === "PT" ? (
+                          <>
+                            <StatPill label="Coach" value={pickString(activePtAssignmentRecord, ["coachEmail", "coachId"]) || assignedTrainer || "-"} />
+                            <StatPill label="Sessions Used" value={ptConsumedSessions ? `${ptConsumedSessions}` : String(ptCompletedSessions)} />
+                          </>
+                        ) : null}
+                        {membership.family === "TRANSFORMATION" || membership.family === "PT" ? (
+                          <StatPill label="Included PT Sessions" value={membership.includedPtSessions ? String(membership.includedPtSessions) : "-"} />
+                        ) : null}
+                        {membership.family === "FLEX" ? (
+                          <StatPill label="Check-In Limit" value={String(membership.checkInsRemaining)} />
+                        ) : null}
+                      </div>
+                      {membership.entitlements.length ? (
+                        <div className="flex flex-wrap gap-2">
+                          {membership.entitlements.map((feature) => (
+                            <span
+                              key={`${membership.subscriptionId}-${feature}`}
+                              className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1.5 text-sm font-medium text-cyan-100"
+                            >
+                              {feature}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                    </div>
+                  </ProfilePanel>
+                );
+              }) : (
+                <ProfilePanel title="Membership Portfolio" subtitle="No active or recent memberships are attached to this member yet." accent="slate">
+                  <p className="text-sm text-slate-300">No memberships found.</p>
+                </ProfilePanel>
+              )}
+              <ProfilePanel title="Membership Actions" subtitle="Only the actions available for the primary membership are shown here" accent="slate">
                 <div className="space-y-4">
-                  <div>
-                    <p className="text-3xl font-semibold tracking-tight text-white">{planName}</p>
-                    <p className="mt-2 text-sm text-slate-300">Category: {humanizeLabel(productCategoryCode)}</p>
+                  <div className="flex flex-wrap gap-2">
+                    {membershipActions.map((action) => (
+                      <button
+                        key={action.key}
+                        type="button"
+                        onClick={() => action.enabled && openActionModal(action.key === "pt" ? "pt" : action.key)}
+                        disabled={!action.enabled}
+                        className={`rounded-xl border px-4 py-2 text-sm font-semibold ${
+                          action.enabled
+                            ? "border-white/10 bg-white/[0.04] text-white hover:bg-white/[0.08]"
+                            : "cursor-not-allowed border-white/8 bg-white/[0.02] text-slate-500"
+                        }`}
+                      >
+                        {action.label}
+                      </button>
+                    ))}
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                    <StatPill label="Subscription Status" value={humanizeLabel(pickString(data.dashboard, ["subscriptionStatus"]) || membershipStatus)} />
-                    <StatPill label="Duration" value={planDuration} />
-                    <StatPill label="Start Date" value={formatDateOnly(pickString(data.dashboard, ["startDate"]) || startDate || undefined)} />
-                    <StatPill label="Expiry Date" value={formatDateOnly(pickString(data.dashboard, ["expiryDate"]) || expiryDate || undefined)} />
-                    <StatPill label="Branch" value={branchLabel} />
-                    {!isFlexPlan && assignedTrainer !== "-" ? (
-                      <StatPill label={trainerLabel} value={assignedTrainer} />
-                    ) : null}
-                  </div>
-                </div>
-              </ProfilePanel>
-              <ProfilePanel title="Membership Actions" subtitle="Only the actions available for this subscription are shown here" accent="slate">
-                <div className="flex flex-wrap gap-2">
-                  {canShowFreezeAction ? (
-                    <button
-                      type="button"
-                      onClick={() => openActionModal("freeze")}
-                      className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.08]"
-                    >
-                      Freeze
-                    </button>
-                  ) : null}
-                  {canRenewMembership ? (
-                    <button
-                      type="button"
-                      onClick={() => openActionModal("renew")}
-                      className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.08]"
-                    >
-                      Renew
-                    </button>
-                  ) : null}
-                  {canUpgradeMembership ? (
-                    <button
-                      type="button"
-                      onClick={() => openActionModal("upgrade")}
-                      className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.08]"
-                    >
-                      Upgrade
-                    </button>
-                  ) : null}
-                  {canDowngradeMembership ? (
-                    <button
-                      type="button"
-                      onClick={() => openActionModal("downgrade")}
-                      className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.08]"
-                    >
-                      Downgrade
-                    </button>
-                  ) : null}
-                  {canTransferMembership ? (
-                    <button
-                      type="button"
-                      onClick={() => openActionModal("transfer")}
-                      className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.08]"
-                    >
-                      Transfer
-                    </button>
-                  ) : null}
-                  {canShowPtActions ? (
-                    <button
-                      type="button"
-                      onClick={() => openActionModal("pt")}
-                      className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.08]"
-                    >
-                      {activePtAssignment ? "Renew Personal Training" : "Add Personal Training"}
-                    </button>
-                  ) : null}
+                  {actionHelpText.length ? (
+                    <div className="space-y-2 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
+                      {actionHelpText.map((entry) => (
+                        <p key={entry} className="text-sm text-slate-300">{entry}</p>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-300">
+                      Actions are filtered from the membership matrix using family, duration, and the current operator role.
+                    </p>
+                  )}
                 </div>
               </ProfilePanel>
             </div>
-            <div className={`grid gap-6 ${isGroupClassPlan ? "xl:grid-cols-1" : "xl:grid-cols-2"}`}>
+            <div className="grid gap-6 xl:grid-cols-2">
               <ProfilePanel title="Recent Commercial Record" subtitle="Latest invoice and receipt linked to this membership" accent="slate">
                 <div className="grid gap-3 sm:grid-cols-2">
                   <StatPill label="Latest Invoice" value={pickString(recentInvoice, ["invoiceNumber"]) || shellLatestInvoiceNumber || "-"} />
                   <StatPill label="Latest Receipt" value={shellLatestReceiptNumber || "-"} />
-                  <StatPill label="Invoice Status" value={humanizeLabel(pickString(recentInvoice, ["status"]) || shellPaymentStatus || "-")} />
+                  <StatPill
+                    label="Invoice Status"
+                    value={humanizeLabel(
+                      normalizePaymentStatus(
+                        pickString(recentInvoice, ["status"]) || shellPaymentStatus || "-",
+                        pickNumber(recentInvoice, ["total"]) || roundedInvoiceStats.total,
+                        pickNumber(recentInvoice, ["paidAmount", "paid"]) || roundedInvoiceStats.paid,
+                        pickNumber(recentInvoice, ["balanceAmount", "balance"]) || roundedInvoiceStats.balance,
+                      ),
+                    )}
+                  />
                   <StatPill label="Issued At" value={formatDateOnly(pickString(recentInvoice, ["issuedAt"]) || undefined)} />
-                  <StatPill label="Invoice Total" value={formatInr(pickNumber(recentInvoice, ["total"]) || displayInvoiceStats.total)} />
-                  <StatPill label="Balance Due" value={formatRoundedInr(displayInvoiceStats.balance)} />
+                  <StatPill label="Invoice Total" value={formatRoundedInr(pickNumber(recentInvoice, ["total"]) || roundedInvoiceStats.total)} />
+                  <StatPill label="Balance Due" value={formatRoundedInr(roundedInvoiceStats.balance)} />
                 </div>
               </ProfilePanel>
-              {!isGroupClassPlan ? (
-                <ProfilePanel title="Active Entitlements" subtitle="Live benefits attached to the current subscription" accent="cyan">
-                  {entitlementFeatureRows.length === 0 ? (
-                    <p className="text-sm text-slate-300">No active entitlements found.</p>
-                  ) : (
-                    <div className="flex flex-wrap gap-2">
-                      {entitlementFeatureRows.map((entry) => (
-                        <span
-                          key={entry.feature}
-                          className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1.5 text-sm font-medium text-cyan-100"
-                        >
-                          {entry.feature}
-                        </span>
-                      ))}
-                    </div>
-                  )}
-                </ProfilePanel>
-              ) : null}
+              <ProfilePanel title="Membership Entitlements" subtitle="Summary across all active memberships attached to this member" accent="cyan">
+                {activeMembershipFeatures.length === 0 ? (
+                  <p className="text-sm text-slate-300">No active entitlements found.</p>
+                ) : (
+                  <div className="flex flex-wrap gap-2">
+                    {activeMembershipFeatures.map((feature) => (
+                      <span
+                        key={feature}
+                        className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1.5 text-sm font-medium text-cyan-100"
+                      >
+                        {feature}
+                      </span>
+                    ))}
+                  </div>
+                )}
+              </ProfilePanel>
             </div>
+            <ProfilePanel title="Programme Enrolments" subtitle="Class-based memberships and rhythm products enrol the member into programmes automatically." accent="slate">
+              {programEnrollmentRecords.length === 0 ? (
+                <p className="text-sm text-slate-300">No active programme enrolments found for this member.</p>
+              ) : (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full divide-y divide-white/5 text-sm">
+                    <thead className="bg-white/[0.03] text-left text-xs uppercase tracking-[0.18em] text-slate-400">
+                      <tr>
+                        <th className="px-4 py-3">Program</th>
+                        <th className="px-4 py-3">Status</th>
+                        <th className="px-4 py-3">Duration</th>
+                        <th className="px-4 py-3">Trainer</th>
+                        <th className="px-4 py-3">Branch</th>
+                        <th className="px-4 py-3">Enrolled At</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/5">
+                      {programEnrollmentRecords.map((entry, index) => {
+                        const trainerId = pickString(entry, ["trainerId"]);
+                        return (
+                          <tr key={pickString(entry, ["enrollmentId", "id"]) || `${pickString(entry, ["programId"])}-${index}`}>
+                            <td className="px-4 py-3 text-slate-100">
+                              <div className="font-medium">{pickString(entry, ["programName"]) || "Programme"}</div>
+                              <div className="text-xs text-slate-400">{pickString(entry, ["programDescription"]) || "-"}</div>
+                            </td>
+                            <td className="px-4 py-3 text-slate-200">{humanizeLabel(pickString(entry, ["programStatus", "status"]) || "-")}</td>
+                            <td className="px-4 py-3 text-slate-200">{pickNumber(entry, ["durationWeeks"]) ? `${pickNumber(entry, ["durationWeeks"])} weeks` : "-"}</td>
+                            <td className="px-4 py-3 text-slate-200">{resolveTrainerName(trainerId)}</td>
+                            <td className="px-4 py-3 text-slate-200">{pickString(entry, ["branchId"]) || branchLabel}</td>
+                            <td className="px-4 py-3 text-slate-200">{formatDateTime(pickString(entry, ["enrolledAt"]) || undefined)}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </ProfilePanel>
+            {membershipPortfolio.length > 1 ? (
+              <ProfilePanel title="Portfolio View" subtitle="This member currently carries multiple concurrent memberships under the same profile." accent="slate">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <StatPill label="Total Memberships" value={String(membershipPortfolio.length)} />
+                  <StatPill label="Primary Membership" value={primaryMembershipRecord?.variantName || planName} />
+                  <StatPill label="Secondary Memberships" value={String(secondaryMembershipRecords.length)} />
+                  <StatPill label="Programme Enrolments" value={String(programEnrollmentRecords.length)} />
+                </div>
+              </ProfilePanel>
+            ) : null}
           </div>
         );
       }
@@ -2221,40 +2703,255 @@ export default function MemberProfilePage() {
           const status = pickString(toRecord(s), ["status"])?.toUpperCase();
           return status === "SCHEDULED" || status === "UPCOMING" || status === "PENDING";
         }).length;
+        const inProgressSessions = ptSessions.filter((s) => {
+          const status = pickString(toRecord(s), ["status"])?.toUpperCase();
+          return status === "IN_PROGRESS";
+        }).length;
+        const noShowSessions = ptSessions.filter((s) => {
+          const status = pickString(toRecord(s), ["status"])?.toUpperCase();
+          return status === "NO_SHOW";
+        }).length;
         const cancelledSessions = ptSessions.filter((s) => {
           const status = pickString(toRecord(s), ["status"])?.toUpperCase();
           return status === "CANCELLED" || status === "CANCELED";
         }).length;
         const totalSessions = ptSessions.length;
+        const trainerCountedSessions = completedSessions; // Only COMPLETED counts for trainer
+        const memberConsumedSessions = completedSessions + noShowSessions; // COMPLETED + NO_SHOW for member
         const attendancePct = totalSessions > 0 ? Math.round((completedSessions / totalSessions) * 100) : 0;
+
+        const activeAssignRec = activePtAssignment ? toRecord(activePtAssignment) : null;
+        const activeAssignId = activeAssignRec ? pickString(activeAssignRec, ["id", "assignmentId"]) : null;
+
+        // PT slot data from tabData
+        const ptSlots = Array.isArray((tabData["personal-training"] as Record<string, unknown>)?.slots)
+          ? ((tabData["personal-training"] as Record<string, unknown>).slots as unknown[])
+          : [];
+
+        const DAY_ORDER = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"];
+        const sortedSlots = [...ptSlots].sort((a, b) => {
+          const dayA = DAY_ORDER.indexOf(pickString(toRecord(a), ["dayOfWeek"]) || "");
+          const dayB = DAY_ORDER.indexOf(pickString(toRecord(b), ["dayOfWeek"]) || "");
+          return dayA - dayB;
+        });
+
+        const handleSessionAction = async (sessionId: string, action: "start" | "end" | "complete" | "cancel" | "no-show") => {
+          if (!token) return;
+          try {
+            if (action === "start") await trainingService.startSession(token, sessionId, "PORTAL");
+            else if (action === "end") await trainingService.endSession(token, sessionId, "PORTAL");
+            else if (action === "complete") await trainingService.markSessionComplete(token, sessionId);
+            else if (action === "cancel") await trainingService.cancelPtSession(token, sessionId);
+            else if (action === "no-show") await trainingService.markSessionNoShow(token, sessionId);
+            // Reload PT tab data
+            setTabData((current) => ({ ...current, "personal-training": undefined }));
+            setLoadingTabs((current) => ({ ...current, "personal-training": false }));
+            setActionSuccess(`Session ${action === "start" ? "started" : action === "end" ? "ended" : action} successfully.`);
+          } catch (err) {
+            setActionError(err instanceof Error ? err.message : `Failed to ${action} session.`);
+          }
+        };
+
+        const handleGenerateSessions = async () => {
+          if (!token || !activeAssignId) return;
+          const fromDate = new Date().toISOString().split("T")[0];
+          const toDateObj = new Date();
+          toDateObj.setDate(toDateObj.getDate() + 30);
+          const toDate = toDateObj.toISOString().split("T")[0];
+          try {
+            await trainingService.generateSessionsFromSlots(token, {
+              assignmentId: Number(activeAssignId),
+              fromDate,
+              toDate,
+            });
+            setTabData((current) => ({ ...current, "personal-training": undefined }));
+            setLoadingTabs((current) => ({ ...current, "personal-training": false }));
+            setActionSuccess("Sessions generated from slot schedule for the next 30 days.");
+          } catch (err) {
+            setActionError(err instanceof Error ? err.message : "Failed to generate sessions.");
+          }
+        };
+
+        const statusBadge = (status: string) => {
+          const s = status?.toUpperCase();
+          const map: Record<string, string> = {
+            COMPLETED: "border-emerald-400/20 bg-emerald-500/10 text-emerald-200",
+            IN_PROGRESS: "border-blue-400/20 bg-blue-500/10 text-blue-200",
+            SCHEDULED: "border-slate-400/20 bg-slate-500/10 text-slate-200",
+            NO_SHOW: "border-rose-400/20 bg-rose-500/10 text-rose-200",
+            CANCELLED: "border-orange-400/20 bg-orange-500/10 text-orange-200",
+            RESCHEDULED: "border-purple-400/20 bg-purple-500/10 text-purple-200",
+          };
+          return map[s] || "border-slate-400/20 bg-slate-500/10 text-slate-200";
+        };
 
         return (
           <div className="space-y-6">
-            <ProfilePanel title="Personal Training Assignments" accent="slate">
-              <GenericTable items={ptAssignments} emptyLabel="No PT assignments available." />
+            {/* Transformation bundle notice */}
+            {isTransformationPlan ? (
+              <div className="rounded-2xl border border-amber-400/20 bg-amber-500/10 px-5 py-4">
+                <p className="text-sm font-semibold text-amber-200">Transformation Package — Gym + PT Bundle</p>
+                <p className="mt-1 text-xs text-amber-200/70">
+                  This member&apos;s membership includes {(durationMonths || 0) * 13} PT sessions per month. Personal training is bundled with gym access.
+                </p>
+              </div>
+            ) : null}
+
+            {/* Assignment info */}
+            <ProfilePanel title="Personal Training Assignment" accent="slate">
+              {activePtAssignment ? (
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <StatPill label="Coach" value={pickString(activeAssignRec!, ["coachEmail", "coachId"]) || "-"} />
+                  <StatPill label="Training Type" value={humanizeLabel(pickString(activeAssignRec!, ["trainingType"]) || "PERSONAL_TRAINING")} />
+                  <StatPill label="Start Date" value={formatDateOnly(pickString(activeAssignRec!, ["startDate"]))} />
+                  <StatPill label="End Date" value={formatDateOnly(pickString(activeAssignRec!, ["endDate"])) || "Ongoing"} />
+                  <StatPill label="Status" value={pickBoolean(activeAssignRec!, ["active"]) ? "Active" : "Inactive"} />
+                </div>
+              ) : (
+                <p className="text-sm text-slate-400">No active PT assignment. Assign a trainer to start tracking sessions.</p>
+              )}
             </ProfilePanel>
 
-            {totalSessions > 0 ? (
-              <>
-                <ProfilePanel title="Session Summary" subtitle="Overview of PT session progress" accent="lime">
-                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                    <StatPill label="Total Sessions" value={String(totalSessions)} />
-                    <StatPill label="Completed" value={String(completedSessions)} />
-                    <StatPill label="Scheduled" value={String(scheduledSessions)} />
-                    <StatPill label="Attendance %" value={`${attendancePct}%`} />
+            {/* PT Slot Schedule */}
+            {activeAssignId ? (
+              <ProfilePanel title="Weekly Slot Schedule" subtitle="Assigned PT time slots for this member" accent="cyan">
+                {sortedSlots.length > 0 ? (
+                  <div className="grid gap-2 sm:grid-cols-2 xl:grid-cols-3">
+                    {sortedSlots.map((slot, idx) => {
+                      const slotRec = toRecord(slot);
+                      return (
+                        <div key={idx} className="flex items-center justify-between rounded-xl border border-white/8 bg-white/[0.03] px-4 py-3">
+                          <div>
+                            <p className="text-sm font-semibold text-white">{humanizeLabel(pickString(slotRec, ["dayOfWeek"]) || "")}</p>
+                            <p className="text-xs text-slate-400">
+                              {pickString(slotRec, ["slotStartTime"]) || ""} — {pickString(slotRec, ["slotEndTime"]) || ""}
+                            </p>
+                          </div>
+                        </div>
+                      );
+                    })}
                   </div>
-                </ProfilePanel>
-
-                <ProfilePanel title="Session Register" subtitle="Detailed log of all PT sessions" accent="slate">
-                  <GenericTable items={ptSessions} emptyLabel="No sessions recorded yet." />
-                </ProfilePanel>
-              </>
-            ) : activePtAssignment ? (
-              <ProfilePanel title="Session Register" accent="slate">
-                <p className="text-sm text-slate-400">No sessions recorded yet for this assignment.</p>
+                ) : (
+                  <p className="text-sm text-slate-400">No slot schedule configured yet. Add time slots for automatic session generation.</p>
+                )}
+                {sortedSlots.length > 0 ? (
+                  <div className="mt-4">
+                    <button
+                      type="button"
+                      onClick={() => void handleGenerateSessions()}
+                      className="rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/20"
+                    >
+                      Generate Sessions (Next 30 Days)
+                    </button>
+                  </div>
+                ) : null}
               </ProfilePanel>
             ) : null}
 
+            {/* Session Summary */}
+            {totalSessions > 0 ? (
+              <ProfilePanel title="Session Tracker" subtitle="Session counts — NO_SHOW counts as consumed for member but NOT for trainer payment" accent="lime">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  <StatPill label="Total Sessions" value={String(totalSessions)} />
+                  <StatPill label="Completed" value={String(completedSessions)} />
+                  <StatPill label="Scheduled" value={String(scheduledSessions)} />
+                  <StatPill label="In Progress" value={String(inProgressSessions)} />
+                  <StatPill label="No Show" value={String(noShowSessions)} />
+                  <StatPill label="Cancelled" value={String(cancelledSessions)} />
+                  <StatPill label="Trainer Counted" value={String(trainerCountedSessions)} />
+                  <StatPill label="Member Consumed" value={String(memberConsumedSessions)} />
+                </div>
+                <div className="mt-4 rounded-xl border border-white/8 bg-white/[0.03] p-4">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm text-slate-400">Attendance Rate</span>
+                    <span className="text-lg font-semibold text-white">{attendancePct}%</span>
+                  </div>
+                  <div className="mt-2 h-2 w-full overflow-hidden rounded-full bg-white/10">
+                    <div className="h-full rounded-full bg-emerald-500" style={{ width: `${Math.min(attendancePct, 100)}%` }} />
+                  </div>
+                </div>
+              </ProfilePanel>
+            ) : null}
+
+            {/* Session Register with Actions */}
+            {totalSessions > 0 ? (
+              <ProfilePanel title="Session Register" subtitle="All PT sessions — use actions to record attendance" accent="slate">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-white/10 text-xs uppercase tracking-wider text-slate-400">
+                        <th className="px-3 py-2">Date</th>
+                        <th className="px-3 py-2">Slot</th>
+                        <th className="px-3 py-2">Status</th>
+                        <th className="px-3 py-2">Started</th>
+                        <th className="px-3 py-2">Duration</th>
+                        <th className="px-3 py-2">By</th>
+                        <th className="px-3 py-2">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ptSessions.map((s, idx) => {
+                        const rec = toRecord(s);
+                        const sessId = pickString(rec, ["id"]);
+                        const sessStatus = (pickString(rec, ["status"]) || "SCHEDULED").toUpperCase();
+                        const slotS = pickString(rec, ["slotStartTime", "sessionTime"]) || "";
+                        const slotE = pickString(rec, ["slotEndTime"]) || "";
+                        const actualStart = pickString(rec, ["actualStartTime"]) || "";
+                        const dur = pickString(rec, ["durationMinutes"]) || "";
+                        const startBy = pickString(rec, ["startedBy"]) || "";
+                        return (
+                          <tr key={idx} className="border-b border-white/5 hover:bg-white/[0.02]">
+                            <td className="px-3 py-2.5 text-white">{formatDateOnly(pickString(rec, ["sessionDate"]))}</td>
+                            <td className="px-3 py-2.5 text-slate-300">{slotS}{slotE ? ` - ${slotE}` : ""}</td>
+                            <td className="px-3 py-2.5">
+                              <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-semibold ${statusBadge(sessStatus)}`}>
+                                {sessStatus.replace("_", " ")}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2.5 text-slate-300">{actualStart ? formatDateTime(actualStart) : "-"}</td>
+                            <td className="px-3 py-2.5 text-slate-300">{dur ? `${dur} min` : "-"}</td>
+                            <td className="px-3 py-2.5 text-slate-400">{startBy || "-"}</td>
+                            <td className="px-3 py-2.5">
+                              <div className="flex gap-1">
+                                {sessStatus === "SCHEDULED" && sessId ? (
+                                  <>
+                                    <button type="button" onClick={() => void handleSessionAction(sessId, "start")}
+                                      className="rounded-lg bg-blue-500/20 px-2 py-1 text-xs font-semibold text-blue-200 hover:bg-blue-500/30">
+                                      Start
+                                    </button>
+                                    <button type="button" onClick={() => void handleSessionAction(sessId, "no-show")}
+                                      className="rounded-lg bg-rose-500/20 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-500/30">
+                                      No Show
+                                    </button>
+                                    <button type="button" onClick={() => void handleSessionAction(sessId, "cancel")}
+                                      className="rounded-lg bg-orange-500/20 px-2 py-1 text-xs font-semibold text-orange-200 hover:bg-orange-500/30">
+                                      Cancel
+                                    </button>
+                                  </>
+                                ) : sessStatus === "IN_PROGRESS" && sessId ? (
+                                  <button type="button" onClick={() => void handleSessionAction(sessId, "end")}
+                                    className="rounded-lg bg-emerald-500/20 px-2 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/30">
+                                    End Session
+                                  </button>
+                                ) : (
+                                  <span className="text-xs text-slate-500">—</span>
+                                )}
+                              </div>
+                            </td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </ProfilePanel>
+            ) : activePtAssignment ? (
+              <ProfilePanel title="Session Register" accent="slate">
+                <p className="text-sm text-slate-400">No sessions recorded yet. Configure slot schedule and generate sessions, or create sessions manually.</p>
+              </ProfilePanel>
+            ) : null}
+
+            {/* Action buttons */}
             {canShowPtActions ? (
               <div className="flex flex-wrap gap-2">
                 <button
@@ -2437,7 +3134,7 @@ export default function MemberProfilePage() {
                       <div className="flex items-center gap-3">
                         <Activity className="h-5 w-5 text-cyan-300" />
                         <div>
-                          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Current Plan</p>
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Current Membership</p>
                           <p className="mt-1 text-base font-semibold text-white">{planName}</p>
                           <p className="mt-1 text-sm text-slate-400">{planDuration}</p>
                         </div>
@@ -2619,7 +3316,7 @@ export default function MemberProfilePage() {
           <Modal
             open={actionModal === "freeze"}
             onClose={() => setActionModal(null)}
-            title="Freeze Subscription"
+            title="Freeze Membership"
             size="md"
             footer={
               <>
@@ -2633,7 +3330,7 @@ export default function MemberProfilePage() {
             <div className="space-y-4">
               {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
               <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                Freeze is available only when this subscription has a pause benefit entitlement. This action extends the membership by the approved freeze days and does not use credits in phase 1.
+                Freeze is available only when this membership has a pause benefit entitlement. This action extends the membership by the approved freeze days and does not use credits in phase 1.
               </div>
               <label className="space-y-2 text-sm">
                 <span className="font-medium text-slate-700">Freeze Days</span>
@@ -2649,7 +3346,7 @@ export default function MemberProfilePage() {
           <Modal
             open={actionModal === "renew" || actionModal === "upgrade" || actionModal === "downgrade"}
             onClose={() => setActionModal(null)}
-            title={actionModal === "renew" ? "Renew Subscription" : actionModal === "upgrade" ? "Upgrade Subscription" : "Downgrade Subscription"}
+            title={actionModal === "renew" ? "Renew Membership" : actionModal === "upgrade" ? "Upgrade Membership" : "Downgrade Membership"}
             size="lg"
             footer={
               <>
@@ -2669,10 +3366,10 @@ export default function MemberProfilePage() {
               {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
               <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
                 {actionModal === "renew"
-                  ? "Renewal creates the next cycle for this membership. If the current subscription is active, the renewed plan should start after the current expiry."
-                  : actionModal === "upgrade"
-                    ? `Upgrade is immediate and allowed only within ${upgradeWindowDays} day${upgradeWindowDays === 1 ? "" : "s"} of the current subscription start. A billing invoice should be generated for the commercial difference.`
-                    : "Downgrade is scheduled for the next cycle. The member continues on the current package until the active subscription ends."}
+                  ? "Renewal creates the next cycle for this membership. If the current membership is active, the renewed plan should start after the current expiry."
+                    : actionModal === "upgrade"
+                    ? `Upgrade is immediate and allowed only within ${upgradeWindowDays} day${upgradeWindowDays === 1 ? "" : "s"} of the current membership start. A billing invoice should be generated for the commercial difference.`
+                    : "Downgrade is scheduled for the next cycle. The member continues on the current package until the active membership ends."}
               </div>
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="space-y-2 text-sm">
@@ -2732,12 +3429,12 @@ export default function MemberProfilePage() {
               <div className="rounded-2xl border border-white/8 bg-slate-900 px-4 py-4 text-sm text-slate-200">
                 <div className="grid gap-3 md:grid-cols-2">
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Current Plan</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Current Membership</p>
                     <p className="mt-2 text-base font-semibold text-white">{planName}</p>
                     <p className="mt-1 text-slate-300">{planDuration}</p>
                   </div>
                   <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Target Plan</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Target Membership</p>
                     <p className="mt-2 text-base font-semibold text-white">
                       {selectedLifecycleVariant ? normalizeDisplayPlanName(selectedLifecycleVariant.variantName) : "Choose a target variant"}
                     </p>
@@ -2755,7 +3452,7 @@ export default function MemberProfilePage() {
           <Modal
             open={actionModal === "transfer"}
             onClose={() => setActionModal(null)}
-            title="Transfer Subscription"
+            title="Transfer Membership"
             size="md"
             footer={
               <>
@@ -2769,7 +3466,7 @@ export default function MemberProfilePage() {
             <div className="space-y-4">
               {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
               <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-                Transfer is available only for eligible flagship subscriptions, and only to Admin or Gym Manager users. A transfer fee and a fresh invoice can be applied in the billing workflow.
+                Transfer is available only for eligible flagship memberships, and only to Admin or Gym Manager users. A transfer fee and a fresh invoice can be applied in the billing workflow.
               </div>
               <label className="space-y-2 text-sm">
                 <span className="font-medium text-slate-700">Target Member</span>
@@ -2786,7 +3483,7 @@ export default function MemberProfilePage() {
               </label>
               <label className="flex items-center gap-2 text-sm text-slate-700">
                 <input type="checkbox" checked={transferForm.deactivateSource} onChange={(event) => setTransferForm((current) => ({ ...current, deactivateSource: event.target.checked }))} />
-                Deactivate source subscription
+                Deactivate source membership
               </label>
               <label className="flex items-center gap-2 text-sm text-slate-700">
                 <input type="checkbox" checked={transferForm.copyUsage} onChange={(event) => setTransferForm((current) => ({ ...current, copyUsage: event.target.checked }))} />

@@ -220,7 +220,7 @@ http.interceptors.response.use(
       }
     }
 
-    if (typeof window !== "undefined" && shouldTriggerUnauthorized(status, message)) {
+    if (typeof window !== "undefined" && !shouldSkipRefresh(path) && shouldTriggerUnauthorized(status, message)) {
       dispatchUnauthorized(status, message);
     }
 
