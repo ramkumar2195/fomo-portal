@@ -108,11 +108,14 @@ function renderRevenueRows(rows: DashboardDrilldownRevenueRow[]): RenderedDrilld
       <td key="amount" className="px-4 py-3 text-slate-600">{formatCurrency(row.amount || 0)}</td>,
       <td key="collectedAt" className="px-4 py-3 text-slate-600">{formatDateTime(row.collectedAt)}</td>,
       <td key="paymentMode" className="px-4 py-3 text-slate-600">{row.paymentMode || "-"}</td>,
-      <td key="paymentStatus" className="px-4 py-3 text-slate-600">{row.paymentStatus || "-"}</td>,
-      <td key="referenceType" className="px-4 py-3 text-slate-600">{row.referenceType || "-"}</td>,
-      <td key="ids" className="px-4 py-3 text-slate-600">
-        <div>{row.invoiceId ? `Inv ${row.invoiceId}` : "-"}</div>
-        <div className="text-xs text-slate-500">{row.receiptId ? `Rcpt ${row.receiptId}` : "-"}</div>
+      <td key="paymentStatus" className="px-4 py-3 text-slate-600">{row.paymentStatus ? row.paymentStatus.replace(/_/g, " ") : "-"}</td>,
+      <td key="invoice" className="px-4 py-3 text-slate-600">
+        <div>{row.invoiceNumber || "-"}</div>
+        <div className="text-xs text-slate-500">{row.invoiceId ? `ID ${row.invoiceId}` : "-"}</div>
+      </td>,
+      <td key="receipt" className="px-4 py-3 text-slate-600">
+        <div>{row.receiptNumber || "-"}</div>
+        <div className="text-xs text-slate-500">{row.receiptId ? `ID ${row.receiptId}` : "-"}</div>
       </td>,
     ],
   }));
@@ -145,7 +148,7 @@ function tableHeaders(entityType: DashboardDrilldownEntityType): string[] {
     case "SUBSCRIPTION":
       return ["Member", "Branch", "Plan", "Status", "Start Date", "End Date", "Amount"];
     case "REVENUE":
-      return ["Member", "Branch", "Amount", "Collected At", "Payment Mode", "Payment Status", "Reference Type", "Invoice / Receipt IDs"];
+      return ["Member", "Branch", "Amount", "Collected At", "Payment Mode", "Payment Status", "Invoice", "Receipt"];
     case "STAFF":
     case "COACH":
       return ["Name", "Mobile", "Designation", "Branch", "Employment Type", "Data Scope", "Active"];

@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { useParams, useRouter } from "next/navigation";
+import { useParams, useRouter, useSearchParams } from "next/navigation";
 import {
   Activity,
   AlertTriangle,
@@ -9,8 +9,12 @@ import {
   BadgeCheck,
   CalendarDays,
   CreditCard,
+  Download,
   Loader2,
+  MoreHorizontal,
   Pencil,
+  Printer,
+  Share2,
   UserRound,
   Wallet,
 } from "lucide-react";
@@ -24,6 +28,7 @@ import { trainingService } from "@/lib/api/services/training-service";
 import { usersService } from "@/lib/api/services/users-service";
 import { formatMemberCode } from "@/lib/inquiry-code";
 import { UserDirectoryItem, FreezeHistoryEntry, InvoiceSummary } from "@/types/models";
+import { InquiryRecord } from "@/types/inquiry";
 import {
   MemberAccessStateResponse,
   MemberAssessmentHistoryEntry,
@@ -35,7 +40,7 @@ import {
   MemberProfileTabKey,
 } from "@/types/member-profile";
 import { BranchResponse } from "@/types/admin";
-import { CatalogProduct, CatalogVariant } from "@/lib/api/services/subscription-service";
+import { BillingSettings, CatalogProduct, CatalogVariant } from "@/lib/api/services/subscription-service";
 import { ClientAssignmentRequest } from "@/lib/api/services/training-service";
 
 type TabPayloadMap = {
@@ -47,7 +52,11 @@ type TabPayloadMap = {
     programEnrollments?: unknown[];
   };
   billing: InvoiceSummary[];
-  attendance: unknown[];
+  attendance: {
+    records: unknown[];
+    biometricDevices: unknown[];
+    biometricLogs: unknown[];
+  };
   "credits-wallet": {
     wallet: Record<string, unknown>;
     ledger: Record<string, unknown>;
@@ -91,6 +100,7 @@ type ActionModalKey =
   | "downgrade"
   | "transfer"
   | "pt"
+  | "visit"
   | "biometric"
   | null;
 
@@ -103,7 +113,7 @@ type MembershipFamily =
   | "GROUP_CLASS"
   | "CREDIT_PACK"
   | "UNKNOWN";
-type MembershipActionKey = "renew" | "upgrade" | "downgrade" | "freeze" | "transfer" | "pt";
+type MembershipActionKey = "renew" | "upgrade" | "downgrade" | "freeze" | "transfer" | "pt" | "visit";
 
 interface MembershipActionState {
   key: MembershipActionKey;
@@ -115,6 +125,7 @@ interface MembershipActionState {
 
 interface MembershipPortfolioItem {
   subscriptionId: string;
+  productVariantId: string;
   family: MembershipFamily;
   categoryCode: string;
   productCode: string;
@@ -129,9 +140,31 @@ interface MembershipPortfolioItem {
   invoiceNumber: string;
   receiptNumber: string;
   paymentConfirmed: boolean;
+  includedCheckIns: number;
+  usedCheckIns: number;
   checkInsRemaining: number;
+  extraVisitPrice: number;
   includedPtSessions: number;
   entitlements: string[];
+}
+
+interface MemberEntitlementRecord {
+  entitlementId: number;
+  feature: string;
+  source: string;
+  validFrom?: string;
+  validUntil?: string;
+  includedCount?: number;
+  remainingCount?: number;
+  recurrence?: string;
+  usedCount?: number;
+  expiredUnusedCount?: number;
+  manualTopUpCount?: number;
+  expiresIfUnused?: boolean;
+  currentCycleStart?: string;
+  currentCycleEnd?: string;
+  lastUtilizedAt?: string;
+  lastExpiredAt?: string;
 }
 
 function toRecord(payload: unknown): RecordLike {
@@ -162,6 +195,10 @@ function humanizeLabel(value?: string): string {
   if (!value) {
     return "-";
   }
+  const normalized = String(value).trim().toUpperCase();
+  if (normalized === "PAUSED") {
+    return "Frozen";
+  }
   return value
     .replace(/[_-]+/g, " ")
     .toLowerCase()
@@ -172,15 +209,116 @@ function cleanEntitlementFeatureLabel(value?: string): string {
   if (!value) {
     return "-";
   }
-  return humanizeLabel(
-    value
-      .replace(/PASS_BENEFITS?/gi, "PAUSE_BENEFIT")
-      .replace(/PASS BENEFITS?/gi, "PAUSE BENEFIT")
-      .replace(/_ACCESS$/i, "")
-      .replace(/ ACCESS$/i, "")
-      .replace(/_BENEFIT$/i, "_BENEFIT")
-      .trim(),
-  );
+  const normalized = value
+    .replace(/PASS_BENEFITS?/gi, "PAUSE_BENEFIT")
+    .replace(/PASS BENEFITS?/gi, "PAUSE BENEFIT")
+    .replace(/_ACCESS$/i, "")
+    .replace(/ ACCESS$/i, "")
+    .replace(/_BENEFIT$/i, "_BENEFIT")
+    .trim()
+    .toUpperCase();
+
+  const aliasMap: Record<string, string> = {
+    GYM: "Gym",
+    PT: "PT",
+    HIIT: "HIIT",
+    COREFLEX: "CoreFlex",
+    CROSSFIT: "CrossFit",
+    ZUMBA: "Zumba",
+    YOGA: "Yoga",
+    BOXING: "Boxing",
+    KICKBOXING: "Kickboxing",
+    CALISTHENICS: "Calisthenics",
+    PAUSE_BENEFIT: "Pause Benefit",
+    NUTRITION_COUNSELING: "Nutrition Counseling",
+    PHYSIOTHERAPY_COUNSELING: "Physiotherapy Counseling",
+    STEAM: "Steam",
+    STEAM_ACCESS: "Steam",
+    ICE_BATH: "Ice Bath",
+    ICE_BATH_ACCESS: "Ice Bath",
+  };
+
+  return aliasMap[normalized] || humanizeLabel(normalized);
+}
+
+function shouldTrackUsageEntitlement(value?: string): boolean {
+  const normalized = String(value || "")
+    .trim()
+    .toUpperCase()
+    .replace(/PASS_BENEFITS?/g, "PAUSE_BENEFIT")
+    .replace(/PASS_BENEFIT/g, "PAUSE_BENEFIT");
+  return [
+    "PAUSE_BENEFIT",
+    "STEAM_ACCESS",
+    "STEAM",
+    "ICE_BATH_ACCESS",
+    "ICE_BATH",
+    "NUTRITION_COUNSELING",
+    "PHYSIOTHERAPY_COUNSELING",
+  ].includes(normalized);
+}
+
+function extractSubscriptionIdFromEntitlementSource(source?: string): string {
+  if (!source) {
+    return "";
+  }
+  const [, subscriptionId = ""] = String(source).split(":");
+  return subscriptionId.trim();
+}
+
+function entitlementUsageLabel(entitlement: MemberEntitlementRecord): string {
+  const feature = String(entitlement.feature || "").toUpperCase();
+  const included = Number(entitlement.includedCount || 0);
+  const remaining = Number(entitlement.remainingCount || 0);
+  const used = Number(entitlement.usedCount || 0);
+
+  if (feature === "PAUSE_BENEFIT") {
+    return `${remaining} / ${included} days`;
+  }
+
+  if (included <= 0) {
+    return `${used} used`;
+  }
+
+  return `${used} / ${included}`;
+}
+
+function entitlementRuleLabel(entitlement: MemberEntitlementRecord): string {
+  const recurrence = String(entitlement.recurrence || "FULL_TERM").toUpperCase();
+  const included = Number(entitlement.includedCount || 0);
+
+  if (recurrence === "MONTHLY") {
+    return `${included} per month`;
+  }
+  if (recurrence === "QUARTERLY") {
+    return `${included} per quarter`;
+  }
+  if (recurrence === "HALF_YEARLY") {
+    return `${included} per half year`;
+  }
+  if (String(entitlement.feature || "").toUpperCase() === "PAUSE_BENEFIT") {
+    return "Per membership";
+  }
+  return `${included} total`;
+}
+
+function shouldShowPackageFeatureChip(value?: string): boolean {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (!normalized) {
+    return false;
+  }
+  if (
+    normalized === "PAUSE_BENEFIT" ||
+    normalized === "TRANSFORMATION" ||
+    normalized === "TRANSFORMATION_ACCESS" ||
+    normalized === "GROUP_CLASS_ACCESS" ||
+    normalized === "PT_INCLUDED" ||
+    normalized === "TWO_SESSIONS_PER_WEEK" ||
+    normalized === "TWO_SESSIONS_EACH_PER_WEEK"
+  ) {
+    return false;
+  }
+  return true;
 }
 
 function normalizeIndianMobile(value: string): string {
@@ -373,6 +511,20 @@ function daysUntil(value?: string): number | null {
   const now = new Date();
   const diff = parsed.getTime() - now.getTime();
   return Math.ceil(diff / (1000 * 60 * 60 * 24));
+}
+
+function formatExpiryWindow(days: number | null): string {
+  if (days === null) {
+    return "-";
+  }
+  if (days < 0) {
+    const overdueDays = Math.abs(days);
+    return `Expired ${overdueDays} day${overdueDays === 1 ? "" : "s"} ago`;
+  }
+  if (days === 0) {
+    return "Expires today";
+  }
+  return `${days} day${days === 1 ? "" : "s"} left`;
 }
 
 function ProfilePanel({
@@ -586,17 +738,17 @@ function normalizePaymentStatus(currentStatus: string, totalAmount: number, paid
 function membershipPanelTitle(family: MembershipFamily): string {
   switch (family) {
     case "TRANSFORMATION":
-      return "Transformation Membership";
+      return "Transformation";
     case "PT":
-      return "PT Membership";
+      return "Personal Training";
     case "GROUP_CLASS":
-      return "Group Class Membership";
+      return "Group Class";
     case "FLEX":
-      return "Flex Membership";
+      return "Flex";
     case "CREDIT_PACK":
-      return "Credit Pack";
+      return "Credits";
     default:
-      return "Gym Membership";
+      return "Gym";
   }
 }
 
@@ -611,10 +763,54 @@ function membershipPanelSubtitle(family: MembershipFamily): string {
     case "FLEX":
       return "Check-in based membership with controlled upgrade paths.";
     case "CREDIT_PACK":
-      return "Wallet-style credits pack. Commercial actions are handled separately from memberships.";
+      return "Credits are treated as an add-on ledger and are not managed as a standalone membership.";
     default:
       return "Active membership details, access scope, and operational eligibility.";
   }
+}
+
+function trimMembershipCardTitle(title: string): string {
+  return title
+    .replace(/\bTransform\b/gi, "Transformation")
+    .replace(/\s*-\s*\d+\s*M(?:ONTHS?)?$/i, "")
+    .trim();
+}
+
+function productTierRank(family: MembershipFamily, productCode: string): number {
+  const normalized = String(productCode || "").trim().toUpperCase();
+
+  switch (family) {
+    case "FLAGSHIP": {
+      const order = ["FOMO_MOVE", "FOMO_MOVE_PLUS", "FOMO_CORE", "FOMO_CORE_PLUS", "FOMO_CORE_RHYTHM", "FOMO_BLACK"];
+      const index = order.indexOf(normalized);
+      return index >= 0 ? index + 1 : 0;
+    }
+    case "FLEX": {
+      const order = ["FLEX_LITE", "FLEX_PRO", "FLEX_ELITE"];
+      const index = order.indexOf(normalized);
+      return index >= 0 ? index + 1 : 0;
+    }
+    case "PT": {
+      if (normalized.includes("LEVEL_1")) return 1;
+      if (normalized.includes("LEVEL_2")) return 2;
+      return 0;
+    }
+    case "TRANSFORMATION": {
+      if (normalized.includes("LEVEL_1")) return 1;
+      if (normalized.includes("LEVEL_2")) return 2;
+      return 0;
+    }
+    default:
+      return 0;
+  }
+}
+
+function isSamePtTrack(currentProductCode: string, candidateProductCode: string): boolean {
+  const current = String(currentProductCode || "").toUpperCase();
+  const candidate = String(candidateProductCode || "").toUpperCase();
+  const currentCouple = current.includes("COUPLE");
+  const candidateCouple = candidate.includes("COUPLE");
+  return currentCouple === candidateCouple;
 }
 
 function deriveAccentForMembershipFamily(family: MembershipFamily): "slate" | "lime" | "rose" | "amber" | "cyan" {
@@ -642,6 +838,7 @@ function extractMembershipPortfolioItem(payload: unknown): MembershipPortfolioIt
   const family = (familyRaw.toUpperCase() || "UNKNOWN") as MembershipFamily;
   return {
     subscriptionId,
+    productVariantId: pickString(record, ["productVariantId"]),
     family,
     categoryCode: pickString(record, ["categoryCode"]),
     productCode: pickString(record, ["productCode"]),
@@ -656,7 +853,10 @@ function extractMembershipPortfolioItem(payload: unknown): MembershipPortfolioIt
     invoiceNumber: pickString(record, ["invoiceNumber"]),
     receiptNumber: pickString(record, ["receiptNumber"]),
     paymentConfirmed: pickBoolean(record, ["paymentConfirmed"]) === true,
+    includedCheckIns: pickNumber(record, ["includedCheckIns"]),
+    usedCheckIns: pickNumber(record, ["usedCheckIns"]),
     checkInsRemaining: pickNumber(record, ["checkInsRemaining"]),
+    extraVisitPrice: pickNumber(record, ["extraVisitPrice"]),
     includedPtSessions: pickNumber(record, ["includedPtSessions"]),
     entitlements: toArray(record.entitlements)
       .map((item) => cleanEntitlementFeatureLabel(String(item || "")))
@@ -695,6 +895,7 @@ async function withTabTimeout<T>(promise: Promise<T>, label: string, timeoutMs =
 export default function MemberProfilePage() {
   const params = useParams<{ memberId: string }>();
   const router = useRouter();
+  const searchParams = useSearchParams();
   const memberId = params.memberId;
   const { token, user } = useAuth();
 
@@ -710,16 +911,22 @@ export default function MemberProfilePage() {
   loadingTabsRef.current = loadingTabs;
   const tabDataRef = useRef(tabData);
   tabDataRef.current = tabData;
+  const sessionRegisterRef = useRef<HTMLDivElement | null>(null);
   const [assessmentActionBusy, setAssessmentActionBusy] = useState(false);
   const [documentBusyKey, setDocumentBusyKey] = useState<string | null>(null);
   const [memberRecord, setMemberRecord] = useState<UserDirectoryItem | null>(null);
+  const [selectedMembershipId, setSelectedMembershipId] = useState<string>("");
+  const [openMembershipMenuId, setOpenMembershipMenuId] = useState<string | null>(null);
+  const [ptFocusSection, setPtFocusSection] = useState<"session-register" | null>(null);
   const [supportLoading, setSupportLoading] = useState(false);
   const [branches, setBranches] = useState<BranchResponse[]>([]);
   const [coaches, setCoaches] = useState<UserDirectoryItem[]>([]);
   const [staffMembers, setStaffMembers] = useState<UserDirectoryItem[]>([]);
   const [members, setMembers] = useState<UserDirectoryItem[]>([]);
+  const [transferInquiries, setTransferInquiries] = useState<InquiryRecord[]>([]);
   const [catalogProducts, setCatalogProducts] = useState<CatalogProduct[]>([]);
   const [catalogVariants, setCatalogVariants] = useState<CatalogVariant[]>([]);
+  const [billingSettings, setBillingSettings] = useState<BillingSettings | null>(null);
   const [hasPtAssignment, setHasPtAssignment] = useState(false);
   const [actionModal, setActionModal] = useState<ActionModalKey>(null);
   const [actionBusy, setActionBusy] = useState(false);
@@ -768,7 +975,22 @@ export default function MemberProfilePage() {
     startDate: "",
     endDate: "",
   });
+  const [visitForm, setVisitForm] = useState({
+    paymentMode: "UPI",
+  });
   const [accessNotes, setAccessNotes] = useState("");
+  const [selectedBiometricDeviceSerial, setSelectedBiometricDeviceSerial] = useState("");
+
+  useEffect(() => {
+    const requestedTab = searchParams.get("tab");
+    if (!requestedTab) {
+      return;
+    }
+    const matched = TAB_ORDER.find((tab) => tab.key === requestedTab);
+    if (matched) {
+      setActiveTab(matched.key);
+    }
+  }, [searchParams]);
 
   // Reset stale loading flags when token refreshes so stuck tabs can retry
   useEffect(() => {
@@ -909,13 +1131,15 @@ export default function MemberProfilePage() {
     (async () => {
       setSupportLoading(true);
       try {
-        const [branchPage, coachRows, staffRows, memberRows, products, variants] = await Promise.all([
+        const [branchPage, coachRows, staffRows, memberRows, products, variants, billing, inquiryPage] = await Promise.all([
           branchService.listBranches(token, { page: 0, size: 100 }),
           usersService.searchUsers(token, { role: "COACH", active: true }),
           usersService.searchUsers(token, { role: "STAFF", active: true }),
           usersService.searchUsers(token, { role: "MEMBER", active: true }),
           subscriptionService.getCatalogProducts(token),
           subscriptionService.getCatalogVariants(token),
+          subscriptionService.getBillingSettings(token),
+          subscriptionService.searchInquiriesPaged(token, {}, 0, 200),
         ]);
 
         if (!active) {
@@ -928,6 +1152,13 @@ export default function MemberProfilePage() {
         setMembers(memberRows);
         setCatalogProducts(products);
         setCatalogVariants(variants);
+        setBillingSettings(billing);
+        setTransferInquiries(
+          (inquiryPage.content || []).filter((item) => {
+            const status = String(item.status || "").toUpperCase();
+            return status !== "LOST" && status !== "NOT_INTERESTED" && Boolean(item.memberId) && String(item.memberId) !== String(memberId);
+          }),
+        );
 
         // Eagerly check if member has any PT assignments (for tab visibility)
         try {
@@ -972,6 +1203,12 @@ export default function MemberProfilePage() {
       return;
     }
 
+    if (activeTab === "overview") {
+      if (tabDataRef.current.subscriptions === undefined && !loadingTabsRef.current.subscriptions) {
+        void loadMembershipTab();
+      }
+    }
+
     if (activeTab === "subscriptions") {
       if (tabDataRef.current.subscriptions === undefined && !loadingTabsRef.current.subscriptions) {
         void loadMembershipTab();
@@ -1004,17 +1241,23 @@ export default function MemberProfilePage() {
             break;
           case "attendance":
           {
-            const [attendance, accessState] = await withTabTimeout(
+            const [attendance, accessState, biometricDevices, biometricLogs] = await withTabTimeout(
               Promise.all([
                 engagementService.getAttendanceByMember(token, memberId),
                 usersService.getMemberAccessState(token, memberId),
+                engagementService.listBiometricDevices(token).catch(() => []),
+                engagementService.getBiometricLogs(token).catch(() => []),
               ]),
               "attendance",
             );
             if (active) {
               setTabData((current) => ({ ...current, "recovery-services": accessState }));
             }
-            payload = attendance;
+            payload = {
+              records: attendance,
+              biometricDevices,
+              biometricLogs,
+            };
             break;
           }
           case "credits-wallet": {
@@ -1119,6 +1362,36 @@ export default function MemberProfilePage() {
   }, [activeTab, loadMembershipTab, memberId, shell, token]);
 
   useEffect(() => {
+    if (activeTab !== "personal-training" || ptFocusSection !== "session-register") {
+      return;
+    }
+
+    const timer = globalThis.setTimeout(() => {
+      sessionRegisterRef.current?.scrollIntoView({ behavior: "smooth", block: "start" });
+      setPtFocusSection(null);
+    }, 120);
+
+    return () => globalThis.clearTimeout(timer);
+  }, [activeTab, ptFocusSection, tabData]);
+
+  useEffect(() => {
+    if (!openMembershipMenuId) {
+      return;
+    }
+
+    const handlePointerDown = (event: MouseEvent) => {
+      const target = event.target as HTMLElement | null;
+      if (target?.closest("[data-membership-menu-root='true']")) {
+        return;
+      }
+      setOpenMembershipMenuId(null);
+    };
+
+    document.addEventListener("mousedown", handlePointerDown);
+    return () => document.removeEventListener("mousedown", handlePointerDown);
+  }, [openMembershipMenuId]);
+
+  useEffect(() => {
     if (!shell) {
       return;
     }
@@ -1177,28 +1450,6 @@ export default function MemberProfilePage() {
       }));
     } finally {
       setLoadingTabs((current) => ({ ...current, "fitness-assessment": false }));
-    }
-  };
-
-  const viewDocumentPdf = async (type: "invoice" | "receipt", id: number | string, title: string) => {
-    if (!token) {
-      return;
-    }
-
-    const busyKey = `${type}-view-${id}`;
-    setDocumentBusyKey(busyKey);
-    try {
-      const blob = type === "invoice"
-        ? await subscriptionService.getInvoicePdf(token, id)
-        : await subscriptionService.getReceiptPdf(token, id);
-      const url = URL.createObjectURL(new Blob([blob], { type: "application/pdf" }));
-      window.open(url, "_blank", "noopener,noreferrer");
-      // Revoke after a delay to allow the new tab to load
-      setTimeout(() => URL.revokeObjectURL(url), 10000);
-    } catch (error) {
-      setActionError(error instanceof ApiError ? error.message : error instanceof Error ? error.message : `Unable to open ${type} document.`);
-    } finally {
-      setDocumentBusyKey(null);
     }
   };
 
@@ -1266,6 +1517,32 @@ export default function MemberProfilePage() {
         return;
       }
       setActionError(error instanceof ApiError ? error.message : error instanceof Error ? error.message : `Unable to share ${type} document.`);
+    } finally {
+      setDocumentBusyKey(null);
+    }
+  };
+
+  const printDocumentPdf = async (type: "invoice" | "receipt", id: number | string) => {
+    if (!token) {
+      return;
+    }
+
+    const busyKey = `${type}-print-${id}`;
+    setDocumentBusyKey(busyKey);
+    try {
+      const blob = type === "invoice"
+        ? await subscriptionService.getInvoicePdf(token, id)
+        : await subscriptionService.getReceiptPdf(token, id);
+      const url = URL.createObjectURL(new Blob([blob], { type: "application/pdf" }));
+      const printWindow = window.open(url, "_blank", "noopener,noreferrer");
+      if (printWindow) {
+        printWindow.onload = () => {
+          printWindow.print();
+        };
+      }
+      setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (error) {
+      setActionError(error instanceof ApiError ? error.message : error instanceof Error ? error.message : `Unable to print ${type} document.`);
     } finally {
       setDocumentBusyKey(null);
     }
@@ -1367,6 +1644,11 @@ export default function MemberProfilePage() {
       : String(shell?.memberId || memberId));
   const email = shell?.email || pickFromSourcesString(shellSources, ["email"]);
   const phone = shell?.mobileNumber || pickFromSourcesString(shellSources, ["mobileNumber", "phoneNumber", "mobile"]);
+  const normalizedPhonePin = normalizeIndianMobile(phone || "");
+  const memberDisplayName =
+    shell?.fullName ||
+    pickFromSourcesString(shellSources, ["fullName", "name"]) ||
+    `Member ${memberCode}`;
   const emergencyContact = pickFromSourcesString(shellSources, [
     "emergencyContactName",
     "emergencyName",
@@ -1377,6 +1659,21 @@ export default function MemberProfilePage() {
   const shellBalanceAmount = pickFromSourcesNumber(shellSources, ["balanceAmount", "outstandingAmount"]);
   const shellLatestInvoiceNumber = pickFromSourcesString(shellSources, ["latestInvoiceNumber"]);
   const shellLatestReceiptNumber = pickFromSourcesString(shellSources, ["latestReceiptNumber"]);
+  const attendancePayload = toRecord(tabData.attendance);
+  const attendanceRecords = Array.isArray(attendancePayload.records) ? attendancePayload.records : [];
+  const biometricDeviceRecords = toArray<RecordLike>(attendancePayload.biometricDevices);
+  const availableBiometricDevices = biometricDeviceRecords.filter((device) => {
+    const deviceBranchCode = pickString(device, ["branchCode"]);
+    if (!branchCode || !deviceBranchCode) {
+      return true;
+    }
+    return deviceBranchCode === branchCode;
+  });
+  const biometricLogRecords = toArray<RecordLike>(attendancePayload.biometricLogs).filter((entry) => {
+    const logMemberId = pickString(entry, ["memberId"]);
+    const logPin = pickString(entry, ["deviceUserId"]);
+    return logMemberId === String(memberId) || (!!normalizedPhonePin && logPin === normalizedPhonePin);
+  });
 
   const overviewBilling = tabData.billing || [];
   const invoiceStats = extractInvoiceStats(overviewBilling);
@@ -1414,46 +1711,226 @@ export default function MemberProfilePage() {
     return pickBoolean(record, ["active"]) === true;
   });
   const activePtAssignmentRecord = activePtAssignment ? toRecord(activePtAssignment) : null;
+  const subscriptionsDashboardRecord = toRecord(tabData.subscriptions?.dashboard);
   const entitlementRecords = toArray<RecordLike>(tabData.subscriptions?.entitlements);
+  const dashboardMembershipSummaries = toArray(subscriptionsDashboardRecord.memberships)
+    .map(extractMembershipPortfolioItem)
+    .filter((entry): entry is MembershipPortfolioItem => entry !== null);
+  const membershipVariantLookup = new Map(
+    dashboardMembershipSummaries.map((entry) => {
+      const catalogVariant =
+        catalogVariants.find((variant) => String(variant.variantId) === String(entry.productVariantId)) ||
+        catalogVariants.find((variant) => variant.productCode === entry.productCode && variant.variantName === entry.variantName);
+      return [entry.subscriptionId, catalogVariant];
+    }),
+  );
+  const normalizedEntitlementRecords = entitlementRecords
+    .map((entry) => ({
+      entitlementId: Number(pickString(entry, ["entitlementId", "id"]) || 0),
+      feature: pickString(entry, ["feature"]),
+      source: pickString(entry, ["source"]),
+      validFrom: pickString(entry, ["validFrom"]) || undefined,
+      validUntil: pickString(entry, ["validUntil"]) || undefined,
+      includedCount: pickNumber(entry, ["includedCount"]),
+      remainingCount: pickNumber(entry, ["remainingCount"]),
+      recurrence: pickString(entry, ["recurrence"]) || undefined,
+      usedCount: pickNumber(entry, ["usedCount"]),
+      expiredUnusedCount: pickNumber(entry, ["expiredUnusedCount"]),
+      manualTopUpCount: pickNumber(entry, ["manualTopUpCount"]),
+      expiresIfUnused: pickBoolean(entry, ["expiresIfUnused"]),
+      currentCycleStart: pickString(entry, ["currentCycleStart"]) || undefined,
+      currentCycleEnd: pickString(entry, ["currentCycleEnd"]) || undefined,
+      lastUtilizedAt: pickString(entry, ["lastUtilizedAt"]) || undefined,
+      lastExpiredAt: pickString(entry, ["lastExpiredAt"]) || undefined,
+    }))
+    .filter((entry) => entry.entitlementId > 0)
+    .filter((entry) => shouldTrackUsageEntitlement(entry.feature))
+    .map((entry) => {
+      if (String(entry.feature || "").toUpperCase() !== "PAUSE_BENEFIT") {
+        return entry;
+      }
+      const linkedSubscriptionId = extractSubscriptionIdFromEntitlementSource(entry.source);
+      const linkedVariant = membershipVariantLookup.get(linkedSubscriptionId);
+      const allowedDays = Math.max(linkedVariant?.passBenefitDays || 0, Number(entry.includedCount || 0));
+      if (allowedDays <= 0) {
+        return entry;
+      }
+      const usedDays = Number(entry.usedCount || 0);
+      return {
+        ...entry,
+        includedCount: allowedDays,
+        remainingCount: Math.max(allowedDays - usedDays, 0),
+      };
+    });
+  const portfolioMembershipItems = toArray(subscriptionsDashboardRecord.memberships)
+    .map(extractMembershipPortfolioItem)
+    .filter((entry): entry is MembershipPortfolioItem => entry !== null);
+  const portfolioPrimaryMembership = extractMembershipPortfolioItem(subscriptionsDashboardRecord.primaryMembership)
+    || portfolioMembershipItems[0]
+    || null;
+  const portfolioTransformationMembership = extractMembershipPortfolioItem(subscriptionsDashboardRecord.transformationMembership);
+  const portfolioSecondaryMemberships = toArray(subscriptionsDashboardRecord.secondaryMemberships)
+    .map(extractMembershipPortfolioItem)
+    .filter((entry): entry is MembershipPortfolioItem => entry !== null);
+  const hasActivePtMembership = portfolioMembershipItems.some((entry) => {
+    const normalizedStatus = String(entry.status || "").toUpperCase();
+    return entry.family === "PT" && !["EXPIRED", "LAPSED", "INACTIVE", "CANCELLED", "CANCELED"].includes(normalizedStatus);
+  });
+  const overviewDisplayedMemberships = portfolioTransformationMembership
+    ? [
+        portfolioTransformationMembership,
+        ...portfolioSecondaryMemberships.filter(
+          (entry) =>
+            entry.subscriptionId !== portfolioTransformationMembership.subscriptionId &&
+            entry.family !== "PT",
+        ),
+      ]
+    : portfolioPrimaryMembership
+      ? [
+          portfolioPrimaryMembership,
+          ...portfolioSecondaryMemberships.filter((entry) => entry.subscriptionId !== portfolioPrimaryMembership.subscriptionId),
+        ]
+      : portfolioMembershipItems;
+  const fallbackOverviewMemberships: MembershipPortfolioItem[] = [
+    ...(planName && planName !== "-" && planName !== "No active membership"
+      ? [
+          {
+            subscriptionId: activeSubscriptionId || "overview-primary",
+            productVariantId: activeProductVariantId || "",
+            family: deriveMembershipFamily(productCategoryCode.toUpperCase(), currentProductCode || planName),
+            categoryCode: productCategoryCode,
+            productCode: currentProductCode,
+            productName: planName,
+            variantName: planName,
+            status: membershipStatus,
+            startDate,
+            expiryDate,
+            durationMonths,
+            validityDays,
+            branchCode,
+            invoiceNumber: shellLatestInvoiceNumber,
+            receiptNumber: shellLatestReceiptNumber,
+            paymentConfirmed: paymentStatus.toUpperCase() === "PAID",
+            includedCheckIns: 0,
+            usedCheckIns: 0,
+            checkInsRemaining: 0,
+            extraVisitPrice: 0,
+            includedPtSessions: 0,
+            entitlements: [],
+          },
+        ]
+      : []),
+    ...(activePtAssignment
+      ? [
+          {
+            subscriptionId: pickString(activePtAssignmentRecord, ["id", "assignmentId"]) || "overview-pt",
+            productVariantId: "",
+            family: "PT" as MembershipFamily,
+            categoryCode: "PT",
+            productCode: "PT",
+            productName: "Personal Training",
+            variantName:
+              pickString(activePtAssignmentRecord, ["packageName", "variantName", "productName", "assignmentName"]) || "Personal Training",
+            status: pickBoolean(activePtAssignmentRecord, ["active"]) ? "ACTIVE" : "INACTIVE",
+            startDate: pickString(activePtAssignmentRecord, ["startDate"]),
+            expiryDate: pickString(activePtAssignmentRecord, ["endDate"]),
+            durationMonths: 0,
+            validityDays: 0,
+            branchCode,
+            invoiceNumber: "",
+            receiptNumber: "",
+            paymentConfirmed: true,
+            includedCheckIns: 0,
+            usedCheckIns: 0,
+            checkInsRemaining: 0,
+            extraVisitPrice: 0,
+            includedPtSessions: pickNumber(activePtAssignmentRecord, ["sessionCount", "includedSessions", "totalSessions"]),
+            entitlements: [],
+          },
+        ]
+      : []),
+  ].filter((entry, index, array) => array.findIndex((item) => item.subscriptionId === entry.subscriptionId) === index);
+  const overviewMembershipCards = overviewDisplayedMemberships.length ? overviewDisplayedMemberships : fallbackOverviewMemberships;
+  const selectedMembershipRecord = portfolioMembershipItems.find((entry) => entry.subscriptionId === selectedMembershipId)
+    || portfolioPrimaryMembership
+    || null;
+  const selectedProductCategoryCode = selectedMembershipRecord?.categoryCode || productCategoryCode;
+  const selectedProductCode = selectedMembershipRecord?.productCode || currentProductCode;
+  const selectedSubscriptionId = selectedMembershipRecord?.subscriptionId || activeSubscriptionId;
+  const selectedProductVariantId = selectedMembershipRecord?.productVariantId
+    || (selectedMembershipRecord?.subscriptionId
+    ? pickString(
+        toRecord(
+          toArray(subscriptionsDashboardRecord.memberships).find(
+            (entry) => pickString(toRecord(entry), ["subscriptionId"]) === selectedMembershipRecord.subscriptionId,
+          ),
+        ),
+        ["productVariantId"],
+      ) || activeProductVariantId
+    : activeProductVariantId);
+  const selectedDurationMonths = selectedMembershipRecord?.durationMonths || durationMonths;
+  const selectedValidityDays = selectedMembershipRecord?.validityDays || validityDays;
+  const selectedStartDate = selectedMembershipRecord?.startDate || startDate;
+  const selectedExpiryDate = selectedMembershipRecord?.expiryDate || expiryDate;
+  const selectedPlanLabel = normalizeDisplayPlanName(selectedMembershipRecord?.variantName || planName);
+  const currentCatalogProduct = useMemo(
+    () => catalogProducts.find((product) => product.productCode === selectedProductCode),
+    [catalogProducts, selectedProductCode],
+  );
+  const currentCatalogVariant = useMemo(
+    () =>
+      catalogVariants.find((variant) => String(variant.variantId) === String(selectedProductVariantId)) ||
+      catalogVariants.find((variant) => variant.variantCode === selectedPlanLabel || variant.variantName === selectedPlanLabel),
+    [selectedProductVariantId, catalogVariants, selectedPlanLabel],
+  );
+  useEffect(() => {
+    if (!portfolioPrimaryMembership?.subscriptionId) {
+      return;
+    }
+    setSelectedMembershipId((current) => {
+      if (current && portfolioMembershipItems.some((entry) => entry.subscriptionId === current)) {
+        return current;
+      }
+      return portfolioPrimaryMembership.subscriptionId;
+    });
+  }, [portfolioMembershipItems, portfolioPrimaryMembership]);
   const entitlementFeatures = entitlementRecords.map((entry) => String(entry.feature || "").toUpperCase());
   const hasFreezeEntitlement = entitlementFeatures.some((feature) =>
     feature === "PAUSE_BENEFIT" ||
     feature === "PAUSE_BENEFITS" ||
     feature === "PASS_BENEFIT" ||
     feature === "PASS_BENEFITS",
-  );
-  const normalizedProductCode = currentProductCode.toUpperCase();
-  const normalizedCategoryCode = productCategoryCode.toUpperCase();
-  const membershipFamily = deriveMembershipFamily(normalizedCategoryCode, normalizedProductCode || rawPlanName);
+  ) || (currentCatalogVariant?.passBenefitDays || 0) > 0;
+  const normalizedProductCode = selectedProductCode.toUpperCase();
+  const normalizedCategoryCode = selectedProductCategoryCode.toUpperCase();
+  const membershipFamily = deriveMembershipFamily(normalizedCategoryCode, normalizedProductCode || selectedPlanLabel || rawPlanName);
   const isGroupClassPlan = membershipFamily === "GROUP_CLASS";
   const isFlagshipPlan = membershipFamily === "FLAGSHIP";
   const isTransformationPlan = membershipFamily === "TRANSFORMATION";
   const isFlexPlan = membershipFamily === "FLEX";
   const isPtPlan = membershipFamily === "PT";
-  const hasPrimaryMembership = Boolean(activeSubscriptionId) && membershipFamily !== "CREDIT_PACK";
-  const upgradeWindowDays = deriveUpgradeWindowDays(durationMonths, validityDays);
-  const subscriptionStartDate = startDate ? new Date(startDate) : null;
-  const daysSinceSubscriptionStart =
-    subscriptionStartDate && !Number.isNaN(subscriptionStartDate.getTime())
-      ? Math.max(0, Math.floor((Date.now() - subscriptionStartDate.getTime()) / (24 * 60 * 60 * 1000)))
-      : null;
-  const upgradeWindowActive =
-    daysSinceSubscriptionStart === null ? true : daysSinceSubscriptionStart <= upgradeWindowDays;
+  const hasPrimaryMembership = Boolean(selectedSubscriptionId) && membershipFamily !== "CREDIT_PACK";
+  const hasOverviewMembership =
+    overviewMembershipCards.length > 0 &&
+    !["EXPIRED", "LAPSED", "INACTIVE"].some((status) => membershipStatus.toUpperCase().includes(status));
   const isAdminOperator = user?.role === "ADMIN";
   const isStaffOperator = user?.role === "STAFF";
   const canOperateMemberships = isAdminOperator || isStaffOperator;
   const canManageTransfers = isAdminOperator || (user?.role === "STAFF" && user?.designation === "GYM_MANAGER");
+  const pauseBenefitDays = Math.max(
+    currentCatalogVariant?.passBenefitDays || 0,
+    normalizedEntitlementRecords
+      .filter((entry) => String(entry.feature || "").toUpperCase() === "PAUSE_BENEFIT")
+      .reduce((max, entry) => Math.max(max, Number(entry.includedCount || 0)), 0),
+  );
+  const freezeMinDays = 5;
+  const freezeMaxDays = pauseBenefitDays;
   const canShowFreezeAction = hasPrimaryMembership && canOperateMemberships && hasFreezeEntitlement && !isFlexPlan && !isGroupClassPlan && !isPtPlan;
   const canRenewMembership = hasPrimaryMembership;
   const canUpgradeMembership =
     hasPrimaryMembership &&
     (isFlagshipPlan || isGroupClassPlan || isFlexPlan || isTransformationPlan || isPtPlan) &&
-    upgradeWindowActive &&
     canOperateMemberships;
-  const canDowngradeMembership =
-    hasPrimaryMembership &&
-    (isFlagshipPlan || isGroupClassPlan || isTransformationPlan || isPtPlan) &&
-    (!isGroupClassPlan || durationMonths > 1 || validityDays > 30);
   const canShowPtActions = Boolean(activePtAssignment) || isFlagshipPlan || isTransformationPlan || isPtPlan;
   const canTransferMembership =
     hasPrimaryMembership &&
@@ -1464,38 +1941,29 @@ export default function MemberProfilePage() {
       normalizedProductCode.includes("BLACK") ||
       normalizedProductCode.includes("RHYTHM")
     );
-  const currentCatalogProduct = useMemo(
-    () => catalogProducts.find((product) => product.productCode === currentProductCode),
-    [catalogProducts, currentProductCode],
-  );
-  const currentCatalogVariant = useMemo(
-    () =>
-      catalogVariants.find((variant) => String(variant.variantId) === String(activeProductVariantId)) ||
-      catalogVariants.find((variant) => variant.variantCode === rawPlanName || variant.variantName === rawPlanName),
-    [activeProductVariantId, catalogVariants, rawPlanName],
-  );
-  const catalogFeatures = currentCatalogVariant ? parseFeatureList(currentCatalogVariant.includedFeatures) : [];
-  const liveEntitlements = entitlementRecords.map((entry) => cleanEntitlementFeatureLabel(pickString(entry, ["feature"]) || "-"));
-  const membershipFeatures = (liveEntitlements.length ? liveEntitlements : catalogFeatures).filter(
-    (entry, index, array) => entry !== "-" && array.indexOf(entry) === index,
-  );
+  const canAddPtMembershipAction =
+    hasPrimaryMembership &&
+    isFlagshipPlan &&
+    !hasActivePtMembership &&
+    !Boolean(activePtAssignment);
+  const selectedCheckInsRemaining = selectedMembershipRecord?.checkInsRemaining || 0;
+  const selectedIncludedCheckIns = selectedMembershipRecord?.includedCheckIns || 0;
+  const selectedUsedCheckIns = selectedMembershipRecord?.usedCheckIns || 0;
+  const selectedExtraVisitPrice = Number(currentCatalogVariant?.extraVisitPrice || selectedMembershipRecord?.extraVisitPrice || 0);
+  const canAddFlexVisit =
+    hasPrimaryMembership &&
+    isFlexPlan &&
+    canOperateMemberships &&
+    selectedCheckInsRemaining <= 0 &&
+    selectedExtraVisitPrice > 0;
+  const currentProductRank = productTierRank(membershipFamily, selectedProductCode);
   const membershipActions: MembershipActionState[] = useMemo(() => {
     const actions: MembershipActionState[] = [];
     if (canRenewMembership) {
       actions.push({ key: "renew", label: "Renew", enabled: true });
     }
     if (canUpgradeMembership) {
-      actions.push({ key: "upgrade", label: "Upgrade", enabled: true, note: upgradeWindowActive ? undefined : `Upgrade window closed after ${upgradeWindowDays} days.` });
-    }
-    if (canDowngradeMembership) {
-      const adminApprovalRequired = !isAdminOperator;
-      actions.push({
-        key: "downgrade",
-        label: adminApprovalRequired ? "Raise Downgrade Request" : "Downgrade",
-        enabled: isAdminOperator,
-        adminApprovalRequired,
-        note: adminApprovalRequired ? "Gym and staff teams can raise this for admin approval once the workflow is introduced." : undefined,
-      });
+      actions.push({ key: "upgrade", label: "Upgrade", enabled: true });
     }
     if (canShowFreezeAction) {
       actions.push({ key: "freeze", label: "Freeze", enabled: true });
@@ -1510,26 +1978,34 @@ export default function MemberProfilePage() {
         note: adminApprovalRequired ? "Transfer requires admin approval. The request workflow will be introduced separately." : undefined,
       });
     }
-    if (canShowPtActions) {
+    if (canAddPtMembershipAction) {
       actions.push({
         key: "pt",
-        label: activePtAssignment ? "Renew PT" : "Add PT",
+        label: "Add PT",
+        enabled: true,
+      });
+    }
+    if (canAddFlexVisit) {
+      actions.push({
+        key: "visit",
+        label: "Add Visit",
         enabled: true,
       });
     }
     return actions;
   }, [
-    activePtAssignment,
-    canDowngradeMembership,
+    canAddFlexVisit,
+    canAddPtMembershipAction,
     canRenewMembership,
     canShowFreezeAction,
-    canShowPtActions,
     canTransferMembership,
     canUpgradeMembership,
     isAdminOperator,
-    upgradeWindowActive,
-    upgradeWindowDays,
   ]);
+  const primaryMembershipDurationLimit = Math.max(
+    0,
+    portfolioPrimaryMembership?.family !== "PT" ? Number(portfolioPrimaryMembership?.durationMonths || 0) : 0,
+  );
   const filteredLifecycleProducts = useMemo(
     () =>
       catalogProducts.filter((product) => {
@@ -1540,60 +2016,36 @@ export default function MemberProfilePage() {
           return false;
         }
 
-        const selectedCategory = lifecycleForm.categoryCode || productCategoryCode;
+        const selectedCategory = lifecycleForm.categoryCode || selectedProductCategoryCode;
         if (selectedCategory && product.categoryCode !== selectedCategory) {
           return false;
         }
 
+        const candidateRank = productTierRank(membershipFamily, product.productCode);
+
         if (actionModal === "upgrade") {
           if (isFlagshipPlan) {
-            return product.categoryCode === "FLAGSHIP";
+            return product.categoryCode === "FLAGSHIP" && candidateRank >= currentProductRank;
           }
           if (isFlexPlan) {
-            return product.categoryCode === "FLAGSHIP" || product.productCode === currentProductCode;
+            return (product.categoryCode === "FLEX" && product.productCode === selectedProductCode)
+              || product.categoryCode === "FLAGSHIP";
           }
           if (isPtPlan) {
-            return product.categoryCode === "PT";
+            return product.categoryCode === "PT"
+              && isSamePtTrack(selectedProductCode, product.productCode)
+              && candidateRank >= currentProductRank;
           }
           if (isGroupClassPlan) {
-            return product.productCode === currentProductCode;
+            return product.productCode === selectedProductCode;
           }
           if (isTransformationPlan) {
-            return product.categoryCode === "TRANSFORMATION";
-          }
-        }
-
-        if (actionModal === "downgrade") {
-          if (isPtPlan) {
-            return product.categoryCode === "PT";
-          }
-          if (isGroupClassPlan) {
-            return product.productCode === currentProductCode;
-          }
-          if (isFlagshipPlan) {
-            return product.categoryCode === "FLAGSHIP";
-          }
-          if (isTransformationPlan) {
-            return product.categoryCode === "TRANSFORMATION";
+            return product.categoryCode === "TRANSFORMATION" && candidateRank >= currentProductRank;
           }
         }
 
         if (actionModal === "renew") {
-          if (isPtPlan) {
-            return product.categoryCode === "PT";
-          }
-          if (isGroupClassPlan) {
-            return product.productCode === currentProductCode;
-          }
-          if (isFlexPlan) {
-            return product.productCode === currentProductCode;
-          }
-          if (isFlagshipPlan) {
-            return product.categoryCode === "FLAGSHIP";
-          }
-          if (isTransformationPlan) {
-            return product.categoryCode === "TRANSFORMATION";
-          }
+          return product.productCode === selectedProductCode;
         }
 
         return selectedCategory ? product.categoryCode === selectedCategory : true;
@@ -1601,14 +2053,16 @@ export default function MemberProfilePage() {
     [
       actionModal,
       catalogProducts,
-      currentProductCode,
+      currentProductRank,
+      membershipFamily,
+      selectedProductCode,
       isFlagshipPlan,
       isFlexPlan,
       isGroupClassPlan,
       isPtPlan,
       isTransformationPlan,
       lifecycleForm.categoryCode,
-      productCategoryCode,
+      selectedProductCategoryCode,
     ],
   );
   const filteredLifecycleVariants = useMemo(
@@ -1620,8 +2074,8 @@ export default function MemberProfilePage() {
         if (variant.categoryCode === "PT" && !isPtPlan) {
           return false;
         }
-        const selectedCategory = lifecycleForm.categoryCode || productCategoryCode;
-        const selectedProduct = lifecycleForm.productCode || currentProductCode;
+        const selectedCategory = lifecycleForm.categoryCode || selectedProductCategoryCode;
+        const selectedProduct = lifecycleForm.productCode || selectedProductCode;
 
         if (selectedCategory && variant.categoryCode !== selectedCategory) {
           return false;
@@ -1630,41 +2084,66 @@ export default function MemberProfilePage() {
           return false;
         }
 
-        const currentVariant = catalogVariants.find((item) => String(item.variantId) === String(activeProductVariantId));
-        const currentDuration = currentVariant?.durationMonths || durationMonths;
-        const currentValidity = currentVariant?.validityDays || validityDays;
+        const currentVariant = catalogVariants.find((item) => String(item.variantId) === String(selectedProductVariantId));
+        const currentDuration = currentVariant?.durationMonths || selectedDurationMonths;
+        const currentValidity = currentVariant?.validityDays || selectedValidityDays;
+        const currentRank = currentCatalogProduct ? productTierRank(membershipFamily, currentCatalogProduct.productCode) : currentProductRank;
+        const candidateRank = productTierRank(membershipFamily, variant.productCode);
+        const sameProduct = variant.productCode === selectedProductCode;
 
         if (actionModal === "upgrade") {
+          if (sameProduct) {
+            if (currentDuration > 0 && variant.durationMonths > 0) {
+              return variant.durationMonths > currentDuration;
+            }
+            if (currentValidity > 0 && variant.validityDays > 0) {
+              return variant.validityDays > currentValidity;
+            }
+          }
+          if (candidateRank > currentRank) {
+            if (currentDuration > 0 && variant.durationMonths > 0) {
+              return variant.durationMonths >= currentDuration;
+            }
+            if (currentValidity > 0 && variant.validityDays > 0) {
+              return variant.validityDays >= currentValidity;
+            }
+            return true;
+          }
           if (currentDuration > 0 && variant.durationMonths > 0) {
-            return variant.durationMonths > currentDuration;
+            return false;
           }
           if (currentValidity > 0 && variant.validityDays > 0) {
-            return variant.validityDays > currentValidity;
+            return false;
           }
+          return false;
         }
 
-        if (actionModal === "downgrade") {
+        if (actionModal === "renew") {
           if (currentDuration > 0 && variant.durationMonths > 0) {
-            return variant.durationMonths < currentDuration;
+            return sameProduct && variant.durationMonths === currentDuration;
           }
           if (currentValidity > 0 && variant.validityDays > 0) {
-            return variant.validityDays < currentValidity;
+            return sameProduct && variant.validityDays === currentValidity;
           }
+          return sameProduct;
         }
 
         return true;
       }),
     [
       actionModal,
-      activeProductVariantId,
+      selectedProductVariantId,
       catalogVariants,
-      currentProductCode,
-      durationMonths,
+      currentCatalogProduct,
+      currentProductRank,
+      membershipFamily,
+      selectedProductCode,
+      selectedDurationMonths,
       isPtPlan,
       lifecycleForm.categoryCode,
       lifecycleForm.productCode,
-      productCategoryCode,
-      validityDays,
+      selectedProductCategoryCode,
+      selectedValidityDays,
     ],
   );
   const lifecycleCategoryOptions = useMemo(
@@ -1681,31 +2160,20 @@ export default function MemberProfilePage() {
               }
               if (actionModal === "upgrade") {
                 if (isFlagshipPlan) return product.categoryCode === "FLAGSHIP";
-                if (isFlexPlan) return product.categoryCode === "FLAGSHIP";
-                if (isPtPlan) return product.categoryCode === "PT";
+                if (isFlexPlan) return product.categoryCode === "FLAGSHIP" || product.categoryCode === "FLEX";
+                if (isPtPlan) return product.categoryCode === "PT" && isSamePtTrack(selectedProductCode, product.productCode);
                 if (isGroupClassPlan) return product.categoryCode === "GROUP_CLASS";
                 if (isTransformationPlan) return product.categoryCode === "TRANSFORMATION";
-              }
-              if (actionModal === "downgrade") {
-                if (isPtPlan) return product.categoryCode === "PT";
-                if (isFlagshipPlan) return product.categoryCode === "FLAGSHIP";
-                if (isGroupClassPlan) return product.categoryCode === "GROUP_CLASS";
-                if (isTransformationPlan) return product.categoryCode === "TRANSFORMATION";
-                return false;
               }
               if (actionModal === "renew") {
-                if (isFlagshipPlan) return product.categoryCode === "FLAGSHIP";
-                if (isFlexPlan) return product.categoryCode === "FLEX";
-                if (isPtPlan) return product.categoryCode === "PT";
-                if (isGroupClassPlan) return product.categoryCode === "GROUP_CLASS";
-                if (isTransformationPlan) return product.categoryCode === "TRANSFORMATION";
+                return product.productCode === selectedProductCode;
               }
-              return product.categoryCode === productCategoryCode;
+              return product.categoryCode === selectedProductCategoryCode;
             })
             .map((product) => product.categoryCode),
         ),
       ),
-    [actionModal, catalogProducts, isFlagshipPlan, isFlexPlan, isGroupClassPlan, isPtPlan, isTransformationPlan, productCategoryCode],
+    [actionModal, catalogProducts, isFlagshipPlan, isFlexPlan, isGroupClassPlan, isPtPlan, isTransformationPlan, selectedProductCategoryCode],
   );
   const ptProducts = useMemo(
     () => catalogProducts.filter((product) => product.categoryCode === "PT"),
@@ -1719,9 +2187,34 @@ export default function MemberProfilePage() {
     () => catalogVariants.find((variant) => String(variant.variantId) === String(lifecycleForm.productVariantId)),
     [catalogVariants, lifecycleForm.productVariantId],
   );
+  const transferInquiryOptions = useMemo(
+    () => transferInquiries.filter((inquiry) => inquiry.memberId && String(inquiry.memberId) !== String(memberId)),
+    [memberId, transferInquiries],
+  );
+  const currentLifecycleBasePrice = Number(currentCatalogVariant?.basePrice || 0);
+  const targetLifecycleBasePrice = Number(selectedLifecycleVariant?.basePrice || 0);
+  const commercialTaxRate = Number(billingSettings?.gstPercentage || 0);
+  const upgradeBaseDifference = Math.max(targetLifecycleBasePrice - currentLifecycleBasePrice, 0);
+  const lifecycleTaxableAmount = actionModal === "upgrade" ? upgradeBaseDifference : targetLifecycleBasePrice;
+  const lifecycleTaxAmount = (lifecycleTaxableAmount * commercialTaxRate) / 100;
+  const lifecycleHalfTaxAmount = lifecycleTaxAmount / 2;
+  const lifecycleInvoiceTotal = lifecycleTaxableAmount + lifecycleTaxAmount;
   const selectedPtVariant = useMemo(
     () => ptVariants.find((variant) => String(variant.variantId) === String(ptForm.productVariantId)),
     [ptForm.productVariantId, ptVariants],
+  );
+  const selectablePtVariants = useMemo(
+    () =>
+      ptVariants.filter((variant) => {
+        if (ptForm.productCode && variant.productCode !== ptForm.productCode) {
+          return false;
+        }
+        if (primaryMembershipDurationLimit > 0 && variant.durationMonths > 0 && variant.durationMonths > primaryMembershipDurationLimit) {
+          return false;
+        }
+        return true;
+      }),
+    [primaryMembershipDurationLimit, ptForm.productCode, ptVariants],
   );
 
   const alerts = useMemo(() => {
@@ -1755,18 +2248,18 @@ export default function MemberProfilePage() {
 
   const openActionModal = (modal: ActionModalKey) => {
     resetActionFeedback();
-    if (modal === "renew" || modal === "upgrade" || modal === "downgrade") {
+    if (modal === "renew" || modal === "upgrade") {
       const defaultLifecycleCategory =
         modal === "upgrade" && isFlexPlan
           ? "FLAGSHIP"
-          : productCategoryCode || "";
+          : selectedProductCategoryCode || "";
       setLifecycleForm({
         categoryCode: defaultLifecycleCategory,
-        productCode: modal === "upgrade" && isFlexPlan ? "" : currentProductCode || "",
-        productVariantId: modal === "upgrade" && isFlexPlan ? "" : activeProductVariantId || "",
+        productCode: modal === "upgrade" && isFlexPlan ? "" : selectedProductCode || "",
+        productVariantId: modal === "upgrade" && isFlexPlan ? "" : selectedProductVariantId || "",
         startDate:
           modal === "renew"
-            ? (expiryDate ? new Date(new Date(expiryDate).getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10))
+            ? (selectedExpiryDate ? new Date(new Date(selectedExpiryDate).getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10))
             : new Date().toISOString().slice(0, 10),
         dueInDays: "7",
         notes: "",
@@ -1783,7 +2276,7 @@ export default function MemberProfilePage() {
     }
     if (modal === "freeze") {
       setFreezeForm({
-        freezeDays: "7",
+        freezeDays: String(Math.max(freezeMinDays, Math.min(freezeMaxDays || freezeMinDays, freezeMinDays))),
         reason: "",
       });
     }
@@ -1796,8 +2289,18 @@ export default function MemberProfilePage() {
         endDate: "",
       });
     }
+    if (modal === "visit") {
+      setVisitForm({
+        paymentMode: "UPI",
+      });
+    }
     if (modal === "biometric") {
       setAccessNotes("");
+      const attendancePayload = toRecord(tabData.attendance);
+      const devices = toArray<RecordLike>(attendancePayload.biometricDevices);
+      const preferredDevice = devices.find((device) => pickString(device, ["branchCode"]) === branchCode)
+        || devices[0];
+      setSelectedBiometricDeviceSerial(pickString(preferredDevice, ["serialNumber"]));
     }
     setActionModal(modal);
   };
@@ -1853,25 +2356,17 @@ export default function MemberProfilePage() {
     }
   };
 
-  const handleSubscriptionAction = async (action: "renew" | "upgrade" | "downgrade") => {
+  const handleSubscriptionAction = async (action: "renew" | "upgrade") => {
     if (!token || !memberId || !lifecycleForm.productVariantId) {
       setActionError("Choose a target variant before continuing.");
       return;
     }
     if (action === "upgrade" && !canUpgradeMembership) {
-      setActionError(`Upgrade is allowed only within ${upgradeWindowDays} day${upgradeWindowDays === 1 ? "" : "s"} of the current membership start.`);
-      return;
-    }
-    if (action === "downgrade" && !canDowngradeMembership) {
-      setActionError("Downgrade is not available for this membership.");
+      setActionError("Upgrade is not available for this membership.");
       return;
     }
     if (action === "renew" && !canRenewMembership) {
       setActionError("Renewal is not available for this membership.");
-      return;
-    }
-    if (action === "downgrade" && !isAdminOperator) {
-      setActionError("Downgrade needs admin approval. Workflow submission will be added separately.");
       return;
     }
 
@@ -1879,6 +2374,7 @@ export default function MemberProfilePage() {
     setActionError(null);
     try {
       const payload = {
+        subscriptionId: selectedSubscriptionId ? Number(selectedSubscriptionId) : undefined,
         productVariantId: Number(lifecycleForm.productVariantId),
         startDate: lifecycleForm.startDate || undefined,
         dueInDays: lifecycleForm.dueInDays ? Number(lifecycleForm.dueInDays) : undefined,
@@ -1887,10 +2383,8 @@ export default function MemberProfilePage() {
 
       if (action === "renew") {
         await subscriptionService.renewSubscription(token, memberId, payload);
-      } else if (action === "upgrade") {
-        await subscriptionService.upgradeSubscription(token, memberId, payload);
       } else {
-        await subscriptionService.downgradeSubscription(token, memberId, payload);
+        await subscriptionService.upgradeSubscription(token, memberId, payload);
       }
 
       await reloadShell();
@@ -1904,7 +2398,7 @@ export default function MemberProfilePage() {
   };
 
   const handleTransfer = async () => {
-    if (!token || !activeSubscriptionId || !transferForm.targetMemberId) {
+    if (!token || !selectedSubscriptionId || !transferForm.targetMemberId) {
       setActionError("Choose the target member before transferring.");
       return;
     }
@@ -1920,7 +2414,7 @@ export default function MemberProfilePage() {
     setActionBusy(true);
     setActionError(null);
     try {
-      await subscriptionService.transferSubscription(token, activeSubscriptionId, {
+      await subscriptionService.transferSubscription(token, selectedSubscriptionId, {
         targetMemberId: Number(transferForm.targetMemberId),
         startDate: transferForm.startDate || undefined,
         deactivateSource: transferForm.deactivateSource,
@@ -1947,8 +2441,8 @@ export default function MemberProfilePage() {
     }
 
     const freezeDays = Number(freezeForm.freezeDays);
-    if (!Number.isFinite(freezeDays) || freezeDays < 7 || freezeDays > 28) {
-      setActionError("Freeze days must be between 7 and 28.");
+    if (!Number.isFinite(freezeDays) || freezeDays < freezeMinDays || freezeDays > freezeMaxDays) {
+      setActionError(`Freeze days must be between ${freezeMinDays} and ${freezeMaxDays}.`);
       return;
     }
 
@@ -1956,6 +2450,7 @@ export default function MemberProfilePage() {
     setActionError(null);
     try {
       await engagementService.activateFreeze(token, memberId, {
+        subscriptionId: Number(selectedSubscriptionId),
         freezeDays,
         reason: freezeForm.reason || undefined,
       });
@@ -1964,6 +2459,32 @@ export default function MemberProfilePage() {
       setActionModal(null);
     } catch (error) {
       setActionError(error instanceof ApiError ? error.message : "Unable to activate freeze.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleAddVisit = async () => {
+    if (!token || !memberId || !selectedSubscriptionId) {
+      return;
+    }
+    if (!canAddFlexVisit) {
+      setActionError("Add Visit is available only when the flex check-in limit is exhausted.");
+      return;
+    }
+
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      const response = await subscriptionService.addFlexVisit(token, selectedSubscriptionId, {
+        memberId: Number(memberId),
+        paymentMode: visitForm.paymentMode,
+      });
+      await reloadShell();
+      setActionSuccess(`Extra visit added. Invoice ${response.invoiceNumber} and receipt ${response.receiptNumber} generated.`);
+      setActionModal(null);
+    } catch (error) {
+      setActionError(error instanceof ApiError ? error.message : "Unable to add extra visit.");
     } finally {
       setActionBusy(false);
     }
@@ -1982,6 +2503,10 @@ export default function MemberProfilePage() {
     const coach = coaches.find((item) => item.id === ptForm.coachId);
     if (!coach?.email) {
       setActionError("Selected coach does not have an email configured.");
+      return;
+    }
+    if (selectedPtVariant && primaryMembershipDurationLimit > 0 && selectedPtVariant.durationMonths > primaryMembershipDurationLimit) {
+      setActionError(`PT duration cannot be greater than the primary membership duration of ${primaryMembershipDurationLimit} month${primaryMembershipDurationLimit === 1 ? "" : "s"}.`);
       return;
     }
 
@@ -2013,19 +2538,67 @@ export default function MemberProfilePage() {
     if (!token || !memberId) {
       return;
     }
+    if (!selectedBiometricDeviceSerial) {
+      setActionError("Select a biometric device before continuing.");
+      return;
+    }
+    if (!normalizedPhonePin) {
+      setActionError("Member mobile number is required to sync with the biometric device.");
+      return;
+    }
 
     setActionBusy(true);
     setActionError(null);
     try {
+      const biometricPayload = {
+        serialNumber: selectedBiometricDeviceSerial,
+        pin: normalizedPhonePin,
+        name: memberDisplayName,
+      };
+      if (action === "ADD_USER") {
+        await engagementService.enrollBiometricUser(token, biometricPayload);
+      } else if (action === "RE_ADD_USER") {
+        await engagementService.reAddBiometricUser(token, biometricPayload);
+      } else if (action === "BLOCK_USER") {
+        await engagementService.blockBiometricUser(token, biometricPayload);
+      } else if (action === "UNBLOCK_USER") {
+        await engagementService.unblockBiometricUser(token, biometricPayload);
+      } else if (action === "DELETE_USER") {
+        await engagementService.deleteBiometricUser(token, {
+          serialNumber: selectedBiometricDeviceSerial,
+          pin: normalizedPhonePin,
+        });
+      }
       const nextState = await usersService.applyMemberAccessAction(token, memberId, {
         action,
         notes: accessNotes || undefined,
       });
-      setTabData((current) => ({ ...current, "recovery-services": nextState, "audit-trail": undefined }));
-      setActionSuccess("Member access state updated.");
+      const refreshedBiometricLogs = await engagementService.getBiometricLogs(token).catch(() => biometricLogRecords);
+      const refreshedAttendanceLogs = refreshedBiometricLogs.filter((entry) => {
+        const logMemberId = pickString(toRecord(entry), ["memberId"]);
+        const logPin = pickString(toRecord(entry), ["deviceUserId"]);
+        return logMemberId === String(memberId) || (!!normalizedPhonePin && logPin === normalizedPhonePin);
+      });
+      setTabData((current) => ({
+        ...current,
+        "recovery-services": nextState,
+        "audit-trail": undefined,
+        attendance: (() => {
+          const currentAttendancePayload = toRecord(current.attendance);
+          const currentAttendanceRecords: unknown[] = Array.isArray(currentAttendancePayload.records)
+            ? (currentAttendancePayload.records as unknown[])
+            : attendanceRecords;
+          return {
+            records: currentAttendanceRecords,
+            biometricDevices: availableBiometricDevices,
+            biometricLogs: refreshedAttendanceLogs,
+          };
+        })(),
+      }));
+      setActionSuccess("Biometric device command queued and access state updated.");
       setActionModal(null);
     } catch (error) {
-      setActionError(error instanceof ApiError ? error.message : "Unable to update member access.");
+      setActionError(error instanceof ApiError ? error.message : "Unable to sync member access with the biometric device.");
     } finally {
       setActionBusy(false);
     }
@@ -2033,79 +2606,89 @@ export default function MemberProfilePage() {
 
   const renderOverview = () => (
     <div className="space-y-6">
-      <div className="grid gap-6 xl:grid-cols-2">
-        <ProfilePanel
-          title="Membership Summary"
-          accent="lime"
-        >
-          <div className="space-y-4">
-            <div>
-              <p className="text-4xl font-semibold tracking-tight text-white">{planName}</p>
-              <p className="mt-2 text-sm text-slate-300">Category: {humanizeLabel(productCategoryCode)}</p>
-            </div>
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-              <StatPill label="Membership Status" value={humanizeLabel(membershipStatus)} />
-              <StatPill label="Duration" value={planDuration} />
-              <StatPill label="Start Date" value={formatDateOnly(startDate)} />
-              <StatPill label="Expiry Date" value={formatDateOnly(expiryDate)} />
-              {!isFlexPlan ? <StatPill label={trainerLabel} value={assignedTrainer} /> : null}
-              <StatPill label="Home Branch" value={branchLabel} />
-            </div>
-          </div>
-        </ProfilePanel>
-
-        <ProfilePanel
-          title="Billing Summary"
-          subtitle="Latest payment and invoice context"
-          accent={balanceDue > 0 ? "rose" : "cyan"}
-        >
-          <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-            <StatPill label="Payment Status" value={humanizeLabel(paymentStatus)} />
-            <StatPill label="Amount Paid" value={formatRoundedInr(roundedInvoiceStats.paid)} />
-            <StatPill label="Balance Due" value={formatRoundedInr(roundedInvoiceStats.balance)} />
-            <StatPill label="Latest Invoice" value={roundedInvoiceStats.latestInvoice || "-"} />
-          </div>
-        </ProfilePanel>
-      </div>
-
-      <div className="grid gap-6 xl:grid-cols-[minmax(0,2.1fr)_360px]">
-        <ProfilePanel title="Personal Details" subtitle="Core member identity and contact information" accent="slate">
-          <dl className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {[
-              { label: "Mobile Number", value: phone || "-" },
-              { label: "Email Address", value: email || "-" },
-              { label: "Date Of Birth", value: formatDateOnly(dateOfBirth || undefined) },
-              { label: "Date Of Enquiry", value: formatDateTime(inquiryDate || undefined) },
-              { label: "Client Representative", value: clientRepName },
-              ...(!isFlexPlan ? [{ label: trainerLabel, value: assignedTrainer }] : []),
-              { label: "Interested In", value: interestedIn },
-              { label: "Emergency Contact", value: emergencyContact },
-              { label: "Referral Source", value: referredBy },
-              { label: "Member Code", value: memberCode },
-              { label: "Home Branch", value: branchLabel },
-            ].map((entry) => (
-              <div key={entry.label} className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                <dt className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">{entry.label}</dt>
-                <dd className="mt-2 text-base font-medium text-white">{entry.value}</dd>
-              </div>
-            ))}
-          </dl>
-        </ProfilePanel>
-
-        <ProfilePanel title="Alerts" subtitle="Only active items that need attention" accent={alerts.length ? "rose" : "slate"}>
-          {alerts.length === 0 ? (
-            <p className="text-sm text-slate-300">No active alerts for this member.</p>
-          ) : (
-            <div className="space-y-3">
-              {alerts.map((entry) => (
-                <div key={entry} className="flex items-start gap-3 rounded-2xl border border-white/8 bg-black/20 px-4 py-3 text-sm text-slate-200">
-                  <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
-                  <span>{entry}</span>
+      <div className="grid items-start gap-6 xl:grid-cols-2">
+        <div className="space-y-6">
+          <ProfilePanel title="Personal Details" subtitle="Core member identity and contact information" accent="slate">
+            <dl className="divide-y divide-white/8 overflow-hidden rounded-[24px] border border-white/8 bg-white/[0.03]">
+              {[
+                { label: "Mobile Number", value: phone || "-" },
+                { label: "Email Address", value: email || "-" },
+                { label: "Date Of Birth", value: formatDateOnly(dateOfBirth || undefined) },
+                { label: "Date Of Enquiry", value: formatDateTime(inquiryDate || undefined) },
+                { label: "Client Representative", value: clientRepName },
+                ...(!isFlexPlan ? [{ label: trainerLabel, value: assignedTrainer }] : []),
+                { label: "Interested In", value: interestedIn },
+                { label: "Emergency Contact", value: emergencyContact },
+                { label: "Referral Source", value: referredBy },
+                { label: "Member Code", value: memberCode },
+                { label: "Home Branch", value: branchLabel },
+              ].map((entry) => (
+                <div key={entry.label} className="grid gap-2 px-5 py-4 md:grid-cols-[220px_minmax(0,1fr)] md:items-center">
+                  <dt className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">{entry.label}</dt>
+                  <dd className="text-base font-medium text-white md:text-right">{entry.value}</dd>
                 </div>
               ))}
-            </div>
-          )}
-        </ProfilePanel>
+            </dl>
+          </ProfilePanel>
+
+        </div>
+
+        <div className="space-y-6">
+          {hasOverviewMembership ? (
+            <ProfilePanel title="Membership Summary" accent="lime">
+              <div className="space-y-4">
+                {overviewMembershipCards.map((membership) => {
+                  const overviewTrainerLabel =
+                    membership.family === "GROUP_CLASS" ? "Group Class Trainer" : membership.family === "PT" ? "Coach" : trainerLabel;
+                  const overviewTrainerValue =
+                    membership.family === "PT"
+                      ? assignedTrainer
+                      : membership.family === "GROUP_CLASS"
+                        ? assignedTrainer
+                        : assignedTrainer;
+                  return (
+                    <div key={membership.subscriptionId} className="rounded-[24px] border border-white/8 bg-white/[0.03] p-5">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <p className="text-2xl font-semibold tracking-tight text-white">
+                          {normalizeDisplayPlanName(membership.variantName || membership.productName || humanizeLabel(membership.productCode || membership.categoryCode))}
+                        </p>
+                        <span className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-300">
+                          {humanizeLabel(membership.family)}
+                        </span>
+                      </div>
+                      <div className="mt-4 grid gap-3 sm:grid-cols-2">
+                        <StatPill label="Membership Status" value={humanizeLabel(membership.status || membershipStatus)} />
+                        <StatPill label="Duration" value={formatPlanDuration(membership.durationMonths, membership.validityDays)} />
+                        <StatPill label="Start Date" value={formatDateOnly(membership.startDate || undefined)} />
+                        <StatPill label="Expires In" value={formatExpiryWindow(daysUntil(membership.expiryDate))} />
+                        {membership.family !== "FLEX" ? (
+                          <StatPill label={overviewTrainerLabel} value={overviewTrainerValue} />
+                        ) : null}
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+            </ProfilePanel>
+          ) : null}
+
+          <ProfilePanel title="Alerts" subtitle="Only active items that need attention" accent={alerts.length ? "rose" : "slate"}>
+            {alerts.length === 0 ? (
+              <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4 text-sm text-slate-300">
+                No active alerts for this member.
+              </div>
+            ) : (
+              <div className="space-y-2">
+                {alerts.map((entry) => (
+                  <div key={entry} className="flex items-start gap-3 rounded-2xl border border-white/8 bg-black/20 px-4 py-3 text-sm text-slate-200">
+                    <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0 text-amber-300" />
+                    <span>{entry}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </ProfilePanel>
+        </div>
       </div>
     </div>
   );
@@ -2204,27 +2787,33 @@ export default function MemberProfilePage() {
                       <div className="flex flex-wrap gap-2">
                         <button
                           type="button"
-                          onClick={() => void viewDocumentPdf("invoice", invoice.id, `Invoice ${invoice.invoiceNumber}`)}
-                          disabled={documentBusyKey === `invoice-view-${invoice.id}`}
-                          className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
+                          title={`Print invoice ${invoice.invoiceNumber}`}
+                          aria-label={`Print invoice ${invoice.invoiceNumber}`}
+                          onClick={() => void printDocumentPdf("invoice", invoice.id)}
+                          disabled={documentBusyKey === `invoice-print-${invoice.id}`}
+                          className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
                         >
-                          View Invoice
+                          <Printer className="h-4 w-4" />
                         </button>
                         <button
                           type="button"
+                          title={`Download invoice ${invoice.invoiceNumber}`}
+                          aria-label={`Download invoice ${invoice.invoiceNumber}`}
                           onClick={() => void downloadDocumentPdf("invoice", invoice.id, invoice.invoiceNumber)}
                           disabled={documentBusyKey === `invoice-download-${invoice.id}`}
-                          className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
+                          className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
                         >
-                          Download Invoice
+                          <Download className="h-4 w-4" />
                         </button>
                         <button
                           type="button"
+                          title={`Share invoice ${invoice.invoiceNumber}`}
+                          aria-label={`Share invoice ${invoice.invoiceNumber}`}
                           onClick={() => void shareDocumentPdf("invoice", invoice.id, invoice.invoiceNumber, `Invoice ${invoice.invoiceNumber}`)}
                           disabled={documentBusyKey === `invoice-share-${invoice.id}`}
-                          className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
+                          className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
                         >
-                          Share Invoice
+                          <Share2 className="h-4 w-4" />
                         </button>
                         {invoice.receiptNumber && invoice.receiptId ? (() => {
                           const receiptId = invoice.receiptId;
@@ -2233,27 +2822,33 @@ export default function MemberProfilePage() {
                           <>
                             <button
                               type="button"
-                              onClick={() => void viewDocumentPdf("receipt", receiptId, `Receipt ${receiptNumber}`)}
-                              disabled={documentBusyKey === `receipt-view-${receiptId}`}
-                              className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
+                              title={`Print receipt ${receiptNumber}`}
+                              aria-label={`Print receipt ${receiptNumber}`}
+                              onClick={() => void printDocumentPdf("receipt", receiptId)}
+                              disabled={documentBusyKey === `receipt-print-${receiptId}`}
+                              className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
                             >
-                              View Receipt
+                              <Printer className="h-4 w-4" />
                             </button>
                             <button
                               type="button"
+                              title={`Download receipt ${receiptNumber}`}
+                              aria-label={`Download receipt ${receiptNumber}`}
                               onClick={() => void downloadDocumentPdf("receipt", receiptId, receiptNumber)}
                               disabled={documentBusyKey === `receipt-download-${receiptId}`}
-                              className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
+                              className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
                             >
-                              Download Receipt
+                              <Download className="h-4 w-4" />
                             </button>
                             <button
                               type="button"
+                              title={`Share receipt ${receiptNumber}`}
+                              aria-label={`Share receipt ${receiptNumber}`}
                               onClick={() => void shareDocumentPdf("receipt", receiptId, receiptNumber, `Receipt ${receiptNumber}`)}
                               disabled={documentBusyKey === `receipt-share-${receiptId}`}
-                              className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
+                              className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
                             >
-                              Share Receipt
+                              <Share2 className="h-4 w-4" />
                             </button>
                           </>
                           );
@@ -2376,13 +2971,6 @@ export default function MemberProfilePage() {
         const data = tabData.subscriptions;
         if (!data) return null;
         const dashboardRecord = toRecord(data.dashboard);
-        const recentInvoice = toRecord(dashboardRecord.recentInvoice);
-        const entitlementFeatureRows = toArray<RecordLike>(data.entitlements).map((entry) => ({
-          feature: cleanEntitlementFeatureLabel(pickString(entry, ["feature"]) || "-"),
-        }));
-        const activeMembershipFeatures = entitlementFeatureRows.length
-          ? entitlementFeatureRows.map((entry) => entry.feature)
-          : membershipFeatures;
         const primaryMembershipRecord = extractMembershipPortfolioItem(dashboardRecord.primaryMembership);
         const transformationMembershipRecord = extractMembershipPortfolioItem(dashboardRecord.transformationMembership);
         const membershipPortfolio = toArray(dashboardRecord.memberships)
@@ -2391,7 +2979,7 @@ export default function MemberProfilePage() {
         const secondaryMembershipRecords = toArray(dashboardRecord.secondaryMemberships)
           .map(extractMembershipPortfolioItem)
           .filter((entry): entry is MembershipPortfolioItem => entry !== null);
-        const displayedMemberships = transformationMembershipRecord
+        const displayedMemberships = (transformationMembershipRecord
           ? [
               transformationMembershipRecord,
               ...secondaryMembershipRecords.filter(
@@ -2405,8 +2993,56 @@ export default function MemberProfilePage() {
                 primaryMembershipRecord,
                 ...secondaryMembershipRecords.filter((entry) => entry.subscriptionId !== primaryMembershipRecord.subscriptionId),
               ]
-            : membershipPortfolio;
+            : membershipPortfolio).filter((entry) => entry.family !== "CREDIT_PACK");
+        const shouldShowEntitlementsBesideMembership = displayedMemberships.length <= 1;
         const programEnrollmentRecords = toArray<RecordLike>(data.programEnrollments);
+        const displayedEntitlementRecords = (() => {
+          const existingPauseBenefit = normalizedEntitlementRecords.some(
+            (entry) => String(entry.feature || "").toUpperCase() === "PAUSE_BENEFIT",
+          );
+          if (existingPauseBenefit) {
+            return normalizedEntitlementRecords;
+          }
+
+          const pauseBenefitVariant = displayedMemberships
+            .map((membership) => {
+              const membershipDashboardItem = toRecord(
+                toArray(dashboardRecord.memberships).find(
+                  (entry) => pickString(toRecord(entry), ["subscriptionId"]) === membership.subscriptionId,
+                ),
+              );
+              const membershipVariantId = pickString(membershipDashboardItem, ["productVariantId"]) || membership.productVariantId;
+              return catalogVariants.find((variant) => String(variant.variantId) === membershipVariantId);
+            })
+            .find((variant) => Number(variant?.passBenefitDays || 0) > 0);
+
+          if (!pauseBenefitVariant) {
+            return normalizedEntitlementRecords;
+          }
+
+          return [
+            ...normalizedEntitlementRecords,
+            {
+              entitlementId: -1,
+              feature: "PAUSE_BENEFIT",
+              source: "CATALOG_FALLBACK",
+              validFrom: undefined,
+              validUntil: undefined,
+              includedCount: pauseBenefitVariant.passBenefitDays,
+              remainingCount: pauseBenefitVariant.passBenefitDays,
+              recurrence: "FULL_TERM",
+              usedCount: 0,
+              expiredUnusedCount: 0,
+              manualTopUpCount: 0,
+              expiresIfUnused: false,
+              currentCycleStart: undefined,
+              currentCycleEnd: undefined,
+              lastUtilizedAt: undefined,
+              lastExpiredAt: undefined,
+            },
+          ];
+        })();
+        const shouldShowEntitlementsPanel = displayedEntitlementRecords.length > 0;
         const ptCompletedSessions = ptSessions.filter((session) => {
           const status = pickString(toRecord(session), ["status"]).toUpperCase();
           return status === "COMPLETED" || status === "DONE";
@@ -2415,29 +3051,77 @@ export default function MemberProfilePage() {
           const status = pickString(toRecord(session), ["status"]).toUpperCase();
           return status === "COMPLETED" || status === "DONE" || status === "NO_SHOW";
         }).length;
-        const actionHelpText = membershipActions
-          .filter((action) => action.adminApprovalRequired || action.note)
-          .map((action) => action.note || `${action.label} requires admin approval.`)
-          .filter((entry, index, array) => array.indexOf(entry) === index);
-        const resolveTrainerName = (trainerId?: string) => {
-          if (!trainerId) {
-            return "-";
-          }
-          const allPeople = [...coaches, ...staffMembers, ...members];
-          const resolved = allPeople.find((person) => String(person.id) === trainerId);
-          return resolved?.name || `Trainer #${trainerId}`;
-        };
-
+        const entitlementsUsagePanel = shouldShowEntitlementsPanel ? (
+          <ProfilePanel title="Entitlements & Usage" subtitle="Tracked benefits available on this membership" accent="cyan">
+              <div className="space-y-3">
+                {displayedEntitlementRecords.map((entitlement) => (
+                  <div key={entitlement.entitlementId} className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4">
+                    <div className="flex items-start justify-between gap-4">
+                      <div className="min-w-0">
+                        <p className="text-sm font-semibold text-white">{cleanEntitlementFeatureLabel(entitlement.feature)}</p>
+                        <p className="mt-1 text-xs text-slate-400">
+                          {entitlementRuleLabel(entitlement)}
+                          {String(entitlement.feature || "").toUpperCase() !== "PAUSE_BENEFIT" && entitlement.currentCycleEnd
+                            ? ` · resets ${formatDateOnly(entitlement.currentCycleEnd)}`
+                            : ""}
+                        </p>
+                        {String(entitlement.feature || "").toUpperCase() === "PAUSE_BENEFIT" ? (
+                          <p className="mt-2 text-xs text-slate-500">Available across the full membership duration.</p>
+                        ) : (
+                          <p className="mt-2 text-xs text-slate-500">
+                            {Number(entitlement.expiredUnusedCount || 0) > 0 ? `${entitlement.expiredUnusedCount} expired unused` : "No expired unused balance"}
+                            {Number(entitlement.manualTopUpCount || 0) > 0 ? ` · ${entitlement.manualTopUpCount} manual top-up` : ""}
+                          </p>
+                        )}
+                      </div>
+                      <div className="flex flex-col items-end gap-2">
+                        <span className="text-sm font-semibold text-cyan-100">{entitlementUsageLabel(entitlement)}</span>
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+          </ProfilePanel>
+        ) : null;
         return (
           <div className="space-y-6">
-            <div className="grid gap-6 xl:grid-cols-2">
-              {displayedMemberships.length ? displayedMemberships.map((membership) => {
-                const cardTitle = membership.variantName || membership.productName || humanizeLabel(membership.productCode || membership.categoryCode);
+            <div className={`grid gap-6 ${shouldShowEntitlementsBesideMembership && shouldShowEntitlementsPanel ? "xl:grid-cols-2" : ""}`}>
+              <div className={shouldShowEntitlementsBesideMembership ? "space-y-6" : "grid gap-6 xl:grid-cols-2"}>
+                {displayedMemberships.length ? displayedMemberships.map((membership) => {
+                const cardTitle = trimMembershipCardTitle(
+                  membership.variantName || membership.productName || humanizeLabel(membership.productCode || membership.categoryCode),
+                );
                 const isPrimaryCard = primaryMembershipRecord?.subscriptionId === membership.subscriptionId;
                 const isTransformationCard = membership.family === "TRANSFORMATION";
                 const isPtCard = membership.family === "PT";
-                const isGroupClassCard = membership.family === "GROUP_CLASS";
-                const branchValue = branchLabel !== "-" ? branchLabel : membership.branchCode || "-";
+                const isSelectedCard = selectedMembershipRecord?.subscriptionId === membership.subscriptionId;
+                const isMenuOpen = openMembershipMenuId === membership.subscriptionId;
+                const ptTotalSessions = membership.includedPtSessions || 0;
+                const ptUsedSessions = isPtCard ? ptConsumedSessions : 0;
+                const ptRemainingSessions = isPtCard ? Math.max(ptTotalSessions - ptUsedSessions, 0) : 0;
+                const ptProgressPercent = isPtCard && ptTotalSessions > 0 ? Math.min(100, Math.round((ptUsedSessions / ptTotalSessions) * 100)) : 0;
+                const membershipDashboardItem = toRecord(
+                  toArray(dashboardRecord.memberships).find(
+                    (entry) => pickString(toRecord(entry), ["subscriptionId"]) === membership.subscriptionId,
+                  ),
+                );
+                const membershipVariantId = pickString(membershipDashboardItem, ["productVariantId"]);
+                const membershipCatalogVariant =
+                  catalogVariants.find((variant) => String(variant.variantId) === membershipVariantId) ||
+                  catalogVariants.find((variant) => variant.productCode === membership.productCode && variant.variantName === membership.variantName);
+                const membershipPackageFeatures = parseFeatureList(membershipCatalogVariant?.includedFeatures)
+                  .filter((feature) => shouldShowPackageFeatureChip(feature))
+                  .map((feature) => cleanEntitlementFeatureLabel(feature))
+                  .filter((feature, index, array) => array.indexOf(feature) === index);
+                const linkedPrograms = membership.family === "GROUP_CLASS"
+                  ? Array.from(
+                      new Set(
+                        programEnrollmentRecords
+                          .map((entry) => pickString(entry, ["programName"]))
+                          .filter(Boolean),
+                      ),
+                    )
+                  : [];
                 return (
                   <ProfilePanel
                     key={membership.subscriptionId}
@@ -2445,12 +3129,18 @@ export default function MemberProfilePage() {
                     subtitle={membershipPanelSubtitle(membership.family)}
                     accent={deriveAccentForMembershipFamily(membership.family)}
                   >
-                    <div className="space-y-4">
-                      <div className="flex flex-wrap items-center gap-3">
-                        <p className="text-3xl font-semibold tracking-tight text-white">{cardTitle}</p>
+                    <div
+                      data-membership-menu-root="true"
+                      className={`relative z-10 space-y-4 rounded-2xl border px-4 py-4 ${isSelectedCard ? "border-[#c42924]/60 bg-[#c42924]/8" : "border-white/8 bg-white/[0.02]"}`}
+                    >
+                      <div className="flex flex-wrap items-start gap-3">
+                        <div className="space-y-2">
+                          <p className="text-3xl font-semibold tracking-tight text-white">{cardTitle}</p>
+                          <p className="text-sm text-slate-300">Category: {humanizeLabel(membership.categoryCode)}</p>
+                        </div>
                         {isPrimaryCard ? (
                           <span className="rounded-full border border-lime-400/30 bg-lime-500/15 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-lime-100">
-                            Primary Membership
+                            Primary
                           </span>
                         ) : null}
                         {isTransformationCard ? (
@@ -2460,24 +3150,83 @@ export default function MemberProfilePage() {
                         ) : null}
                         {isPtCard ? (
                           <span className="rounded-full border border-rose-400/30 bg-rose-500/15 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-rose-200">
-                            Secondary Membership
+                            Secondary
                           </span>
                         ) : null}
+                        <button
+                          type="button"
+                          aria-label={`Open actions for ${cardTitle}`}
+                          onClick={() => {
+                            setSelectedMembershipId(membership.subscriptionId);
+                            setOpenMembershipMenuId((current) => (current === membership.subscriptionId ? null : membership.subscriptionId));
+                          }}
+                          className="ml-auto rounded-xl border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08]"
+                        >
+                          <MoreHorizontal className="h-4 w-4" />
+                        </button>
+                        {isMenuOpen ? (
+                          <div className="absolute right-4 top-14 z-40 min-w-[220px] rounded-2xl border border-white/10 bg-[#111821] p-2 shadow-[0_24px_60px_rgba(0,0,0,0.4)]">
+                            {membershipActions
+                              .filter((action) => !(isPtCard && action.key === "pt"))
+                              .map((action) => (
+                              <button
+                                key={`${membership.subscriptionId}-${action.key}`}
+                                type="button"
+                                onClick={() => {
+                                  setOpenMembershipMenuId(null);
+                                  if (action.enabled) {
+                                    openActionModal(action.key === "pt" ? "pt" : action.key);
+                                  }
+                                }}
+                                disabled={!action.enabled}
+                                className={`flex w-full rounded-xl px-3 py-2 text-left text-sm font-medium ${
+                                  action.enabled
+                                    ? "text-slate-100 hover:bg-white/[0.06]"
+                                    : "cursor-not-allowed text-slate-500"
+                                }`}
+                              >
+                                {action.label}
+                              </button>
+                            ))}
+                            {isPtCard || isTransformationCard ? (
+                              <button
+                                type="button"
+                                onClick={() => {
+                                  setOpenMembershipMenuId(null);
+                                  setActiveTab("personal-training");
+                                  setPtFocusSection("session-register");
+                                }}
+                                className="mt-1 flex w-full rounded-xl px-3 py-2 text-left text-sm font-medium text-[#ffd6d4] hover:bg-[#c42924]/10"
+                              >
+                                Open Session Register
+                              </button>
+                            ) : null}
+                          </div>
+                        ) : null}
                       </div>
-                      <p className="text-sm text-slate-300">
-                        Category: {humanizeLabel(membership.categoryCode)}{membership.productName ? ` · ${membership.productName}` : ""}
-                      </p>
-                      {isTransformationCard ? (
-                        <p className="text-sm text-amber-200/70">
-                          Transformation is handled as one visible bundle. Gym access, PT delivery, and entitlements move together operationally.
-                        </p>
-                      ) : isPtCard ? (
+                      {membershipPackageFeatures.length > 0 ? (
+                        <div className="flex flex-wrap gap-2">
+                          {membershipPackageFeatures.map((feature) => (
+                            <span
+                              key={`${membership.subscriptionId}-${feature}`}
+                              className="rounded-full border border-white/10 bg-white/[0.04] px-3 py-1 text-xs font-semibold text-slate-200"
+                            >
+                              {feature}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                      {linkedPrograms.length > 0 ? (
+                        <div className="rounded-xl border border-cyan-400/15 bg-cyan-500/8 px-3 py-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-cyan-200/70">
+                            {linkedPrograms.length === 1 ? "Linked Program" : "Linked Programs"}
+                          </p>
+                          <p className="mt-2 text-sm font-medium text-cyan-100">{linkedPrograms.join(", ")}</p>
+                        </div>
+                      ) : null}
+                      {isPtCard ? (
                         <p className="text-sm text-slate-300">
                           PT remains a separate commercial membership with its own billing and session delivery.
-                        </p>
-                      ) : isGroupClassCard ? (
-                        <p className="text-sm text-slate-300">
-                          This membership auto-enrols the member into the mapped training programme rather than directly into class instances.
                         </p>
                       ) : null}
                       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
@@ -2485,160 +3234,50 @@ export default function MemberProfilePage() {
                         <StatPill label="Duration" value={formatPlanDuration(membership.durationMonths, membership.validityDays)} />
                         <StatPill label="Start Date" value={formatDateOnly(membership.startDate || undefined)} />
                         <StatPill label="Expiry Date" value={formatDateOnly(membership.expiryDate || undefined)} />
-                        <StatPill label="Branch" value={branchValue} />
-                        {membership.invoiceNumber ? <StatPill label="Invoice" value={membership.invoiceNumber} /> : null}
-                        {membership.receiptNumber ? <StatPill label="Receipt" value={membership.receiptNumber} /> : null}
                         {membership.family === "PT" ? (
                           <>
                             <StatPill label="Coach" value={pickString(activePtAssignmentRecord, ["coachEmail", "coachId"]) || assignedTrainer || "-"} />
-                            <StatPill label="Sessions Used" value={ptConsumedSessions ? `${ptConsumedSessions}` : String(ptCompletedSessions)} />
+                            <StatPill label="Sessions" value={ptTotalSessions ? `${ptUsedSessions} / ${ptTotalSessions}` : String(ptCompletedSessions)} />
                           </>
                         ) : null}
-                        {membership.family === "TRANSFORMATION" || membership.family === "PT" ? (
-                          <StatPill label="Included PT Sessions" value={membership.includedPtSessions ? String(membership.includedPtSessions) : "-"} />
-                        ) : null}
                         {membership.family === "FLEX" ? (
-                          <StatPill label="Check-In Limit" value={String(membership.checkInsRemaining)} />
+                          <>
+                            <StatPill label="Check-In Limit" value={String(membership.includedCheckIns || 0)} />
+                            <StatPill label="Check-Ins Used" value={String(membership.usedCheckIns || 0)} />
+                            <StatPill label="Remaining Check-Ins" value={String(membership.checkInsRemaining || 0)} />
+                          </>
                         ) : null}
                       </div>
-                      {membership.entitlements.length ? (
-                        <div className="flex flex-wrap gap-2">
-                          {membership.entitlements.map((feature) => (
-                            <span
-                              key={`${membership.subscriptionId}-${feature}`}
-                              className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1.5 text-sm font-medium text-cyan-100"
-                            >
-                              {feature}
-                            </span>
-                          ))}
+                      {isPtCard && ptTotalSessions > 0 ? (
+                        <div className="space-y-2">
+                          <div className="flex items-center justify-between text-xs font-medium text-slate-300">
+                            <span>{ptUsedSessions} completed</span>
+                            <span>{ptRemainingSessions} remaining</span>
+                          </div>
+                          <div className="h-2 overflow-hidden rounded-full bg-white/8">
+                            <div className="h-full rounded-full bg-rose-400 transition-all" style={{ width: `${ptProgressPercent}%` }} />
+                          </div>
                         </div>
                       ) : null}
                     </div>
                   </ProfilePanel>
                 );
-              }) : (
-                <ProfilePanel title="Membership Portfolio" subtitle="No active or recent memberships are attached to this member yet." accent="slate">
-                  <p className="text-sm text-slate-300">No memberships found.</p>
-                </ProfilePanel>
-              )}
-              <ProfilePanel title="Membership Actions" subtitle="Only the actions available for the primary membership are shown here" accent="slate">
-                <div className="space-y-4">
-                  <div className="flex flex-wrap gap-2">
-                    {membershipActions.map((action) => (
-                      <button
-                        key={action.key}
-                        type="button"
-                        onClick={() => action.enabled && openActionModal(action.key === "pt" ? "pt" : action.key)}
-                        disabled={!action.enabled}
-                        className={`rounded-xl border px-4 py-2 text-sm font-semibold ${
-                          action.enabled
-                            ? "border-white/10 bg-white/[0.04] text-white hover:bg-white/[0.08]"
-                            : "cursor-not-allowed border-white/8 bg-white/[0.02] text-slate-500"
-                        }`}
-                      >
-                        {action.label}
-                      </button>
-                    ))}
-                  </div>
-                  {actionHelpText.length ? (
-                    <div className="space-y-2 rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
-                      {actionHelpText.map((entry) => (
-                        <p key={entry} className="text-sm text-slate-300">{entry}</p>
-                      ))}
-                    </div>
-                  ) : (
-                    <p className="text-sm text-slate-300">
-                      Actions are filtered from the membership matrix using family, duration, and the current operator role.
-                    </p>
-                  )}
-                </div>
-              </ProfilePanel>
-            </div>
-            <div className="grid gap-6 xl:grid-cols-2">
-              <ProfilePanel title="Recent Commercial Record" subtitle="Latest invoice and receipt linked to this membership" accent="slate">
-                <div className="grid gap-3 sm:grid-cols-2">
-                  <StatPill label="Latest Invoice" value={pickString(recentInvoice, ["invoiceNumber"]) || shellLatestInvoiceNumber || "-"} />
-                  <StatPill label="Latest Receipt" value={shellLatestReceiptNumber || "-"} />
-                  <StatPill
-                    label="Invoice Status"
-                    value={humanizeLabel(
-                      normalizePaymentStatus(
-                        pickString(recentInvoice, ["status"]) || shellPaymentStatus || "-",
-                        pickNumber(recentInvoice, ["total"]) || roundedInvoiceStats.total,
-                        pickNumber(recentInvoice, ["paidAmount", "paid"]) || roundedInvoiceStats.paid,
-                        pickNumber(recentInvoice, ["balanceAmount", "balance"]) || roundedInvoiceStats.balance,
-                      ),
-                    )}
-                  />
-                  <StatPill label="Issued At" value={formatDateOnly(pickString(recentInvoice, ["issuedAt"]) || undefined)} />
-                  <StatPill label="Invoice Total" value={formatRoundedInr(pickNumber(recentInvoice, ["total"]) || roundedInvoiceStats.total)} />
-                  <StatPill label="Balance Due" value={formatRoundedInr(roundedInvoiceStats.balance)} />
-                </div>
-              </ProfilePanel>
-              <ProfilePanel title="Membership Entitlements" subtitle="Summary across all active memberships attached to this member" accent="cyan">
-                {activeMembershipFeatures.length === 0 ? (
-                  <p className="text-sm text-slate-300">No active entitlements found.</p>
-                ) : (
-                  <div className="flex flex-wrap gap-2">
-                    {activeMembershipFeatures.map((feature) => (
-                      <span
-                        key={feature}
-                        className="rounded-full border border-cyan-400/20 bg-cyan-500/10 px-3 py-1.5 text-sm font-medium text-cyan-100"
-                      >
-                        {feature}
-                      </span>
-                    ))}
-                  </div>
+                }) : (
+                  <ProfilePanel title="Membership Portfolio" subtitle="No active or recent memberships are attached to this member yet." accent="slate">
+                    <p className="text-sm text-slate-300">No memberships found.</p>
+                  </ProfilePanel>
                 )}
-              </ProfilePanel>
+              </div>
+              {shouldShowEntitlementsBesideMembership && shouldShowEntitlementsPanel ? (
+                <div className="xl:min-w-0">
+                  {entitlementsUsagePanel}
+                </div>
+              ) : null}
             </div>
-            <ProfilePanel title="Programme Enrolments" subtitle="Class-based memberships and rhythm products enrol the member into programmes automatically." accent="slate">
-              {programEnrollmentRecords.length === 0 ? (
-                <p className="text-sm text-slate-300">No active programme enrolments found for this member.</p>
-              ) : (
-                <div className="overflow-x-auto">
-                  <table className="min-w-full divide-y divide-white/5 text-sm">
-                    <thead className="bg-white/[0.03] text-left text-xs uppercase tracking-[0.18em] text-slate-400">
-                      <tr>
-                        <th className="px-4 py-3">Program</th>
-                        <th className="px-4 py-3">Status</th>
-                        <th className="px-4 py-3">Duration</th>
-                        <th className="px-4 py-3">Trainer</th>
-                        <th className="px-4 py-3">Branch</th>
-                        <th className="px-4 py-3">Enrolled At</th>
-                      </tr>
-                    </thead>
-                    <tbody className="divide-y divide-white/5">
-                      {programEnrollmentRecords.map((entry, index) => {
-                        const trainerId = pickString(entry, ["trainerId"]);
-                        return (
-                          <tr key={pickString(entry, ["enrollmentId", "id"]) || `${pickString(entry, ["programId"])}-${index}`}>
-                            <td className="px-4 py-3 text-slate-100">
-                              <div className="font-medium">{pickString(entry, ["programName"]) || "Programme"}</div>
-                              <div className="text-xs text-slate-400">{pickString(entry, ["programDescription"]) || "-"}</div>
-                            </td>
-                            <td className="px-4 py-3 text-slate-200">{humanizeLabel(pickString(entry, ["programStatus", "status"]) || "-")}</td>
-                            <td className="px-4 py-3 text-slate-200">{pickNumber(entry, ["durationWeeks"]) ? `${pickNumber(entry, ["durationWeeks"])} weeks` : "-"}</td>
-                            <td className="px-4 py-3 text-slate-200">{resolveTrainerName(trainerId)}</td>
-                            <td className="px-4 py-3 text-slate-200">{pickString(entry, ["branchId"]) || branchLabel}</td>
-                            <td className="px-4 py-3 text-slate-200">{formatDateTime(pickString(entry, ["enrolledAt"]) || undefined)}</td>
-                          </tr>
-                        );
-                      })}
-                    </tbody>
-                  </table>
-                </div>
-              )}
-            </ProfilePanel>
-            {membershipPortfolio.length > 1 ? (
-              <ProfilePanel title="Portfolio View" subtitle="This member currently carries multiple concurrent memberships under the same profile." accent="slate">
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <StatPill label="Total Memberships" value={String(membershipPortfolio.length)} />
-                  <StatPill label="Primary Membership" value={primaryMembershipRecord?.variantName || planName} />
-                  <StatPill label="Secondary Memberships" value={String(secondaryMembershipRecords.length)} />
-                  <StatPill label="Programme Enrolments" value={String(programEnrollmentRecords.length)} />
-                </div>
-              </ProfilePanel>
+            {!shouldShowEntitlementsBesideMembership && shouldShowEntitlementsPanel ? (
+              <div className="xl:w-1/2">
+                {entitlementsUsagePanel}
+              </div>
             ) : null}
           </div>
         );
@@ -2649,7 +3288,7 @@ export default function MemberProfilePage() {
         return (
           <div className="space-y-6">
             <ProfilePanel title="Attendance Timeline" subtitle="Check-ins and check-outs" accent="slate">
-              <GenericTable items={tabData.attendance || []} emptyLabel="No attendance records available." />
+              <GenericTable items={attendanceRecords} emptyLabel="No attendance records available." />
             </ProfilePanel>
             <ProfilePanel title="Access & Biometrics" subtitle="Operational access state for this member" accent="slate">
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
@@ -2665,6 +3304,20 @@ export default function MemberProfilePage() {
                   </div>
                 ))}
               </div>
+              <div className="mt-4 grid gap-4 md:grid-cols-3">
+                <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Biometric PIN</p>
+                  <p className="mt-2 text-base font-medium text-white">{normalizedPhonePin || "-"}</p>
+                </div>
+                <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Branch Devices</p>
+                  <p className="mt-2 text-base font-medium text-white">{availableBiometricDevices.length}</p>
+                </div>
+                <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Recent Biometric Logs</p>
+                  <p className="mt-2 text-base font-medium text-white">{biometricLogRecords.length}</p>
+                </div>
+              </div>
               <div className="mt-5 flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -2674,6 +3327,9 @@ export default function MemberProfilePage() {
                   Manage Access Actions
                 </button>
               </div>
+            </ProfilePanel>
+            <ProfilePanel title="Biometric Device Logs" subtitle="Recent attendance punches from the ESSL device for this member" accent="slate">
+              <GenericTable items={biometricLogRecords} emptyLabel="No biometric device logs available for this member yet." />
             </ProfilePanel>
           </div>
         );
@@ -2716,6 +3372,10 @@ export default function MemberProfilePage() {
           return status === "CANCELLED" || status === "CANCELED";
         }).length;
         const totalSessions = ptSessions.length;
+        const ptMembershipRecord = portfolioMembershipItems.find((entry) => entry.family === "PT") || null;
+        const includedPtSessions = ptMembershipRecord?.includedPtSessions || 0;
+        const pendingSessions = scheduledSessions + inProgressSessions;
+        const remainingPtSessions = includedPtSessions > 0 ? Math.max(includedPtSessions - (completedSessions + noShowSessions), 0) : 0;
         const trainerCountedSessions = completedSessions; // Only COMPLETED counts for trainer
         const memberConsumedSessions = completedSessions + noShowSessions; // COMPLETED + NO_SHOW for member
         const attendancePct = totalSessions > 0 ? Math.round((completedSessions / totalSessions) * 100) : 0;
@@ -2852,11 +3512,12 @@ export default function MemberProfilePage() {
             {totalSessions > 0 ? (
               <ProfilePanel title="Session Tracker" subtitle="Session counts — NO_SHOW counts as consumed for member but NOT for trainer payment" accent="lime">
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <StatPill label="Total Sessions" value={String(totalSessions)} />
-                  <StatPill label="Completed" value={String(completedSessions)} />
-                  <StatPill label="Scheduled" value={String(scheduledSessions)} />
-                  <StatPill label="In Progress" value={String(inProgressSessions)} />
-                  <StatPill label="No Show" value={String(noShowSessions)} />
+                  <StatPill label="Total PT Sessions" value={includedPtSessions > 0 ? String(includedPtSessions) : String(totalSessions)} />
+                  <StatPill label="Total Recorded Sessions" value={String(totalSessions)} />
+                  <StatPill label="Pending PT Sessions" value={String(pendingSessions)} />
+                  <StatPill label="Client Show" value={String(completedSessions)} />
+                  <StatPill label="Client No-Show" value={String(noShowSessions)} />
+                  <StatPill label="Remaining Sessions" value={includedPtSessions > 0 ? String(remainingPtSessions) : "-"} />
                   <StatPill label="Cancelled" value={String(cancelledSessions)} />
                   <StatPill label="Trainer Counted" value={String(trainerCountedSessions)} />
                   <StatPill label="Member Consumed" value={String(memberConsumedSessions)} />
@@ -2875,6 +3536,7 @@ export default function MemberProfilePage() {
 
             {/* Session Register with Actions */}
             {totalSessions > 0 ? (
+              <div ref={sessionRegisterRef}>
               <ProfilePanel title="Session Register" subtitle="All PT sessions — use actions to record attendance" accent="slate">
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm">
@@ -2945,10 +3607,13 @@ export default function MemberProfilePage() {
                   </table>
                 </div>
               </ProfilePanel>
+              </div>
             ) : activePtAssignment ? (
+              <div ref={sessionRegisterRef}>
               <ProfilePanel title="Session Register" accent="slate">
                 <p className="text-sm text-slate-400">No sessions recorded yet. Configure slot schedule and generate sessions, or create sessions manually.</p>
               </ProfilePanel>
+              </div>
             ) : null}
 
             {/* Action buttons */}
@@ -3154,7 +3819,7 @@ export default function MemberProfilePage() {
                         <CreditCard className="h-5 w-5 text-amber-300" />
                         <div>
                           <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Payment Status</p>
-                          <p className="mt-1 text-base font-semibold text-white">{paymentStatus}</p>
+                          <p className="mt-1 text-base font-semibold text-white">{humanizeLabel(paymentStatus)}</p>
                         </div>
                       </div>
                     </div>
@@ -3330,11 +3995,11 @@ export default function MemberProfilePage() {
             <div className="space-y-4">
               {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
               <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                Freeze is available only when this membership has a pause benefit entitlement. This action extends the membership by the approved freeze days and does not use credits in phase 1.
+                Freeze is available only when this membership has a pause benefit entitlement. Minimum freeze is {freezeMinDays} days and the maximum is the package allowance of {freezeMaxDays} days.
               </div>
               <label className="space-y-2 text-sm">
                 <span className="font-medium text-slate-700">Freeze Days</span>
-                <input type="number" min={7} max={28} value={freezeForm.freezeDays} onChange={(event) => setFreezeForm((current) => ({ ...current, freezeDays: event.target.value }))} className="w-full rounded-xl border border-slate-200 px-3 py-2" />
+                <input type="number" min={freezeMinDays} max={freezeMaxDays} value={freezeForm.freezeDays} onChange={(event) => setFreezeForm((current) => ({ ...current, freezeDays: event.target.value }))} className="w-full rounded-xl border border-slate-200 px-3 py-2" />
               </label>
               <label className="space-y-2 text-sm">
                 <span className="font-medium text-slate-700">Reason</span>
@@ -3344,16 +4009,16 @@ export default function MemberProfilePage() {
           </Modal>
 
           <Modal
-            open={actionModal === "renew" || actionModal === "upgrade" || actionModal === "downgrade"}
+            open={actionModal === "renew" || actionModal === "upgrade"}
             onClose={() => setActionModal(null)}
-            title={actionModal === "renew" ? "Renew Membership" : actionModal === "upgrade" ? "Upgrade Membership" : "Downgrade Membership"}
+            title={actionModal === "renew" ? "Renew Membership" : "Upgrade Membership"}
             size="lg"
             footer={
               <>
                 <button type="button" onClick={() => setActionModal(null)} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Cancel</button>
                 <button
                   type="button"
-                  onClick={() => void handleSubscriptionAction((actionModal === "renew" ? "renew" : actionModal === "upgrade" ? "upgrade" : "downgrade") as "renew" | "upgrade" | "downgrade")}
+                  onClick={() => void handleSubscriptionAction((actionModal === "renew" ? "renew" : "upgrade") as "renew" | "upgrade")}
                   disabled={actionBusy}
                   className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                 >
@@ -3367,9 +4032,7 @@ export default function MemberProfilePage() {
               <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
                 {actionModal === "renew"
                   ? "Renewal creates the next cycle for this membership. If the current membership is active, the renewed plan should start after the current expiry."
-                    : actionModal === "upgrade"
-                    ? `Upgrade is immediate and allowed only within ${upgradeWindowDays} day${upgradeWindowDays === 1 ? "" : "s"} of the current membership start. A billing invoice should be generated for the commercial difference.`
-                    : "Downgrade is scheduled for the next cycle. The member continues on the current package until the active membership ends."}
+                    : "Upgrade applies the selected higher package or duration. The invoice is generated only for the difference between the existing sold membership value and the selected target plan."}
               </div>
               <div className="grid gap-4 md:grid-cols-2">
                 <label className="space-y-2 text-sm">
@@ -3414,7 +4077,7 @@ export default function MemberProfilePage() {
                   </select>
                 </label>
                 <label className="space-y-2 text-sm">
-                  <span className="font-medium text-slate-700">{actionModal === "downgrade" ? "Effective Date" : "Start Date"}</span>
+                  <span className="font-medium text-slate-700">Start Date</span>
                   <input type="date" value={lifecycleForm.startDate} onChange={(event) => setLifecycleForm((current) => ({ ...current, startDate: event.target.value }))} className="w-full rounded-xl border border-slate-200 px-3 py-2" />
                 </label>
                 <label className="space-y-2 text-sm">
@@ -3445,6 +4108,23 @@ export default function MemberProfilePage() {
                     </p>
                   </div>
                 </div>
+                {selectedLifecycleVariant ? (
+                  <div className="mt-4 space-y-3">
+                    {actionModal === "upgrade" ? (
+                      <p className="text-xs text-slate-400">
+                        The portal is showing the catalog plan comparison below. Final upgrade billing is computed in the backend from the member&apos;s existing sold value and the selected target plan.
+                      </p>
+                    ) : null}
+                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
+                      <StatPill label="Current Plan Price" value={formatRoundedInr(currentLifecycleBasePrice)} />
+                      <StatPill label="Target Plan Price" value={formatRoundedInr(targetLifecycleBasePrice)} />
+                      <StatPill label={actionModal === "upgrade" ? "Reference Base Difference" : "Taxable Amount"} value={formatRoundedInr(lifecycleTaxableAmount)} />
+                      <StatPill label={`CGST (${commercialTaxRate / 2}%)`} value={formatRoundedInr(lifecycleHalfTaxAmount)} />
+                      <StatPill label={`SGST (${commercialTaxRate / 2}%)`} value={formatRoundedInr(lifecycleHalfTaxAmount)} />
+                      <StatPill label={actionModal === "upgrade" ? "Estimated Invoice Total" : "Invoice Total"} value={formatRoundedInr(lifecycleInvoiceTotal)} />
+                    </div>
+                  </div>
+                ) : null}
               </div>
             </div>
           </Modal>
@@ -3466,17 +4146,19 @@ export default function MemberProfilePage() {
             <div className="space-y-4">
               {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
               <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-                Transfer is available only for eligible flagship memberships, and only to Admin or Gym Manager users. A transfer fee and a fresh invoice can be applied in the billing workflow.
+                Transfer is available only for eligible flagship memberships, and only to Admin or Gym Manager users. This action updates operational ownership only right now, without transfer billing.
               </div>
-              <label className="space-y-2 text-sm">
-                <span className="font-medium text-slate-700">Target Member</span>
-                <select value={transferForm.targetMemberId} onChange={(event) => setTransferForm((current) => ({ ...current, targetMemberId: event.target.value }))} className="w-full rounded-xl border border-slate-200 px-3 py-2">
-                  <option value="">Select Member</option>
-                  {members.filter((item) => item.id !== memberId).map((item) => (
-                    <option key={item.id} value={item.id}>{item.name} · {item.mobile}</option>
-                  ))}
-                </select>
-              </label>
+                <label className="space-y-2 text-sm">
+                  <span className="font-medium text-slate-700">Target Enquiry</span>
+                  <select value={transferForm.targetMemberId} onChange={(event) => setTransferForm((current) => ({ ...current, targetMemberId: event.target.value }))} className="w-full rounded-xl border border-slate-200 px-3 py-2">
+                    <option value="">Select Enquiry</option>
+                    {transferInquiryOptions.map((item) => (
+                      <option key={item.inquiryId} value={String(item.memberId)}>
+                        {item.fullName} · {item.mobileNumber} · Inquiry #{item.inquiryId}
+                      </option>
+                    ))}
+                  </select>
+                </label>
               <label className="space-y-2 text-sm">
                 <span className="font-medium text-slate-700">Start Date</span>
                 <input type="date" value={transferForm.startDate} onChange={(event) => setTransferForm((current) => ({ ...current, startDate: event.target.value }))} className="w-full rounded-xl border border-slate-200 px-3 py-2" />
@@ -3517,6 +4199,11 @@ export default function MemberProfilePage() {
               </div>
               {ptVariants.length > 0 ? (
                 <>
+                  {primaryMembershipDurationLimit > 0 ? (
+                    <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
+                      PT duration cannot exceed the primary membership duration of {primaryMembershipDurationLimit} month{primaryMembershipDurationLimit === 1 ? "" : "s"}.
+                    </div>
+                  ) : null}
                   <label className="space-y-2 text-sm">
                     <span className="font-medium text-slate-700">PT Product</span>
                     <select
@@ -3538,9 +4225,7 @@ export default function MemberProfilePage() {
                       className="w-full rounded-xl border border-slate-200 px-3 py-2"
                     >
                       <option value="">Select PT Variant</option>
-                      {ptVariants
-                        .filter((variant) => !ptForm.productCode || variant.productCode === ptForm.productCode)
-                        .map((variant) => (
+                      {selectablePtVariants.map((variant) => (
                           <option key={variant.variantId} value={variant.variantId}>
                             {variant.variantName} · {formatPlanDuration(variant.durationMonths, variant.validityDays)}
                           </option>
@@ -3581,6 +4266,44 @@ export default function MemberProfilePage() {
           </Modal>
 
           <Modal
+            open={actionModal === "visit"}
+            onClose={() => setActionModal(null)}
+            title="Add Flex Visit"
+            size="md"
+            footer={
+              <>
+                <button type="button" onClick={() => setActionModal(null)} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Cancel</button>
+                <button type="button" onClick={() => void handleAddVisit()} disabled={actionBusy} className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                  {actionBusy ? "Processing..." : "Add Visit"}
+                </button>
+              </>
+            }
+          >
+            <div className="space-y-4">
+              {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
+              <div className="grid gap-3 sm:grid-cols-2">
+                <StatPill label="Included Check-Ins" value={String(selectedIncludedCheckIns)} />
+                <StatPill label="Used Check-Ins" value={String(selectedUsedCheckIns)} />
+                <StatPill label="Remaining Check-Ins" value={String(selectedCheckInsRemaining)} />
+                <StatPill label="Extra Visit Price" value={formatRoundedInr(selectedExtraVisitPrice)} />
+              </div>
+              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                This creates an invoice and immediate receipt for one additional flex visit. Once payment succeeds, the check-in allowance increases by one and attendance is unlocked again.
+              </div>
+              <label className="space-y-2 text-sm">
+                <span className="font-medium text-slate-700">Payment Mode</span>
+                <select value={visitForm.paymentMode} onChange={(event) => setVisitForm({ paymentMode: event.target.value })} className="w-full rounded-xl border border-slate-200 px-3 py-2">
+                  <option value="CASH">Cash</option>
+                  <option value="CARD">Card</option>
+                  <option value="UPI">UPI</option>
+                  <option value="NET_BANKING">Net Banking</option>
+                  <option value="OTHER">Other</option>
+                </select>
+              </label>
+            </div>
+          </Modal>
+
+          <Modal
             open={actionModal === "biometric"}
             onClose={() => setActionModal(null)}
             title="Biometric & Access Actions"
@@ -3591,6 +4314,24 @@ export default function MemberProfilePage() {
               <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
                 Current state: <span className="font-semibold">{tabData["recovery-services"]?.status || "NOT_ADDED"}</span>
               </div>
+              <label className="space-y-2 text-sm">
+                <span className="font-medium text-slate-700">Biometric Device</span>
+                <select
+                  value={selectedBiometricDeviceSerial}
+                  onChange={(event) => setSelectedBiometricDeviceSerial(event.target.value)}
+                  className="w-full rounded-xl border border-slate-200 px-3 py-2"
+                >
+                  <option value="">Select Device</option>
+                  {availableBiometricDevices.map((device) => {
+                    const serial = pickString(device, ["serialNumber"]);
+                    return (
+                      <option key={serial} value={serial}>
+                        {pickString(device, ["deviceName"]) || serial} · {serial}
+                      </option>
+                    );
+                  })}
+                </select>
+              </label>
               <label className="space-y-2 text-sm">
                 <span className="font-medium text-slate-700">Notes</span>
                 <textarea value={accessNotes} onChange={(event) => setAccessNotes(event.target.value)} className="min-h-[88px] w-full rounded-xl border border-slate-200 px-3 py-2" />
@@ -3615,7 +4356,7 @@ export default function MemberProfilePage() {
                 ))}
               </div>
               <p className="text-xs text-slate-500">
-                These actions update the member access registry and audit trail now, so the member profile has a consistent operational record even before a direct biometric vendor sync is connected.
+                These actions now queue the corresponding ESSL device command for the selected branch device and then update the internal member access registry.
               </p>
             </div>
           </Modal>

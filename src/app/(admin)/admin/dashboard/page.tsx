@@ -179,12 +179,12 @@ function HeroStatCard({
       className={`rounded-3xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:border-[#C42429] hover:shadow-md ${accentClass}`}
     >
       <div className="flex items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">{card.title}</p>
           <p className="mt-3 text-4xl font-bold tracking-tight text-[#282828]">{card.value}</p>
           <p className="mt-2 text-sm text-slate-600">{card.subtitle}</p>
         </div>
-        <div className={`inline-flex rounded-2xl p-3 ${card.iconClass}`}>{card.icon}</div>
+        <div className={`inline-flex shrink-0 rounded-2xl p-3 ${card.iconClass}`}>{card.icon}</div>
       </div>
       {badge ? (
         <span className="mt-4 inline-flex rounded-full bg-[#E8F2D7] px-3 py-1 text-xs font-semibold text-[#5B7F2B]">{badge}</span>
@@ -240,12 +240,12 @@ function MetricValueCard({
       className="rounded-3xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:border-[#C42429] hover:shadow-md"
     >
       <div className="flex items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <p className="text-sm font-semibold text-slate-600">{card.title}</p>
           <p className="mt-4 text-4xl font-bold tracking-tight text-[#282828]">{card.value}</p>
           <p className="mt-2 text-sm text-slate-500">{card.subtitle}</p>
         </div>
-        <div className={`inline-flex rounded-2xl p-3 ${card.iconClass}`}>{card.icon}</div>
+        <div className={`inline-flex shrink-0 rounded-2xl p-3 ${card.iconClass}`}>{card.icon}</div>
       </div>
       {badge ? <div className="mt-4">{badge}</div> : null}
     </button>

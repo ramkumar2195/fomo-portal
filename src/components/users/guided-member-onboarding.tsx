@@ -59,6 +59,7 @@ interface SubscriptionFormState {
   addOnDiscountPercent: string;
   paymentMode: string;
   receivedAmount: string;
+  balanceDueDate: string;
 }
 
 interface ComplementaryFieldState {
@@ -113,6 +114,9 @@ interface MembershipLineItem {
   basePrice: number;
   sellingPrice: number;
   discountPercent: number;
+  cgstAmount: number;
+  sgstAmount: number;
+  totalAmount: number;
 }
 
 type OnboardingStep = 1 | 2 | 3;
@@ -313,11 +317,29 @@ function normalizeDisplayVariantName(value: string): string {
     .trim();
 }
 
+function shouldShowVariantSubtitle(variantName: string, productName: string | undefined, productCode: string): boolean {
+  const normalizedVariantName = normalizeDisplayVariantName(variantName).toUpperCase();
+  const normalizedProductName = normalizeDisplayVariantName(productName || productCode).toUpperCase();
+  return normalizedProductName.length > 0 && normalizedProductName !== normalizedVariantName;
+}
+
 function splitFeatures(features: string): string[] {
   return features
     .split(",")
     .map((feature) => feature.trim())
     .filter(Boolean);
+}
+
+function shouldShowOnboardingFeatureChip(feature: string): boolean {
+  const normalized = String(feature || "").trim().toUpperCase();
+  return ![
+    "PAUSE_BENEFIT",
+    "PAUSE_BENEFITS",
+    "PASS_BENEFIT",
+    "PASS_BENEFITS",
+    "STEAM_ACCESS",
+    "ICE_BATH_ACCESS",
+  ].includes(normalized);
 }
 
 function isFlagshipVariant(variant: CatalogVariant | undefined): boolean {
@@ -345,7 +367,13 @@ function deriveProgramKeywords(product: CatalogProduct | undefined, variant: Cat
     return [];
   }
 
-  const keywords = new Set<string>();
+  const keywords: string[] = [];
+  const pushKeyword = (keyword: string) => {
+    const normalized = keyword.trim().toLowerCase();
+    if (normalized && !keywords.includes(normalized)) {
+      keywords.push(normalized);
+    }
+  };
   const productCode = String(product?.productCode || variant.productCode || "").toUpperCase();
   const productName = String(product?.productName || "").toUpperCase();
   const variantName = String(variant.variantName || "").toUpperCase();
@@ -355,7 +383,7 @@ function deriveProgramKeywords(product: CatalogProduct | undefined, variant: Cat
     ["YOGA_ACCESS", "yoga"],
     ["ZUMBA_ACCESS", "zumba"],
     ["HIIT_ACCESS", "hiit"],
-    ["COREFLEX_ACCESS", "coreflex"],
+    ["COREFLEX_ACCESS", "core flex"],
     ["CROSSFIT_ACCESS", "crossfit"],
     ["BOXING_ACCESS", "boxing"],
     ["KICKBOXING_ACCESS", "kickboxing"],
@@ -364,29 +392,35 @@ function deriveProgramKeywords(product: CatalogProduct | undefined, variant: Cat
 
   featureToKeyword.forEach(([feature, keyword]) => {
     if (features.includes(feature)) {
-      keywords.add(keyword);
+      pushKeyword(keyword);
     }
   });
 
   if (productCode.includes("CALISTHENICS") || variantName.includes("CALISTHENICS")) {
-    keywords.add("calisthenics");
+    if (variantName.includes("KIDS")) {
+      pushKeyword("calisthenics kids");
+    } else if (variantName.includes("ADULT")) {
+      pushKeyword("calisthenics adults");
+    } else if (variantName.includes("SELF")) {
+      pushKeyword("calisthenics self");
+    }
   }
   if (productCode.includes("BOXING") || variantName.includes("BOXING")) {
-    keywords.add("boxing");
+    pushKeyword("boxing");
   }
   if (productCode.includes("KICKBOXING") || variantName.includes("KICKBOXING")) {
-    keywords.add("kickboxing");
+    pushKeyword("kickboxing");
   }
   if (productCode.includes("FOMO_MOVE") || productCode.includes("RHYTHM") || productName.includes("YOGA") || variantName.includes("YOGA")) {
     if (variantName.includes("YOGA") || features.includes("YOGA_ACCESS")) {
-      keywords.add("yoga");
+      pushKeyword("yoga");
     }
     if (variantName.includes("ZUMBA") || features.includes("ZUMBA_ACCESS")) {
-      keywords.add("zumba");
+      pushKeyword("zumba");
     }
   }
 
-  return Array.from(keywords);
+  return keywords;
 }
 
 function initialComplementaryState(): ComplementaryState {
@@ -525,6 +559,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     addOnDiscountPercent: "",
     paymentMode: "UPI",
     receivedAmount: "",
+    balanceDueDate: "",
   });
 
   const [complementaries, setComplementaries] = useState<ComplementaryState>(initialComplementaryState);
@@ -704,23 +739,6 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     [addOnCategoryFilter, addOnVariants, products],
   );
 
-  const filteredAddOnVariants = useMemo(
-    () =>
-      !addOnCategoryFilter || !addOnProductFilter
-        ? []
-        :
-      addOnVariants.filter((variant) => {
-        if (addOnCategoryFilter && variant.categoryCode !== addOnCategoryFilter) {
-          return false;
-        }
-        if (addOnProductFilter && variant.productCode !== addOnProductFilter) {
-          return false;
-        }
-        return true;
-      }),
-    [addOnCategoryFilter, addOnProductFilter, addOnVariants],
-  );
-
   const primaryLineItem = useMemo(
     () => membershipLineItems.find((item) => item.lineType === "PRIMARY") || null,
     [membershipLineItems],
@@ -744,6 +762,26 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   const selectedPrimaryProduct = useMemo(
     () => products.find((product) => product.productCode === selectedPrimaryVariant?.productCode),
     [products, selectedPrimaryVariant?.productCode],
+  );
+
+  const filteredAddOnVariants = useMemo(
+    () =>
+      !addOnCategoryFilter || !addOnProductFilter
+        ? []
+        :
+      addOnVariants.filter((variant) => {
+        if (addOnCategoryFilter && variant.categoryCode !== addOnCategoryFilter) {
+          return false;
+        }
+        if (addOnProductFilter && variant.productCode !== addOnProductFilter) {
+          return false;
+        }
+        if (selectedPrimaryVariant?.durationMonths && variant.durationMonths > selectedPrimaryVariant.durationMonths) {
+          return false;
+        }
+        return true;
+      }),
+    [addOnCategoryFilter, addOnProductFilter, addOnVariants, selectedPrimaryVariant?.durationMonths],
   );
 
   const canAddPrimaryMembership = !primaryLineItem;
@@ -836,6 +874,15 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   }, [addOnCategoryFilter, addOnProductFilter, filteredAddOnProducts]);
 
   useEffect(() => {
+    if (!canAddPtMembership || !showPtComposer) {
+      return;
+    }
+    if (!addOnCategoryFilter && addOnCategoryOptions.length > 0) {
+      setAddOnCategoryFilter(addOnCategoryOptions[0]);
+    }
+  }, [addOnCategoryFilter, addOnCategoryOptions, canAddPtMembership, showPtComposer]);
+
+  useEffect(() => {
     const selectedVariantStillVisible = filteredAddOnVariants.some(
       (variant) => variant.variantId === subscriptionForm.addOnVariantId,
     );
@@ -857,6 +904,44 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   const selectedAddOnVariant = useMemo(
     () => addOnVariants.find((variant) => variant.variantId === (ptLineItem?.variantId || draftSelectedAddOnVariant?.variantId)),
     [addOnVariants, draftSelectedAddOnVariant?.variantId, ptLineItem?.variantId],
+  );
+
+  const primaryDraftCommercial = useMemo(
+    () => resolveCommercialBreakdown(
+      draftPrimaryVariant?.basePrice || 0,
+      subscriptionForm.primarySellingPrice,
+      subscriptionForm.primaryDiscountPercent,
+    ),
+    [draftPrimaryVariant?.basePrice, subscriptionForm.primaryDiscountPercent, subscriptionForm.primarySellingPrice],
+  );
+
+  const addOnDraftCommercial = useMemo(
+    () => resolveCommercialBreakdown(
+      draftSelectedAddOnVariant?.basePrice || 0,
+      subscriptionForm.addOnSellingPrice,
+      subscriptionForm.addOnDiscountPercent,
+    ),
+    [draftSelectedAddOnVariant?.basePrice, subscriptionForm.addOnDiscountPercent, subscriptionForm.addOnSellingPrice],
+  );
+
+  const primaryDraftCgst = useMemo(
+    () => Number(((primaryDraftCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
+    [billingSettings.gstPercentage, primaryDraftCommercial.sellingPrice],
+  );
+
+  const primaryDraftSgst = useMemo(
+    () => Number(((primaryDraftCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
+    [billingSettings.gstPercentage, primaryDraftCommercial.sellingPrice],
+  );
+
+  const addOnDraftCgst = useMemo(
+    () => Number(((addOnDraftCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
+    [addOnDraftCommercial.sellingPrice, billingSettings.gstPercentage],
+  );
+
+  const addOnDraftSgst = useMemo(
+    () => Number(((addOnDraftCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
+    [addOnDraftCommercial.sellingPrice, billingSettings.gstPercentage],
   );
 
   const pricingPreview = useMemo(() => {
@@ -1036,6 +1121,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         feature: "STEAM_ACCESS",
         includedCount: Number(complementaries.steam.count || 0),
         recurrence: complementaries.steam.recurrence,
+        expiresIfUnused: true,
       });
     }
     if (complementaries.iceBath.enabled) {
@@ -1043,6 +1129,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         feature: "ICE_BATH_ACCESS",
         includedCount: Number(complementaries.iceBath.count || 0),
         recurrence: complementaries.iceBath.recurrence,
+        expiresIfUnused: true,
       });
     }
     if (complementaries.nutritionCounseling.enabled) {
@@ -1050,6 +1137,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         feature: "NUTRITION_COUNSELING",
         includedCount: Number(complementaries.nutritionCounseling.count || 0),
         recurrence: complementaries.nutritionCounseling.recurrence,
+        expiresIfUnused: false,
       });
     }
     if (complementaries.physiotherapyCounseling.enabled) {
@@ -1057,6 +1145,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         feature: "PHYSIOTHERAPY_COUNSELING",
         includedCount: Number(complementaries.physiotherapyCounseling.count || 0),
         recurrence: complementaries.physiotherapyCounseling.recurrence,
+        expiresIfUnused: false,
       });
     }
     if (complementaries.passBenefit.enabled) {
@@ -1064,6 +1153,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         feature: "PAUSE_BENEFIT",
         includedCount: Number(complementaries.passBenefit.days || 0),
         recurrence: "FULL_TERM",
+        expiresIfUnused: false,
       });
     }
 
@@ -1110,6 +1200,9 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
           basePrice: draftPrimaryVariant.basePrice || 0,
           sellingPrice: primaryCommercial.sellingPrice,
           discountPercent: primaryCommercial.discountPercent,
+          cgstAmount: Number(((primaryCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
+          sgstAmount: Number(((primaryCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
+          totalAmount: Number((primaryCommercial.sellingPrice + ((primaryCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 100)).toFixed(2)),
         },
       ]);
       setPrimaryCategoryFilter("");
@@ -1143,19 +1236,22 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     const product = products.find((item) => item.productCode === draftSelectedAddOnVariant.productCode);
 
     setMembershipLineItems((current) => [
-      ...current.filter((item) => item.lineType !== "PT_ADD_ON"),
-      {
-        lineType: "PT_ADD_ON",
+        ...current.filter((item) => item.lineType !== "PT_ADD_ON"),
+        {
+          lineType: "PT_ADD_ON",
         categoryCode: draftSelectedAddOnVariant.categoryCode,
         productCode: draftSelectedAddOnVariant.productCode,
         productName: product?.productName || draftSelectedAddOnVariant.productCode,
         variantId: draftSelectedAddOnVariant.variantId,
         variantName: draftSelectedAddOnVariant.variantName,
-        basePrice: draftSelectedAddOnVariant.basePrice || 0,
-        sellingPrice: addOnCommercial.sellingPrice,
-        discountPercent: addOnCommercial.discountPercent,
-      },
-    ]);
+          basePrice: draftSelectedAddOnVariant.basePrice || 0,
+          sellingPrice: addOnCommercial.sellingPrice,
+          discountPercent: addOnCommercial.discountPercent,
+          cgstAmount: Number(((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
+          sgstAmount: Number(((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
+          totalAmount: Number((addOnCommercial.sellingPrice + ((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 100)).toFixed(2)),
+        },
+      ]);
     setAddOnCategoryFilter("");
     setAddOnProductFilter("");
       setSubscriptionForm((current) => ({
@@ -1238,6 +1334,10 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       }
       if (Math.round(receivedAmount) > allowedMax) {
         setToast({ kind: "error", message: "Received amount cannot exceed the total payable amount." });
+        return false;
+      }
+      if (pricingPreview.balanceAmount > 0 && !subscriptionForm.balanceDueDate) {
+        setToast({ kind: "error", message: "Balance due date is required for partial payment." });
         return false;
       }
       if (!subscriptionForm.paymentMode) {
@@ -1387,6 +1487,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
       let paymentReceipt: Awaited<ReturnType<typeof subscriptionService.recordPayment>> | null = null;
       let membershipActivated = false;
+      const completionWarnings: string[] = [];
       if (pricingPreview.receivedAmount > 0) {
         paymentReceipt = await subscriptionService.recordPayment(token, invoiceId, {
           memberId,
@@ -1406,7 +1507,24 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         }
       }
 
-      await subscriptionService.convertInquiry(token, String(sourceInquiryId), { memberId });
+      if (pricingPreview.balanceAmount > 0 && subscriptionForm.balanceDueDate) {
+        try {
+          await subscriptionService.createInquiryFollowUp(token, sourceInquiryId, {
+            dueAt: `${subscriptionForm.balanceDueDate}T09:00:00`,
+            assignedToStaffId: inquiry?.clientRepStaffId || billedByStaffId || undefined,
+            createdByStaffId: billedByStaffId || undefined,
+            notes: `Collect the remaining balance of ${formatCurrency(pricingPreview.balanceAmount)} for invoice ${subscriptionResponse.invoiceNumber}.`,
+          });
+        } catch {
+          completionWarnings.push("Balance follow-up could not be created automatically.");
+        }
+      }
+
+      try {
+        await subscriptionService.convertInquiry(token, String(sourceInquiryId), { memberId });
+      } catch {
+        completionWarnings.push("Inquiry conversion status could not be updated automatically.");
+      }
 
       // Auto-enroll class-based memberships into their mapped programs.
       let enrolledProgramName: string | null = null;
@@ -1416,8 +1534,8 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
           const programsPage = await trainingService.listPrograms(token, 0, 100);
           const programs = programsPage.content || [];
           const matchingPrograms = programs.filter((program) => {
-            const programName = String(program.name || "").toLowerCase();
-            return programKeywords.some((keyword) => programName.includes(keyword));
+            const programName = String(program.name || "").toLowerCase().trim().replace(/\s+/g, " ");
+            return programKeywords.some((keyword) => programName === keyword || programName.startsWith(`${keyword} `));
           });
           if (matchingPrograms.length > 0) {
             for (const program of matchingPrograms) {
@@ -1426,7 +1544,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
             enrolledProgramName = matchingPrograms.map((program) => program.name).join(", ");
           }
         } catch {
-          // Non-critical — admin can enroll manually later
+          completionWarnings.push("Program enrollment needs to be completed manually.");
         }
       }
 
@@ -1445,20 +1563,21 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       });
 
       const enrollmentNote = enrolledProgramName ? ` Enrolled in ${enrolledProgramName} program.` : "";
+      const warningNote = completionWarnings.length > 0 ? ` ${completionWarnings.join(" ")}` : "";
       setToast({
         kind: "success",
         message:
           pricingPreview.receivedAmount > 0
             ? resumedExistingMember
               ? membershipActivated
-                ? `Recovered the existing member record, invoiced it, recorded payment, and activated the membership.${enrollmentNote}`
-                : `Recovered the existing member record and recorded payment. Membership activation is pending until ${membershipPolicySettings.minPartialPaymentPercent}% is collected.${enrollmentNote}`
+                ? `Recovered the existing member record, invoiced it, recorded payment, and activated the membership.${enrollmentNote}${warningNote}`
+                : `Recovered the existing member record and recorded payment. Membership activation is pending until ${membershipPolicySettings.minPartialPaymentPercent}% is collected.${enrollmentNote}${warningNote}`
               : membershipActivated
-                ? `Member created, invoiced, payment recorded, and membership activated.${enrollmentNote}`
-                : `Member created and invoiced. Payment was recorded, but activation is pending until ${membershipPolicySettings.minPartialPaymentPercent}% is collected.${enrollmentNote}`
+                ? `Member created, invoiced, payment recorded, and membership activated.${enrollmentNote}${warningNote}`
+                : `Member created and invoiced. Payment was recorded, but activation is pending until ${membershipPolicySettings.minPartialPaymentPercent}% is collected.${enrollmentNote}${warningNote}`
             : resumedExistingMember
-              ? `Recovered the existing member record and generated the invoice. No payment received yet, so access remains pending.${enrollmentNote}`
-              : `Member created and invoiced. No payment received yet, so access remains pending.${enrollmentNote}`,
+              ? `Recovered the existing member record and generated the invoice. No payment received yet, so access remains pending.${enrollmentNote}${warningNote}`
+              : `Member created and invoiced. No payment received yet, so access remains pending.${enrollmentNote}${warningNote}`,
       });
       return;
     } catch (submitError) {
@@ -1842,16 +1961,27 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                       : "Membership lines are already added below. Review the table and continue to billing."}
                                 </p>
                             </div>
-                            <label className="space-y-2">
-                              <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Start Date</span>
-                              <input
-                                type="date"
-                                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
-                                value={subscriptionForm.startDate}
-                                onChange={(event) => setSubscriptionForm((current) => ({ ...current, startDate: event.target.value }))}
-                                required
-                              />
-                            </label>
+                            <div className="flex items-center gap-3">
+                              {canAddPtMembership && !showPtComposer ? (
+                                <button
+                                  type="button"
+                                  onClick={() => setShowPtComposer(true)}
+                                  className="rounded-2xl border border-[#c42924]/40 bg-[#1b1114] px-4 py-2.5 text-sm font-semibold text-[#ffb4b1] hover:border-[#c42924]/60"
+                                >
+                                  Add PT
+                                </button>
+                              ) : null}
+                              <label className="space-y-2">
+                                <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Start Date</span>
+                                <input
+                                  type="date"
+                                  className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                                  value={subscriptionForm.startDate}
+                                  onChange={(event) => setSubscriptionForm((current) => ({ ...current, startDate: event.target.value }))}
+                                  required
+                                />
+                              </label>
+                            </div>
                           </div>
                           {canAddPrimaryMembership ? (
                           <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
@@ -1925,16 +2055,16 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                               </div>
                             </div>
 
-                            <div className="mt-5 grid gap-4 lg:grid-cols-2">
+                            <div className="mt-5 grid gap-4 lg:grid-cols-4">
                               {filteredPrimaryVariants.length === 0 ? (
-                                <div className="rounded-[24px] border border-dashed border-white/12 bg-[#101722] p-5 text-sm text-slate-400 lg:col-span-2">
+                                <div className="rounded-[24px] border border-dashed border-white/12 bg-[#101722] p-5 text-sm text-slate-400 lg:col-span-4">
                                   No variants are configured for this product yet.
                                 </div>
                               ) : null}
                               {filteredPrimaryVariants.map((variant) => {
                               const active = subscriptionForm.productVariantId === variant.variantId;
                               const variantProduct = products.find((product) => product.productCode === variant.productCode);
-                              const features = splitFeatures(variant.includedFeatures).slice(0, 4);
+                              const features = splitFeatures(variant.includedFeatures).filter(shouldShowOnboardingFeatureChip).slice(0, 3);
                               return (
                                 <button
                                   key={variant.variantId}
@@ -1949,15 +2079,17 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                       primaryDiscountPercent: "",
                                     }));
                                   }}
-                                  className={`rounded-[24px] border p-5 text-left transition ${active ? "border-[#c42924]/50 bg-[#1b1114] shadow-[0_20px_60px_rgba(196,36,41,0.12)]" : "border-white/10 bg-[#151b26] hover:border-white/20 hover:bg-[#18202c]"}`}
+                                  className={`rounded-[20px] border p-4 text-left transition ${active ? "border-[#c42924]/50 bg-[#1b1114] shadow-[0_20px_60px_rgba(196,36,41,0.12)]" : "border-white/10 bg-[#151b26] hover:border-white/20 hover:bg-[#18202c]"}`}
                                 >
                                   <div className="flex items-start justify-between gap-3">
                                     <div>
                                       <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">
                                         {productFamilyLabel(variant.categoryCode)}
                                       </p>
-                                      <h5 className="mt-2 text-lg font-semibold text-white">{normalizeDisplayVariantName(variant.variantName)}</h5>
-                                      <p className="mt-1 text-sm text-slate-400">{variantProduct?.productName || variant.productCode}</p>
+                                      <h5 className="mt-2 text-base font-semibold text-white">{normalizeDisplayVariantName(variant.variantName)}</h5>
+                                      {shouldShowVariantSubtitle(variant.variantName, variantProduct?.productName, variant.productCode) ? (
+                                        <p className="mt-1 text-xs text-slate-400">{variantProduct?.productName || variant.productCode}</p>
+                                      ) : null}
                                     </div>
                                     <span className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] ${statusBadgeClass(active)}`}>
                                       {active ? "Selected" : `${variant.durationMonths} months`}
@@ -1966,7 +2098,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                   <div className="mt-5 flex items-end justify-between gap-3">
                                     <div>
                                       <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Base Price</p>
-                                      <p className="mt-1 text-2xl font-semibold text-white">{formatCurrency(variant.basePrice)}</p>
+                                      <p className="mt-1 text-lg font-semibold text-white">{formatCurrency(variant.basePrice)}</p>
                                     </div>
                                     <div className="text-right text-xs text-slate-400">
                                       <p>{variant.validityDays} days validity</p>
@@ -1984,63 +2116,45 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                               );
                             })}
                             </div>
-                          </div>
-                          ) : null}
-                        </div>
-
-                        <div className="space-y-5">
-                          {canAddPrimaryMembership ? (
-                          <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
-                            <div className="mb-4 flex items-center gap-3">
-                              <Sparkles className="h-5 w-5 text-[#ffb4b1]" />
-                              <div>
-	                                <h4 className="text-sm font-semibold text-white">Pricing & Commercials</h4>
-                                <p className="text-xs text-slate-400">Capture the primary membership pricing first. PT add-ons get their own commercial values.</p>
-                              </div>
-                            </div>
-                            <div className="rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
-                              <div className="flex items-center justify-between gap-3">
+                            <div className="mt-5 rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
+                              <div className="mb-4 flex items-center gap-3">
+                                <Sparkles className="h-5 w-5 text-[#ffb4b1]" />
                                 <div>
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Primary Membership Commercials</p>
-                                  <p className="mt-1 text-sm text-slate-300">
-                                    {selectedPrimaryVariant
-                                      ? `${normalizeDisplayVariantName(selectedPrimaryVariant.variantName)} · ${formatCurrency(selectedPrimaryVariant.basePrice)}`
-                                      : "Select the primary membership variant first."}
-                                  </p>
+	                                  <h4 className="text-sm font-semibold text-white">Primary Membership Commercials</h4>
+                                  <p className="text-xs text-slate-400">Set selling price and discount on the same membership tile before adding it to the table.</p>
                                 </div>
                               </div>
-                              <div className="mt-4 grid gap-4 md:grid-cols-2">
+                              <div className="grid gap-4 md:grid-cols-2">
                                 <label className="space-y-2">
-                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Primary Selling Price</span>
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Selling Price</span>
                                   <input
                                     className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
                                     value={subscriptionForm.primarySellingPrice}
                                     onChange={(event) => {
                                       const value = sanitizeIntegerString(event.target.value);
-                                      const baseAmount = selectedPrimaryVariant?.basePrice || 0;
-                                      const sellingPrice = value;
+                                      const baseAmount = draftPrimaryVariant?.basePrice || 0;
                                       const discountPercent =
                                         value === "" || baseAmount <= 0
                                           ? ""
                                           : formatDecimalInput(((baseAmount - Math.min(baseAmount, Number(value))) / baseAmount) * 100);
                                       setSubscriptionForm((current) => ({
                                         ...current,
-                                        primarySellingPrice: sellingPrice,
+                                        primarySellingPrice: value,
                                         primaryDiscountPercent: discountPercent,
                                       }));
                                     }}
-                                    placeholder={selectedPrimaryVariant ? `Default ${formatCurrency(selectedPrimaryVariant.basePrice)}` : "Select a primary plan first"}
-                                    disabled={!selectedPrimaryVariant}
+                                    placeholder={draftPrimaryVariant ? `Default ${formatCurrency(draftPrimaryVariant.basePrice)}` : "Select a primary plan first"}
+                                    disabled={!draftPrimaryVariant}
                                   />
                                 </label>
                                 <label className="space-y-2">
-                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Primary Discount Percent</span>
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Discount Percent</span>
                                   <input
                                     className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
                                     value={subscriptionForm.primaryDiscountPercent}
                                     onChange={(event) => {
                                       const value = sanitizeNumericString(event.target.value);
-                                      const baseAmount = selectedPrimaryVariant?.basePrice || 0;
+                                      const baseAmount = draftPrimaryVariant?.basePrice || 0;
                                       const normalizedPercent =
                                         value === "" ? undefined : Math.min(100, Math.max(0, Number(value)));
                                       const sellingPrice =
@@ -2054,37 +2168,279 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                       }));
                                     }}
                                     placeholder="Leave blank for no discount"
-                                    disabled={!selectedPrimaryVariant}
+                                    disabled={!draftPrimaryVariant}
                                   />
                                 </label>
+                              </div>
+                              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Plan Price</p>
+                                  <p className="mt-2 text-base font-semibold text-white">{formatCurrency(primaryDraftCommercial.baseAmount)}</p>
+                                </div>
+                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Discount</p>
+                                  <p className="mt-2 text-base font-semibold text-white">{formatCurrency(primaryDraftCommercial.discountAmount)}</p>
+                                </div>
+                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">CGST / SGST</p>
+                                  <p className="mt-2 text-base font-semibold text-white">
+                                    {formatCurrency(primaryDraftCgst)} / {formatCurrency(primaryDraftSgst)}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Total Price</p>
+                                  <p className="mt-2 text-base font-semibold text-white">
+                                    {formatCurrency(primaryDraftCommercial.sellingPrice + primaryDraftCgst + primaryDraftSgst)}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="mt-4 flex justify-end">
+                                <button
+                                  type="button"
+                                  onClick={() => addMembershipLineItem()}
+                                  className="rounded-2xl bg-[#c42924] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#a81f1c]"
+                                >
+                                  Add to Table
+                                </button>
                               </div>
                             </div>
                           </div>
                           ) : null}
+                        </div>
 
-                          <div ref={membershipTableRef} className="mt-5 rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
+                        {canAddPtMembership && showPtComposer ? (
+                          <div className="mt-5 space-y-4 rounded-[24px] border border-white/8 bg-[#161d28] p-5">
+                            <div className="flex items-center gap-3">
+                              <Sparkles className="h-5 w-5 text-[#ffb4b1]" />
+                              <div>
+                                <h4 className="text-sm font-semibold text-white">Add Personal Training</h4>
+                                <p className="text-xs text-slate-400">Choose the PT package the member is purchasing along with the gym membership.</p>
+                              </div>
+                            </div>
+                            <div className="grid gap-4 lg:grid-cols-3">
+                              <label className="space-y-2">
+                                <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Category</span>
+                                <select
+                                  className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                                  value={addOnCategoryFilter}
+                                  onChange={(event) => {
+                                    setAddOnCategoryFilter(event.target.value);
+                                    setAddOnProductFilter("");
+                                    setSubscriptionForm((current) => ({
+                                      ...current,
+                                      addOnVariantId: "",
+                                      addOnSellingPrice: "",
+                                      addOnDiscountPercent: "",
+                                    }));
+                                  }}
+                                >
+                                  <option value="">Select category</option>
+                                  {addOnCategoryOptions.map((categoryCode) => (
+                                    <option key={categoryCode} value={categoryCode}>
+                                      {productFamilyLabel(categoryCode)}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <label className="space-y-2">
+                                <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Product</span>
+                                <select
+                                  className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                                  value={addOnProductFilter}
+                                  disabled={!addOnCategoryFilter}
+                                  onChange={(event) => {
+                                    setAddOnProductFilter(event.target.value);
+                                    setSubscriptionForm((current) => ({
+                                      ...current,
+                                      addOnVariantId: "",
+                                      addOnSellingPrice: "",
+                                      addOnDiscountPercent: "",
+                                    }));
+                                  }}
+                                >
+                                  <option value="">{addOnCategoryFilter ? "Select product" : "Choose category first"}</option>
+                                  {filteredAddOnProducts.map((product) => (
+                                    <option key={product.productCode} value={product.productCode}>
+                                      {product.productName}
+                                    </option>
+                                  ))}
+                                </select>
+                              </label>
+                              <div className="rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3">
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Summary</p>
+                                <p className="mt-2 text-sm font-semibold text-white">
+                                  {draftSelectedAddOnVariant ? normalizeDisplayVariantName(draftSelectedAddOnVariant.variantName) : "Choose a PT plan"}
+                                </p>
+                                <p className="mt-1 text-xs text-slate-400">
+                                  {draftSelectedAddOnVariant
+                                    ? `${draftSelectedAddOnVariant.includedPtSessions} PT sessions · ${formatCurrency(draftSelectedAddOnVariant.basePrice)}`
+                                    : "Select a PT category, product, and variant to add it below."}
+                                </p>
+                              </div>
+                            </div>
+                            <div className="grid gap-4 lg:grid-cols-4">
+                              {filteredAddOnVariants.length === 0 ? (
+                                <div className="rounded-[24px] border border-dashed border-white/12 bg-[#101722] p-5 text-sm text-slate-400 lg:col-span-4">
+                                  No PT variants are configured for this product yet.
+                                </div>
+                              ) : null}
+                              {filteredAddOnVariants.map((variant) => {
+                                const active = subscriptionForm.addOnVariantId === variant.variantId;
+                                const variantProduct = products.find((product) => product.productCode === variant.productCode);
+                                const features = splitFeatures(variant.includedFeatures).filter(shouldShowOnboardingFeatureChip).slice(0, 3);
+                                return (
+                                  <button
+                                    key={variant.variantId}
+                                    type="button"
+                                    onClick={() => {
+                                      setAddOnCategoryFilter(variant.categoryCode);
+                                      setAddOnProductFilter(variant.productCode);
+                                      setSubscriptionForm((current) => ({
+                                        ...current,
+                                        addOnVariantId: variant.variantId,
+                                        addOnSellingPrice: "",
+                                        addOnDiscountPercent: "",
+                                      }));
+                                    }}
+                                    className={`rounded-[20px] border p-4 text-left transition ${active ? "border-[#c42924]/50 bg-[#1b1114] shadow-[0_20px_60px_rgba(196,36,41,0.12)]" : "border-white/10 bg-[#151b26] hover:border-white/20 hover:bg-[#18202c]"}`}
+                                  >
+                                    <div className="flex items-start justify-between gap-3">
+                                      <div>
+                                        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">{productFamilyLabel(variant.categoryCode)}</p>
+                                        <h5 className="mt-2 text-base font-semibold text-white">{normalizeDisplayVariantName(variant.variantName)}</h5>
+                                        {shouldShowVariantSubtitle(variant.variantName, variantProduct?.productName, variant.productCode) ? (
+                                          <p className="mt-1 text-xs text-slate-400">{variantProduct?.productName || variant.productCode}</p>
+                                        ) : null}
+                                      </div>
+                                      <span className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] ${statusBadgeClass(active)}`}>
+                                        {active ? "Selected" : `${variant.durationMonths} months`}
+                                      </span>
+                                    </div>
+                                    <div className="mt-5 flex items-end justify-between gap-3">
+                                      <div>
+                                        <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Base Price</p>
+                                        <p className="mt-1 text-lg font-semibold text-white">{formatCurrency(variant.basePrice)}</p>
+                                      </div>
+                                      <div className="text-right text-xs text-slate-400">
+                                        <p>{variant.includedPtSessions} PT sessions</p>
+                                        <p>{variant.validityDays} days validity</p>
+                                      </div>
+                                    </div>
+                                    <div className="mt-4 flex flex-wrap gap-2">
+                                      {features.map((feature) => (
+                                        <span key={feature} className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
+                                          {featurePillLabel(feature)}
+                                        </span>
+                                      ))}
+                                    </div>
+                                  </button>
+                                );
+                              })}
+                            </div>
+                            <div className="rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
+                              <div className="mb-4 flex items-center gap-3">
+                                <Sparkles className="h-5 w-5 text-[#ffb4b1]" />
+                                <div>
+                                  <h4 className="text-sm font-semibold text-white">PT Commercials</h4>
+                                  <p className="text-xs text-slate-400">Set PT selling price and discount before adding the secondary line item.</p>
+                                </div>
+                              </div>
+                              <div className="grid gap-4 md:grid-cols-2">
+                                <label className="space-y-2">
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Selling Price</span>
+                                  <input
+                                    className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
+                                    value={subscriptionForm.addOnSellingPrice}
+                                    onChange={(event) => {
+                                      const value = sanitizeIntegerString(event.target.value);
+                                      const baseAmount = draftSelectedAddOnVariant?.basePrice || 0;
+                                      const discountPercent =
+                                        value === "" || baseAmount <= 0
+                                          ? ""
+                                          : formatDecimalInput(((baseAmount - Math.min(baseAmount, Number(value))) / baseAmount) * 100);
+                                      setSubscriptionForm((current) => ({
+                                        ...current,
+                                        addOnSellingPrice: value,
+                                        addOnDiscountPercent: discountPercent,
+                                      }));
+                                    }}
+                                    placeholder={draftSelectedAddOnVariant ? `Default ${formatCurrency(draftSelectedAddOnVariant.basePrice)}` : "Select PT variant first"}
+                                    disabled={!draftSelectedAddOnVariant}
+                                  />
+                                </label>
+                                <label className="space-y-2">
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Discount Percent</span>
+                                  <input
+                                    className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
+                                    value={subscriptionForm.addOnDiscountPercent}
+                                    onChange={(event) => {
+                                      const value = sanitizeNumericString(event.target.value);
+                                      const baseAmount = draftSelectedAddOnVariant?.basePrice || 0;
+                                      const normalizedPercent =
+                                        value === "" ? undefined : Math.min(100, Math.max(0, Number(value)));
+                                      const sellingPrice =
+                                        normalizedPercent === undefined || baseAmount <= 0
+                                          ? ""
+                                          : formatDecimalInput(baseAmount * (1 - normalizedPercent / 100));
+                                      setSubscriptionForm((current) => ({
+                                        ...current,
+                                        addOnDiscountPercent: value,
+                                        addOnSellingPrice: sellingPrice,
+                                      }));
+                                    }}
+                                    placeholder="Leave blank for no discount"
+                                    disabled={!draftSelectedAddOnVariant}
+                                  />
+                                </label>
+                              </div>
+                              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Plan Price</p>
+                                  <p className="mt-2 text-base font-semibold text-white">{formatCurrency(addOnDraftCommercial.baseAmount)}</p>
+                                </div>
+                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Discount</p>
+                                  <p className="mt-2 text-base font-semibold text-white">{formatCurrency(addOnDraftCommercial.discountAmount)}</p>
+                                </div>
+                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">CGST / SGST</p>
+                                  <p className="mt-2 text-base font-semibold text-white">
+                                    {formatCurrency(addOnDraftCgst)} / {formatCurrency(addOnDraftSgst)}
+                                  </p>
+                                </div>
+                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Total Price</p>
+                                  <p className="mt-2 text-base font-semibold text-white">
+                                    {formatCurrency(addOnDraftCommercial.sellingPrice + addOnDraftCgst + addOnDraftSgst)}
+                                  </p>
+                                </div>
+                              </div>
+                              <div className="mt-4 flex items-center justify-between gap-3">
+                                <button
+                                  type="button"
+                                  onClick={() => setShowPtComposer(false)}
+                                  className="rounded-2xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-slate-300 hover:bg-white/[0.04]"
+                                >
+                                  Cancel PT
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={() => addMembershipLineItem()}
+                                  className="rounded-2xl bg-[#c42924] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#a81f1c]"
+                                >
+                                  Add to Table
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        ) : null}
+
+                        <div ref={membershipTableRef} className="mt-5 rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
                             <div className="flex items-center justify-between gap-3">
                               <div>
                                 <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Membership Table</p>
-                                <p className="mt-1 text-sm text-slate-300">Add the primary membership first, then attach PT if needed. The table below drives the invoice.</p>
+                                <p className="mt-1 text-sm text-slate-300">Review the membership lines that will be billed on the next step.</p>
                               </div>
-                              {(canAddPrimaryMembership || canAddPtMembership) ? (
-                                <button
-                                  type="button"
-                                  onClick={() => {
-                                    if (canAddPrimaryMembership || showPtComposer) {
-                                      addMembershipLineItem();
-                                      return;
-                                    }
-                                    if (canAddPtMembership) {
-                                      setShowPtComposer(true);
-                                    }
-                                  }}
-                                  className="rounded-2xl bg-[#c42924] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#a81f1c]"
-                                >
-                                  {canAddPrimaryMembership || showPtComposer ? "Add to Table" : "Add PT Membership"}
-                                </button>
-                              ) : null}
                             </div>
                             <div className="mt-4 overflow-hidden rounded-2xl border border-white/10">
                               <table className="min-w-full divide-y divide-white/10 text-sm text-slate-300">
@@ -2096,13 +2452,14 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                     <th className="px-4 py-3 text-right font-semibold">Plan Price</th>
                                     <th className="px-4 py-3 text-right font-semibold">Selling Price</th>
                                     <th className="px-4 py-3 text-right font-semibold">Discount</th>
+                                    <th className="px-4 py-3 text-right font-semibold">Total Amount</th>
                                     <th className="px-4 py-3 text-right font-semibold">Action</th>
                                   </tr>
                                 </thead>
                                 <tbody className="divide-y divide-white/10 bg-[#101722]">
                                   {membershipLineItems.length === 0 ? (
                                     <tr>
-                                      <td colSpan={7} className="px-4 py-6 text-center text-sm text-slate-400">
+                                      <td colSpan={8} className="px-4 py-6 text-center text-sm text-slate-400">
                                         No memberships added yet.
                                       </td>
                                     </tr>
@@ -2115,6 +2472,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                         <td className="px-4 py-3 text-right">{formatCurrency(item.basePrice)}</td>
                                         <td className="px-4 py-3 text-right">{formatCurrency(item.sellingPrice)}</td>
                                         <td className="px-4 py-3 text-right">{Math.round(item.discountPercent)}%</td>
+                                        <td className="px-4 py-3 text-right">{formatCurrency(item.totalAmount)}</td>
                                         <td className="px-4 py-3 text-right">
                                           <button
                                             type="button"
@@ -2132,194 +2490,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                             </div>
                           </div>
 
-                          {canAddPtMembership && showPtComposer ? (
-                            <div className="mt-5 space-y-4 rounded-[24px] border border-white/8 bg-[#161d28] p-5">
-                              <div className="flex items-center gap-3">
-                                <Sparkles className="h-5 w-5 text-[#ffb4b1]" />
-                                <div>
-                                  <h4 className="text-sm font-semibold text-white">Add Personal Training</h4>
-                                  <p className="text-xs text-slate-400">Choose the PT package the member is purchasing along with the gym membership.</p>
-                                </div>
-                              </div>
-                              <div className="grid gap-4 lg:grid-cols-3">
-                                <label className="space-y-2">
-                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Category</span>
-                                  <select
-                                    className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
-                                    value={addOnCategoryFilter}
-                                    onChange={(event) => {
-                                      setAddOnCategoryFilter(event.target.value);
-                                      setAddOnProductFilter("");
-                                      setSubscriptionForm((current) => ({
-                                        ...current,
-                                        addOnVariantId: "",
-                                        addOnSellingPrice: "",
-                                        addOnDiscountPercent: "",
-                                      }));
-                                    }}
-                                  >
-                                    <option value="">Select category</option>
-                                    {addOnCategoryOptions.map((categoryCode) => (
-                                      <option key={categoryCode} value={categoryCode}>
-                                        {productFamilyLabel(categoryCode)}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </label>
-                                <label className="space-y-2">
-                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Product</span>
-                                  <select
-                                    className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
-                                    value={addOnProductFilter}
-                                    disabled={!addOnCategoryFilter}
-                                    onChange={(event) => {
-                                      setAddOnProductFilter(event.target.value);
-                                      setSubscriptionForm((current) => ({
-                                        ...current,
-                                        addOnVariantId: "",
-                                        addOnSellingPrice: "",
-                                        addOnDiscountPercent: "",
-                                      }));
-                                    }}
-                                  >
-                                    <option value="">{addOnCategoryFilter ? "Select product" : "Choose category first"}</option>
-                                    {filteredAddOnProducts.map((product) => (
-                                      <option key={product.productCode} value={product.productCode}>
-                                        {product.productName}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </label>
-                                <div className="rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Summary</p>
-                                  <p className="mt-2 text-sm font-semibold text-white">
-                                    {draftSelectedAddOnVariant ? normalizeDisplayVariantName(draftSelectedAddOnVariant.variantName) : "Choose a PT plan"}
-                                  </p>
-                                  <p className="mt-1 text-xs text-slate-400">
-                                    {draftSelectedAddOnVariant
-                                      ? `${draftSelectedAddOnVariant.includedPtSessions} PT sessions · ${formatCurrency(draftSelectedAddOnVariant.basePrice)}`
-                                      : "Select a PT category, product, and variant to add it below."}
-                                  </p>
-                                </div>
-                              </div>
-                              <div className="grid gap-4 lg:grid-cols-2">
-                                {filteredAddOnVariants.length === 0 ? (
-                                  <div className="rounded-[24px] border border-dashed border-white/12 bg-[#101722] p-5 text-sm text-slate-400 lg:col-span-2">
-                                    No PT variants are configured for this product yet.
-                                  </div>
-                                ) : null}
-                                {filteredAddOnVariants.map((variant) => {
-                                  const active = subscriptionForm.addOnVariantId === variant.variantId;
-                                  const variantProduct = products.find((product) => product.productCode === variant.productCode);
-                                  const features = splitFeatures(variant.includedFeatures).slice(0, 4);
-                                  return (
-                                    <button
-                                      key={variant.variantId}
-                                      type="button"
-                                      onClick={() => {
-                                        setAddOnCategoryFilter(variant.categoryCode);
-                                        setAddOnProductFilter(variant.productCode);
-                                        setSubscriptionForm((current) => ({
-                                          ...current,
-                                          addOnVariantId: variant.variantId,
-                                          addOnSellingPrice: "",
-                                          addOnDiscountPercent: "",
-                                        }));
-                                      }}
-                                      className={`rounded-[24px] border p-5 text-left transition ${active ? "border-[#c42924]/50 bg-[#1b1114] shadow-[0_20px_60px_rgba(196,36,41,0.12)]" : "border-white/10 bg-[#151b26] hover:border-white/20 hover:bg-[#18202c]"}`}
-                                    >
-                                      <div className="flex items-start justify-between gap-3">
-                                        <div>
-                                          <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">{productFamilyLabel(variant.categoryCode)}</p>
-                                          <h5 className="mt-2 text-lg font-semibold text-white">{normalizeDisplayVariantName(variant.variantName)}</h5>
-                                          <p className="mt-1 text-sm text-slate-400">{variantProduct?.productName || variant.productCode}</p>
-                                        </div>
-                                        <span className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] ${statusBadgeClass(active)}`}>
-                                          {active ? "Selected" : `${variant.durationMonths} months`}
-                                        </span>
-                                      </div>
-                                      <div className="mt-5 flex items-end justify-between gap-3">
-                                        <div>
-                                          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Base Price</p>
-                                          <p className="mt-1 text-2xl font-semibold text-white">{formatCurrency(variant.basePrice)}</p>
-                                        </div>
-                                        <div className="text-right text-xs text-slate-400">
-                                          <p>{variant.includedPtSessions} PT sessions</p>
-                                          <p>{variant.validityDays} days validity</p>
-                                        </div>
-                                      </div>
-                                      <div className="mt-4 flex flex-wrap gap-2">
-                                        {features.map((feature) => (
-                                          <span key={feature} className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
-                                            {featurePillLabel(feature)}
-                                          </span>
-                                        ))}
-                                      </div>
-                                    </button>
-                                  );
-                                })}
-                              </div>
-                              <div className="rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Commercials</p>
-                                <p className="mt-1 text-sm text-slate-300">
-                                  {draftSelectedAddOnVariant
-                                    ? `${normalizeDisplayVariantName(draftSelectedAddOnVariant.variantName)} · ${formatCurrency(draftSelectedAddOnVariant.basePrice)}`
-                                    : "Select a PT variant before entering the commercial values."}
-                                </p>
-                                <div className="mt-4 grid gap-4 md:grid-cols-2">
-                                  <label className="space-y-2">
-                                    <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Selling Price</span>
-                                    <input
-                                      className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
-                                      value={subscriptionForm.addOnSellingPrice}
-                                      onChange={(event) => {
-                                        const value = sanitizeIntegerString(event.target.value);
-                                        const baseAmount = draftSelectedAddOnVariant?.basePrice || 0;
-                                        const discountPercent =
-                                          value === "" || baseAmount <= 0
-                                            ? ""
-                                            : formatDecimalInput(((baseAmount - Math.min(baseAmount, Number(value))) / baseAmount) * 100);
-                                        setSubscriptionForm((current) => ({
-                                          ...current,
-                                          addOnSellingPrice: value,
-                                          addOnDiscountPercent: discountPercent,
-                                        }));
-                                      }}
-                                      placeholder={draftSelectedAddOnVariant ? `Default ${formatCurrency(draftSelectedAddOnVariant.basePrice)}` : "Select PT variant first"}
-                                      disabled={!draftSelectedAddOnVariant}
-                                    />
-                                  </label>
-                                  <label className="space-y-2">
-                                    <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Discount Percent</span>
-                                    <input
-                                      className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
-                                      value={subscriptionForm.addOnDiscountPercent}
-                                      onChange={(event) => {
-                                        const value = sanitizeNumericString(event.target.value);
-                                        const baseAmount = draftSelectedAddOnVariant?.basePrice || 0;
-                                        const normalizedPercent =
-                                          value === "" ? undefined : Math.min(100, Math.max(0, Number(value)));
-                                        const sellingPrice =
-                                          normalizedPercent === undefined || baseAmount <= 0
-                                            ? ""
-                                            : formatDecimalInput(baseAmount * (1 - normalizedPercent / 100));
-                                        setSubscriptionForm((current) => ({
-                                          ...current,
-                                          addOnDiscountPercent: value,
-                                          addOnSellingPrice: sellingPrice,
-                                        }));
-                                      }}
-                                      placeholder="Leave blank for no discount"
-                                      disabled={!draftSelectedAddOnVariant}
-                                    />
-                                  </label>
-                                </div>
-                              </div>
-                            </div>
-                          ) : null}
-                        </div>
-
-                        <div className="grid gap-4 xl:grid-cols-[1fr_320px]">
+                        <div className={`grid gap-4 ${selectedPrimaryVariant && needsTrainerAssignment(selectedPrimaryVariant) ? "xl:grid-cols-[1fr_320px]" : ""}`}>
                           <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
                             <div className="mb-4 flex items-center gap-3">
                               <Layers3 className="h-5 w-5 text-[#ffb4b1]" />
@@ -2417,6 +2588,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                             </div>
                           </div>
 
+                          {selectedPrimaryVariant && needsTrainerAssignment(selectedPrimaryVariant) ? (
                           <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
                             <div className="mb-4 flex items-center gap-3">
                               <ShieldCheck className="h-5 w-5 text-[#ffb4b1]" />
@@ -2425,11 +2597,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                 <p className="text-xs text-slate-400">Auto-assigned for Flagship. Manual selection for Transformation.</p>
                               </div>
                             </div>
-                            {!selectedPrimaryVariant ? (
-                              <p className="rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-4 text-sm text-slate-300">
-                                Choose a primary plan to evaluate trainer assignment.
-                              </p>
-                            ) : isTransformationVariant(selectedPrimaryVariant) ? (
+                            {isTransformationVariant(selectedPrimaryVariant) ? (
                               <div className="space-y-3">
                                 <div className="rounded-2xl border border-violet-400/20 bg-violet-400/10 p-4">
                                   <p className="text-sm font-semibold text-violet-100">Select Trainer for Transformation</p>
@@ -2490,6 +2658,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                               <p className="mt-2 text-sm text-slate-300">{trainerAssistLabel}</p>
                             </div>
                           </div>
+                          ) : null}
                         </div>
                       </div>
                     </SectionCard>
@@ -2635,6 +2804,19 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                 ))}
                               </select>
                             </label>
+
+                            {pricingPreview.balanceAmount > 0 ? (
+                              <label className="space-y-2">
+                                <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Balance Due Date</span>
+                                <input
+                                  type="date"
+                                  className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                                  value={subscriptionForm.balanceDueDate}
+                                  onChange={(event) => setSubscriptionForm((current) => ({ ...current, balanceDueDate: event.target.value }))}
+                                  disabled={Boolean(completedOnboarding)}
+                                />
+                              </label>
+                            ) : null}
 
                             <div className="rounded-2xl border border-white/10 bg-[#0f141d] p-4">
                               <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Receipt Preview</p>

@@ -549,7 +549,9 @@ function mapDashboardDrilldownRevenueRow(payload: unknown): DashboardDrilldownRe
   const record = toRecord(payload);
   return {
     invoiceId: toString(record, ["invoiceId"]) || undefined,
+    invoiceNumber: toString(record, ["invoiceNumber"]) || undefined,
     receiptId: toString(record, ["receiptId"]) || undefined,
+    receiptNumber: toString(record, ["receiptNumber"]) || undefined,
     memberId: toString(record, ["memberId"]) || undefined,
     memberName: toString(record, ["memberName", "fullName", "name"]),
     mobileNumber: toString(record, ["mobileNumber", "mobile", "phone"]),
@@ -860,6 +862,9 @@ function mapMemberProfileShell(payload: unknown): MemberProfileShellResponse {
       `Member #${memberId}`,
     mobileNumber: toString(record, ["mobileNumber", "mobile", "phone"]) || toString(summary, ["mobileNumber", "mobile", "phone"]),
     email: toOptionalString(record, ["email"]) || toOptionalString(summary, ["email"]),
+    emergencyContactName: toOptionalString(record, ["emergencyContactName"]) || toOptionalString(summary, ["emergencyContactName"]),
+    emergencyContactPhone: toOptionalString(record, ["emergencyContactPhone"]) || toOptionalString(summary, ["emergencyContactPhone"]),
+    emergencyContactRelation: toOptionalString(record, ["emergencyContactRelation"]) || toOptionalString(summary, ["emergencyContactRelation"]),
     status: toOptionalString(record, ["membershipStatus", "status", "memberStatus"]) || toOptionalString(summary, ["membershipStatus", "status", "memberStatus"]),
     branchId:
       toOptionalString(record, ["defaultBranchId", "branchId"]) || toOptionalString(summary, ["defaultBranchId", "branchId"]),

@@ -31,6 +31,29 @@ export interface AttendanceReportSnapshot {
   records: Record<string, unknown>[];
 }
 
+export interface BiometricDeviceRecord {
+  id?: string;
+  serialNumber: string;
+  deviceName?: string;
+  branchId?: string;
+  branchCode?: string;
+  status?: string;
+  ipAddress?: string;
+  lastPingAt?: string;
+}
+
+export interface BiometricAttendanceLogRecord {
+  id?: string;
+  deviceSerialNumber?: string;
+  deviceUserId?: string;
+  memberId?: string;
+  punchTimestamp?: string;
+  punchStatus?: string;
+  verifyMode?: string;
+  direction?: string;
+  processed?: boolean;
+}
+
 type JsonRecord = Record<string, unknown>;
 
 function toRecord(payload: unknown): JsonRecord {
@@ -66,6 +89,35 @@ function toString(payload: JsonRecord, keys: string[]): string {
   return "";
 }
 
+function mapBiometricDevice(payload: unknown): BiometricDeviceRecord {
+  const data = toRecord(payload);
+  return {
+    id: toString(data, ["id"]) || undefined,
+    serialNumber: toString(data, ["serialNumber", "deviceSerialNumber"]),
+    deviceName: toString(data, ["deviceName"]) || undefined,
+    branchId: toString(data, ["branchId"]) || undefined,
+    branchCode: toString(data, ["branchCode"]) || undefined,
+    status: toString(data, ["status"]) || undefined,
+    ipAddress: toString(data, ["ipAddress"]) || undefined,
+    lastPingAt: toString(data, ["lastPingAt"]) || undefined,
+  };
+}
+
+function mapBiometricLog(payload: unknown): BiometricAttendanceLogRecord {
+  const data = toRecord(payload);
+  return {
+    id: toString(data, ["id"]) || undefined,
+    deviceSerialNumber: toString(data, ["deviceSerialNumber"]) || undefined,
+    deviceUserId: toString(data, ["deviceUserId"]) || undefined,
+    memberId: toString(data, ["memberId"]) || undefined,
+    punchTimestamp: toString(data, ["punchTimestamp"]) || undefined,
+    punchStatus: toString(data, ["punchStatus"]) || undefined,
+    verifyMode: toString(data, ["verifyMode"]) || undefined,
+    direction: toString(data, ["direction"]) || undefined,
+    processed: Boolean(data.processed),
+  };
+}
+
 function mapFreezeHistory(payload: unknown): FreezeHistoryEntry[] {
   if (!Array.isArray(payload)) {
     return [];
@@ -76,8 +128,8 @@ function mapFreezeHistory(payload: unknown): FreezeHistoryEntry[] {
     .map((entry, index) => ({
       freezeId:
         toString(entry, ["freezeId", "id", "requestId", "memberFreezeId"]) || `freeze-${index}`,
-      freezeFrom: toString(entry, ["freezeFrom", "startDate", "fromDate"]) || undefined,
-      freezeTo: toString(entry, ["freezeTo", "endDate", "toDate"]) || undefined,
+      freezeFrom: toString(entry, ["freezeFrom", "startDate", "fromDate", "startAt", "freezeStartAt"]) || undefined,
+      freezeTo: toString(entry, ["freezeTo", "endDate", "toDate", "endAt", "freezeEndAt"]) || undefined,
       status: toString(entry, ["status"]) || undefined,
       reason: toString(entry, ["reason", "notes"]) || undefined,
       days: toNumber(entry, ["days", "freezeDays", "durationDays"]) || undefined,
@@ -547,7 +599,7 @@ export const engagementService = {
   async activateFreeze(
     token: string,
     memberId: string | number,
-    payload: { freezeDays: number; creditsCost?: number; reason?: string },
+    payload: { subscriptionId?: number; freezeDays: number; creditsCost?: number; reason?: string },
   ): Promise<Record<string, unknown>> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "engagement",
@@ -752,6 +804,106 @@ export const engagementService = {
       uniqueMembers: toNumber(payload, ["uniqueMembers"]),
       records,
     };
+  },
+
+  async listBiometricDevices(token: string): Promise<BiometricDeviceRecord[]> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "engagement",
+      path: "/iclock/admin/devices",
+      token,
+    });
+    const payload = unwrapData<unknown>(response);
+    return Array.isArray(payload) ? payload.map((item) => mapBiometricDevice(item)).filter((item) => item.serialNumber) : [];
+  },
+
+  async getBiometricLogs(token: string, hours = 168): Promise<BiometricAttendanceLogRecord[]> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "engagement",
+      path: "/iclock/admin/logs",
+      token,
+      query: { hours },
+    });
+    const payload = unwrapData<unknown>(response);
+    return Array.isArray(payload) ? payload.map((item) => mapBiometricLog(item)) : [];
+  },
+
+  async enrollBiometricUser(token: string, payload: { serialNumber: string; pin: string; name: string }): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "engagement",
+      path: "/iclock/admin/enroll-user",
+      token,
+      method: "POST",
+      query: {
+        SN: payload.serialNumber,
+        pin: payload.pin,
+        name: payload.name,
+      },
+    });
+    const data = unwrapData<unknown>(response);
+    return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
+  },
+
+  async reAddBiometricUser(token: string, payload: { serialNumber: string; pin: string; name: string }): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "engagement",
+      path: "/iclock/admin/readd-user",
+      token,
+      method: "POST",
+      query: {
+        SN: payload.serialNumber,
+        pin: payload.pin,
+        name: payload.name,
+      },
+    });
+    const data = unwrapData<unknown>(response);
+    return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
+  },
+
+  async blockBiometricUser(token: string, payload: { serialNumber: string; pin: string; name: string }): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "engagement",
+      path: "/iclock/admin/block-user",
+      token,
+      method: "POST",
+      query: {
+        SN: payload.serialNumber,
+        pin: payload.pin,
+        name: payload.name,
+      },
+    });
+    const data = unwrapData<unknown>(response);
+    return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
+  },
+
+  async unblockBiometricUser(token: string, payload: { serialNumber: string; pin: string; name: string }): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "engagement",
+      path: "/iclock/admin/unblock-user",
+      token,
+      method: "POST",
+      query: {
+        SN: payload.serialNumber,
+        pin: payload.pin,
+        name: payload.name,
+      },
+    });
+    const data = unwrapData<unknown>(response);
+    return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
+  },
+
+  async deleteBiometricUser(token: string, payload: { serialNumber: string; pin: string }): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "engagement",
+      path: "/iclock/admin/delete-user",
+      token,
+      method: "POST",
+      query: {
+        SN: payload.serialNumber,
+        pin: payload.pin,
+      },
+    });
+    const data = unwrapData<unknown>(response);
+    return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
   },
 
   // ── Automation & Gamification ─────────────────────────────────────

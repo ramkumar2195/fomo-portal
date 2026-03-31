@@ -223,7 +223,9 @@ export interface DashboardDrilldownSubscriptionRow {
 
 export interface DashboardDrilldownRevenueRow {
   invoiceId?: string;
+  invoiceNumber?: string;
   receiptId?: string;
+  receiptNumber?: string;
   memberId?: string;
   memberName: string;
   mobileNumber: string;

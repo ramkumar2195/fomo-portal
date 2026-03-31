@@ -232,6 +232,51 @@ export interface PaymentReceipt {
   paidAt?: string;
 }
 
+export interface AddFlexVisitResult {
+  subscriptionId: number;
+  memberId: number;
+  invoiceId: number;
+  invoiceNumber: string;
+  receiptId: number;
+  receiptNumber: string;
+  amountPaid: number;
+  paymentMode: string;
+  includedCheckIns: number;
+  usedCheckIns: number;
+  remainingCheckIns: number;
+}
+
+export interface MemberEntitlement {
+  entitlementId: number;
+  feature: string;
+  source: string;
+  validFrom?: string;
+  validUntil?: string;
+  includedCount?: number;
+  remainingCount?: number;
+  recurrence?: string;
+  usedCount?: number;
+  expiredUnusedCount?: number;
+  manualTopUpCount?: number;
+  expiresIfUnused?: boolean;
+  currentCycleStart?: string;
+  currentCycleEnd?: string;
+  lastUtilizedAt?: string;
+  lastExpiredAt?: string;
+}
+
+export interface MemberEntitlementLedgerEntry {
+  ledgerId: number;
+  entitlementId: number;
+  feature: string;
+  eventType: string;
+  quantity: number;
+  occurredOn?: string;
+  cycleStart?: string;
+  cycleEnd?: string;
+  notes?: string;
+}
+
 function toRecord(payload: unknown): JsonRecord {
   return typeof payload === "object" && payload !== null ? (payload as JsonRecord) : {};
 }
@@ -535,6 +580,23 @@ function mapPaymentReceipt(payload: unknown): PaymentReceipt {
   };
 }
 
+function mapAddFlexVisitResult(payload: unknown): AddFlexVisitResult {
+  const record = toRecord(payload);
+  return {
+    subscriptionId: toNumber(record, ["subscriptionId", "memberSubscriptionId"]),
+    memberId: toNumber(record, ["memberId"]),
+    invoiceId: toNumber(record, ["invoiceId"]),
+    invoiceNumber: toString(record, ["invoiceNumber"]),
+    receiptId: toNumber(record, ["receiptId"]),
+    receiptNumber: toString(record, ["receiptNumber"]),
+    amountPaid: toNumber(record, ["amountPaid", "amount"]),
+    paymentMode: toString(record, ["paymentMode"]) || "OTHER",
+    includedCheckIns: toNumber(record, ["includedCheckIns"]),
+    usedCheckIns: toNumber(record, ["usedCheckIns"]),
+    remainingCheckIns: toNumber(record, ["remainingCheckIns"]),
+  };
+}
+
 function mapInquiry(payload: unknown): InquiryRecord {
   const record = toRecord(payload);
   const status = toString(record, ["status"]) as InquiryStatus;
@@ -778,6 +840,22 @@ export const subscriptionService = {
     return mapInquiryAction(unwrapData<unknown>(response));
   },
 
+  async createInquiryFollowUp(
+    token: string,
+    inquiryId: number,
+    payload: Record<string, unknown>,
+  ): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/inquiries/${inquiryId}/follow-ups`,
+      token,
+      method: "POST",
+      body: payload,
+    });
+
+    return unwrapData<unknown>(response);
+  },
+
   async getInquiryStatusHistory(token: string, inquiryId: number): Promise<InquiryStatusHistoryEntry[]> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "subscription",
@@ -842,6 +920,51 @@ export const subscriptionService = {
     });
 
     return unwrapData<unknown>(response);
+  },
+
+  async getMemberEntitlementLedger(token: string, memberId: string, entitlementId: number | string): Promise<MemberEntitlementLedgerEntry[]> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/members/${memberId}/entitlements/${entitlementId}/ledger`,
+      token,
+    });
+
+    const data = unwrapData<unknown>(response);
+    return Array.isArray(data) ? (data as MemberEntitlementLedgerEntry[]) : [];
+  },
+
+  async consumeMemberEntitlement(
+    token: string,
+    memberId: string,
+    entitlementId: number | string,
+    payload: { quantity?: number; usedOn?: string; notes?: string },
+  ): Promise<MemberEntitlement> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/members/${memberId}/entitlements/${entitlementId}/consume`,
+      token,
+      method: "POST",
+      body: payload,
+    });
+
+    return unwrapData<MemberEntitlement>(response);
+  },
+
+  async topUpMemberEntitlement(
+    token: string,
+    memberId: string,
+    entitlementId: number | string,
+    payload: { quantity?: number; effectiveOn?: string; notes?: string },
+  ): Promise<MemberEntitlement> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/members/${memberId}/entitlements/${entitlementId}/top-up`,
+      token,
+      method: "POST",
+      body: payload,
+    });
+
+    return unwrapData<MemberEntitlement>(response);
   },
 
   async getCreditsWallet(token: string, memberId: string): Promise<unknown> {
@@ -1099,6 +1222,21 @@ export const subscriptionService = {
       body: payload,
     });
     return mapPaymentReceipt(unwrapData<unknown>(response));
+  },
+
+  async addFlexVisit(
+    token: string,
+    subscriptionId: string | number,
+    payload: Record<string, unknown>,
+  ): Promise<AddFlexVisitResult> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/subscriptions/${subscriptionId}/flex/add-visit`,
+      token,
+      method: "POST",
+      body: payload,
+    });
+    return mapAddFlexVisitResult(unwrapData<unknown>(response));
   },
 
   async getInvoiceDocumentHtml(token: string, invoiceId: number | string): Promise<string> {

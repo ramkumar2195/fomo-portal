@@ -24,6 +24,9 @@ export interface MemberProfileShellResponse {
   fullName: string;
   mobileNumber: string;
   email?: string;
+  emergencyContactName?: string;
+  emergencyContactPhone?: string;
+  emergencyContactRelation?: string;
   status?: string;
   branchId?: string;
   branchName?: string;
