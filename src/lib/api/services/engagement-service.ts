@@ -54,6 +54,20 @@ export interface BiometricAttendanceLogRecord {
   processed?: boolean;
 }
 
+export interface MemberBiometricEnrollmentRecord {
+  enrollmentId?: string;
+  memberId?: string;
+  deviceSerialNumber?: string;
+  pin?: string;
+  memberName?: string;
+  status?: string;
+  lastAction?: string;
+  lastCommandId?: string;
+  lastActionAt?: string;
+  lastSyncedAt?: string;
+  lastResult?: string;
+}
+
 type JsonRecord = Record<string, unknown>;
 
 function toRecord(payload: unknown): JsonRecord {
@@ -115,6 +129,23 @@ function mapBiometricLog(payload: unknown): BiometricAttendanceLogRecord {
     verifyMode: toString(data, ["verifyMode"]) || undefined,
     direction: toString(data, ["direction"]) || undefined,
     processed: Boolean(data.processed),
+  };
+}
+
+function mapMemberBiometricEnrollment(payload: unknown): MemberBiometricEnrollmentRecord {
+  const data = toRecord(payload);
+  return {
+    enrollmentId: toString(data, ["enrollmentId", "id"]) || undefined,
+    memberId: toString(data, ["memberId"]) || undefined,
+    deviceSerialNumber: toString(data, ["deviceSerialNumber"]) || undefined,
+    pin: toString(data, ["pin"]) || undefined,
+    memberName: toString(data, ["memberName"]) || undefined,
+    status: toString(data, ["status"]) || undefined,
+    lastAction: toString(data, ["lastAction"]) || undefined,
+    lastCommandId: toString(data, ["lastCommandId"]) || undefined,
+    lastActionAt: toString(data, ["lastActionAt"]) || undefined,
+    lastSyncedAt: toString(data, ["lastSyncedAt"]) || undefined,
+    lastResult: toString(data, ["lastResult"]) || undefined,
   };
 }
 
@@ -827,7 +858,18 @@ export const engagementService = {
     return Array.isArray(payload) ? payload.map((item) => mapBiometricLog(item)) : [];
   },
 
-  async enrollBiometricUser(token: string, payload: { serialNumber: string; pin: string; name: string }): Promise<Record<string, unknown>> {
+  async getMemberBiometricEnrollments(token: string, memberId: string | number): Promise<MemberBiometricEnrollmentRecord[]> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "engagement",
+      path: "/iclock/admin/member-enrollments",
+      token,
+      query: { memberId },
+    });
+    const payload = unwrapData<unknown>(response);
+    return Array.isArray(payload) ? payload.map((item) => mapMemberBiometricEnrollment(item)) : [];
+  },
+
+  async enrollBiometricUser(token: string, payload: { serialNumber: string; pin: string; name: string; memberId?: string | number }): Promise<Record<string, unknown>> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "engagement",
       path: "/iclock/admin/enroll-user",
@@ -837,13 +879,14 @@ export const engagementService = {
         SN: payload.serialNumber,
         pin: payload.pin,
         name: payload.name,
+        memberId: payload.memberId,
       },
     });
     const data = unwrapData<unknown>(response);
     return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
   },
 
-  async reAddBiometricUser(token: string, payload: { serialNumber: string; pin: string; name: string }): Promise<Record<string, unknown>> {
+  async reAddBiometricUser(token: string, payload: { serialNumber: string; pin: string; name: string; memberId?: string | number }): Promise<Record<string, unknown>> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "engagement",
       path: "/iclock/admin/readd-user",
@@ -853,13 +896,14 @@ export const engagementService = {
         SN: payload.serialNumber,
         pin: payload.pin,
         name: payload.name,
+        memberId: payload.memberId,
       },
     });
     const data = unwrapData<unknown>(response);
     return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
   },
 
-  async blockBiometricUser(token: string, payload: { serialNumber: string; pin: string; name: string }): Promise<Record<string, unknown>> {
+  async blockBiometricUser(token: string, payload: { serialNumber: string; pin: string; name: string; memberId?: string | number }): Promise<Record<string, unknown>> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "engagement",
       path: "/iclock/admin/block-user",
@@ -869,13 +913,14 @@ export const engagementService = {
         SN: payload.serialNumber,
         pin: payload.pin,
         name: payload.name,
+        memberId: payload.memberId,
       },
     });
     const data = unwrapData<unknown>(response);
     return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
   },
 
-  async unblockBiometricUser(token: string, payload: { serialNumber: string; pin: string; name: string }): Promise<Record<string, unknown>> {
+  async unblockBiometricUser(token: string, payload: { serialNumber: string; pin: string; name: string; memberId?: string | number }): Promise<Record<string, unknown>> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "engagement",
       path: "/iclock/admin/unblock-user",
@@ -885,13 +930,14 @@ export const engagementService = {
         SN: payload.serialNumber,
         pin: payload.pin,
         name: payload.name,
+        memberId: payload.memberId,
       },
     });
     const data = unwrapData<unknown>(response);
     return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
   },
 
-  async deleteBiometricUser(token: string, payload: { serialNumber: string; pin: string }): Promise<Record<string, unknown>> {
+  async deleteBiometricUser(token: string, payload: { serialNumber: string; pin: string; memberId?: string | number }): Promise<Record<string, unknown>> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "engagement",
       path: "/iclock/admin/delete-user",
@@ -900,6 +946,7 @@ export const engagementService = {
       query: {
         SN: payload.serialNumber,
         pin: payload.pin,
+        memberId: payload.memberId,
       },
     });
     const data = unwrapData<unknown>(response);

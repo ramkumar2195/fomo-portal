@@ -23,6 +23,7 @@ import { ApiError } from "@/lib/api/http-client";
 import { BillingSettings, CatalogProduct, CatalogVariant, MembershipPolicySettings, subscriptionService } from "@/lib/api/services/subscription-service";
 import { formatInquiryCode } from "@/lib/inquiry-code";
 import { trainingService } from "@/lib/api/services/training-service";
+import { engagementService } from "@/lib/api/services/engagement-service";
 import { RegisterUserRequest, usersService } from "@/lib/api/services/users-service";
 import { resolveStaffId } from "@/lib/staff-id";
 import { EmploymentType } from "@/types/auth";
@@ -572,13 +573,6 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     const timeout = window.setTimeout(() => setToast(null), 3500);
     return () => window.clearTimeout(timeout);
   }, [toast]);
-
-  useEffect(() => {
-    if (!completedOnboarding) {
-      return;
-    }
-    router.push(`/admin/members/${completedOnboarding.memberId}`);
-  }, [completedOnboarding, router]);
 
   useEffect(() => {
     if (!token) {
@@ -1545,6 +1539,44 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
           }
         } catch {
           completionWarnings.push("Program enrollment needs to be completed manually.");
+        }
+      }
+
+      if (membershipActivated) {
+        try {
+          const biometricDevices = await engagementService.listBiometricDevices(token);
+          const matchingBranchDevices = biometricDevices.filter((device) =>
+            memberForm.defaultBranchId
+              ? String(device.branchId || "").trim() === String(memberForm.defaultBranchId).trim()
+              : false,
+          );
+          const devicesToEnroll = matchingBranchDevices.length > 0
+            ? matchingBranchDevices
+            : biometricDevices.length === 1
+              ? biometricDevices
+              : [];
+
+          if (devicesToEnroll.length > 0) {
+            const enrollmentResults = await Promise.allSettled(
+              devicesToEnroll.map((device) =>
+                engagementService.enrollBiometricUser(token, {
+                  serialNumber: device.serialNumber,
+                  pin: memberForm.mobileNumber.trim(),
+                  name: memberForm.fullName.trim(),
+                }),
+              ),
+            );
+
+            if (enrollmentResults.every((result) => result.status === "rejected")) {
+              completionWarnings.push("Biometric enrollment could not be queued automatically.");
+            } else if (enrollmentResults.some((result) => result.status === "rejected")) {
+              completionWarnings.push("Biometric enrollment was queued only on some branch devices.");
+            }
+          } else {
+            completionWarnings.push("No biometric device was found for the selected branch.");
+          }
+        } catch {
+          completionWarnings.push("Biometric enrollment needs to be completed from the member profile.");
         }
       }
 

@@ -40,7 +40,7 @@ import {
   MemberProfileTabKey,
 } from "@/types/member-profile";
 import { BranchResponse } from "@/types/admin";
-import { BillingSettings, CatalogProduct, CatalogVariant } from "@/lib/api/services/subscription-service";
+import { BillingSettings, CatalogProduct, CatalogVariant, MembershipPolicySettings } from "@/lib/api/services/subscription-service";
 import { ClientAssignmentRequest } from "@/lib/api/services/training-service";
 
 type TabPayloadMap = {
@@ -56,6 +56,7 @@ type TabPayloadMap = {
     records: unknown[];
     biometricDevices: unknown[];
     biometricLogs: unknown[];
+    enrollments?: unknown[];
   };
   "credits-wallet": {
     wallet: Record<string, unknown>;
@@ -96,6 +97,7 @@ type ActionModalKey =
   | "edit-profile"
   | "freeze"
   | "renew"
+  | "renew-billing"
   | "upgrade"
   | "downgrade"
   | "transfer"
@@ -167,6 +169,26 @@ interface MemberEntitlementRecord {
   lastExpiredAt?: string;
 }
 
+interface CommercialBreakdown {
+  baseAmount: number;
+  sellingPrice: number;
+  discountPercent: number;
+  discountAmount: number;
+}
+
+interface CompletedBillingState {
+  context: "renewal";
+  title: string;
+  message: string;
+  invoiceId: number;
+  invoiceNumber: string;
+  receiptId?: number;
+  receiptNumber?: string;
+  paymentStatus: string;
+  totalPaidAmount: number;
+  balanceAmount: number;
+}
+
 function toRecord(payload: unknown): RecordLike {
   return typeof payload === "object" && payload !== null ? (payload as RecordLike) : {};
 }
@@ -189,6 +211,14 @@ function normalizeDisplayPlanName(value: string): string {
     .replace(/\s{2,}/g, " ")
     .replace(/\s+[-/]\s*$/g, "")
     .trim();
+}
+
+function buildSyntheticInternalEmail(seed?: string, domain = "members.fomotraining.internal"): string {
+  const normalizedSeed = String(seed || "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .toLowerCase();
+  const safeSeed = normalizedSeed || `member${Date.now()}`;
+  return `${safeSeed}@${domain}`;
 }
 
 function humanizeLabel(value?: string): string {
@@ -408,6 +438,96 @@ function formatInr(value: number): string {
   }).format(value || 0);
 }
 
+function toNumber(value: string): number | undefined {
+  const trimmed = value.trim();
+  if (!trimmed) {
+    return undefined;
+  }
+  const parsed = Number(trimmed);
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function sanitizeNumericString(value: string): string {
+  return value.replace(/[^0-9.]/g, "");
+}
+
+function sanitizeIntegerString(value: string): string {
+  return value.replace(/[^0-9]/g, "");
+}
+
+function formatDecimalInput(value: number): string {
+  const rounded = Number(value.toFixed(2));
+  if (Number.isInteger(rounded)) {
+    return String(rounded);
+  }
+  return rounded.toFixed(2).replace(/\.?0+$/, "");
+}
+
+function resolveCommercialBreakdown(baseAmount: number, sellingPriceValue?: string, discountPercentValue?: string): CommercialBreakdown {
+  const normalizedBaseAmount = roundAmount(Math.max(0, Number(baseAmount || 0)));
+  const parsedDiscountPercent = toNumber(discountPercentValue || "");
+  const parsedSellingPrice = toNumber(sellingPriceValue || "");
+
+  if (parsedDiscountPercent !== undefined) {
+    const normalizedDiscountPercent = Math.min(100, Math.max(0, Number(parsedDiscountPercent.toFixed(2))));
+    const sellingPrice = roundAmount(normalizedBaseAmount * (1 - normalizedDiscountPercent / 100));
+    const discountAmount = roundAmount(normalizedBaseAmount - sellingPrice);
+    return {
+      baseAmount: normalizedBaseAmount,
+      sellingPrice,
+      discountPercent: normalizedDiscountPercent,
+      discountAmount,
+    };
+  }
+
+  if (parsedSellingPrice !== undefined) {
+    const sellingPrice = Math.min(normalizedBaseAmount, Math.max(0, roundAmount(parsedSellingPrice)));
+    const discountAmount = roundAmount(normalizedBaseAmount - sellingPrice);
+    const discountPercent =
+      normalizedBaseAmount > 0 ? Number(((discountAmount / normalizedBaseAmount) * 100).toFixed(2)) : 0;
+    return {
+      baseAmount: normalizedBaseAmount,
+      sellingPrice,
+      discountPercent,
+      discountAmount,
+    };
+  }
+
+  return {
+    baseAmount: normalizedBaseAmount,
+    sellingPrice: normalizedBaseAmount,
+    discountPercent: 0,
+    discountAmount: 0,
+  };
+}
+
+function defaultMembershipPolicySettings(): MembershipPolicySettings {
+  return {
+    freezeMinDays: 5,
+    freezeMaxDays: 28,
+    maxFreezesPerSubscription: 4,
+    freezeCooldownDays: 0,
+    upgradeWindowShortDays: 7,
+    upgradeWindowMediumDays: 15,
+    upgradeWindowLongDays: 28,
+    gracePeriodDays: 7,
+    autoRenewalEnabled: false,
+    renewalReminderDaysBefore: 7,
+    transferEnabled: true,
+    minPartialPaymentPercent: 50,
+  };
+}
+
+function meetsActivationThreshold(totalPayable: number, paidAmount: number, minimumPercent: number): boolean {
+  const normalizedTotal = Math.max(0, Number(totalPayable || 0));
+  const normalizedPaid = Math.max(0, Number(paidAmount || 0));
+  const normalizedPercent = Math.min(100, Math.max(0, Number(minimumPercent || 0)));
+  if (normalizedTotal <= 0) {
+    return false;
+  }
+  return normalizedPaid >= Number(((normalizedTotal * normalizedPercent) / 100).toFixed(2));
+}
+
 function formatDateTime(value?: string): string {
   if (!value) {
     return "-";
@@ -441,6 +561,23 @@ function formatDateOnly(value?: string): string {
     day: "2-digit",
     month: "short",
     year: "numeric",
+  });
+}
+
+function formatTimeOnly(value?: string): string {
+  if (!value) {
+    return "-";
+  }
+
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+
+  return parsed.toLocaleTimeString("en-IN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: true,
   });
 }
 
@@ -488,6 +625,179 @@ function statusTone(status: string): string {
     return "border-rose-300 bg-rose-100/10 text-rose-200";
   }
   return "border-slate-500 bg-white/5 text-slate-200";
+}
+
+function normalizeMemberAccessStatus(value?: string): "ACTIVE" | "BLOCKED" | "DELETED" | "NOT_ADDED" {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (normalized === "ACTIVE" || normalized === "BLOCKED" || normalized === "DELETED") {
+    return normalized;
+  }
+  return "NOT_ADDED";
+}
+
+function normalizeEnrollmentStatus(value?: string): "NOT_ADDED" | "PENDING" | "ENROLLED" | "BLOCKED" | "DELETED" | "FAILED" {
+  const normalized = String(value || "").trim().toUpperCase();
+  if (
+    normalized === "PENDING" ||
+    normalized === "ENROLLED" ||
+    normalized === "BLOCKED" ||
+    normalized === "DELETED" ||
+    normalized === "FAILED"
+  ) {
+    return normalized;
+  }
+  return "NOT_ADDED";
+}
+
+function accessEnrollmentLabel(value?: string): string {
+  const normalized = normalizeEnrollmentStatus(value);
+  if (normalized === "ENROLLED") {
+    return "Enrolled";
+  }
+  if (normalized === "BLOCKED") {
+    return "Blocked";
+  }
+  if (normalized === "PENDING") {
+    return "Pending";
+  }
+  if (normalized === "FAILED") {
+    return "Failed";
+  }
+  return "Not Enrolled";
+}
+
+function accessEnrollmentTone(value?: string): string {
+  const normalized = normalizeEnrollmentStatus(value);
+  if (normalized === "ENROLLED") {
+    return "border-emerald-400/30 bg-emerald-500/15 text-emerald-200";
+  }
+  if (normalized === "BLOCKED") {
+    return "border-rose-400/30 bg-rose-500/15 text-rose-200";
+  }
+  if (normalized === "PENDING") {
+    return "border-amber-400/30 bg-amber-500/15 text-amber-200";
+  }
+  if (normalized === "FAILED") {
+    return "border-rose-400/30 bg-rose-500/15 text-rose-200";
+  }
+  return "border-white/10 bg-white/[0.06] text-slate-300";
+}
+
+function deriveOverallDeviceAccessStatus(statuses: string[]): string {
+  const normalized = statuses.map((value) => normalizeEnrollmentStatus(value));
+  const enrolledCount = normalized.filter((value) => value === "ENROLLED").length;
+  const blockedCount = normalized.filter((value) => value === "BLOCKED").length;
+  const pendingCount = normalized.filter((value) => value === "PENDING").length;
+  const failedCount = normalized.filter((value) => value === "FAILED").length;
+  const totalTracked = normalized.filter((value) => value !== "NOT_ADDED" && value !== "DELETED").length;
+
+  if (failedCount > 0) {
+    return "Failed";
+  }
+  if (pendingCount > 0) {
+    return "Pending";
+  }
+  if (normalized.length > 0 && blockedCount === normalized.length) {
+    return "Blocked";
+  }
+  if (enrolledCount === 0 && totalTracked === 0) {
+    return "Not Added";
+  }
+  if (enrolledCount === normalized.length && normalized.length > 0) {
+    return "Added";
+  }
+  return "Partially Added";
+}
+
+function isBiometricDeviceOnline(payload: unknown): boolean {
+  const status = pickString(payload, ["status"]).trim().toUpperCase();
+  return status.includes("ONLINE") || status.includes("CONNECTED") || status.includes("ACTIVE");
+}
+
+function biometricDeviceStatusLabel(payload: unknown): string {
+  return isBiometricDeviceOnline(payload) ? "Online" : "Offline";
+}
+
+function biometricDeviceStatusTone(payload: unknown): string {
+  return isBiometricDeviceOnline(payload) ? "text-emerald-300" : "text-slate-500";
+}
+
+function isRealBiometricDevice(payload: unknown): boolean {
+  const serial = pickString(payload, ["serialNumber"]).trim().toUpperCase();
+  if (!serial) {
+    return false;
+  }
+  return !serial.startsWith("TEST");
+}
+
+function friendlyBiometricDeviceName(payload: unknown, index: number): string {
+  const configuredName = pickString(payload, ["deviceName"]).trim();
+  if (configuredName) {
+    return configuredName;
+  }
+  const serial = pickString(payload, ["serialNumber"]).trim();
+  const fallbackNames = ["Main Entrance One - ESSL", "Main Entrance Two - ESSL"];
+  if (index < fallbackNames.length) {
+    return fallbackNames[index];
+  }
+  return serial ? `ESSL Device ${index + 1}` : `ESSL Device ${index + 1}`;
+}
+
+function attendanceEventLabel(payload: unknown): string {
+  const direction = pickString(payload, ["direction", "eventType", "type"]).trim().toUpperCase();
+  const punchStatus = pickString(payload, ["punchStatus", "status"]).trim().toUpperCase();
+  const combined = `${direction} ${punchStatus}`.trim();
+  if (combined.includes("CHECK") && combined.includes("OUT")) {
+    return "Check-out";
+  }
+  if (combined.includes("OUT")) {
+    return "Check-out";
+  }
+  if (combined.includes("IN")) {
+    return "Check-in";
+  }
+  return humanizeLabel(direction || punchStatus || "ACCESS");
+}
+
+function attendanceEventTone(label: string): string {
+  const normalized = label.toUpperCase();
+  if (normalized.includes("OUT")) {
+    return "text-amber-200";
+  }
+  if (normalized.includes("IN")) {
+    return "text-rose-300";
+  }
+  return "text-slate-200";
+}
+
+function attendanceRecordStatusLabel(payload: unknown): string {
+  const processed = pickBoolean(payload, ["processed"]);
+  if (processed === true) {
+    return "Success";
+  }
+  const rawStatus = pickString(payload, ["status", "punchStatus", "result"]).trim();
+  if (!rawStatus) {
+    return "Success";
+  }
+  const normalized = rawStatus.toUpperCase();
+  if (normalized === "0" || normalized === "SUCCESS" || normalized === "PROCESSED") {
+    return "Success";
+  }
+  if (normalized.includes("FAIL")) {
+    return "Failed";
+  }
+  return humanizeLabel(rawStatus);
+}
+
+function attendanceRecordStatusTone(label: string): string {
+  const normalized = label.toUpperCase();
+  if (normalized.includes("SUCCESS")) {
+    return "text-sky-300";
+  }
+  if (normalized.includes("FAIL")) {
+    return "text-rose-300";
+  }
+  return "text-slate-300";
 }
 
 function initials(name: string): string {
@@ -684,6 +994,28 @@ function formatPlanDuration(durationMonths: number, validityDays: number): strin
 
 function roundAmount(value: number): number {
   return Math.round(Number.isFinite(value) ? value : 0);
+}
+
+function projectMembershipEndDate(startDate: string, durationMonths: number, validityDays: number): string | undefined {
+  if (!startDate) {
+    return undefined;
+  }
+  const parsed = new Date(`${startDate}T00:00:00`);
+  if (Number.isNaN(parsed.getTime())) {
+    return undefined;
+  }
+  if (durationMonths > 0) {
+    const projected = new Date(parsed);
+    projected.setMonth(projected.getMonth() + durationMonths);
+    projected.setDate(projected.getDate() - 1);
+    return projected.toISOString().slice(0, 10);
+  }
+  if (validityDays > 0) {
+    const projected = new Date(parsed);
+    projected.setDate(projected.getDate() + validityDays - 1);
+    return projected.toISOString().slice(0, 10);
+  }
+  return undefined;
 }
 
 function deriveMembershipFamily(categoryCode?: string, productCode?: string): MembershipFamily {
@@ -927,11 +1259,13 @@ export default function MemberProfilePage() {
   const [catalogProducts, setCatalogProducts] = useState<CatalogProduct[]>([]);
   const [catalogVariants, setCatalogVariants] = useState<CatalogVariant[]>([]);
   const [billingSettings, setBillingSettings] = useState<BillingSettings | null>(null);
+  const [membershipPolicySettings, setMembershipPolicySettings] = useState<MembershipPolicySettings>(defaultMembershipPolicySettings);
   const [hasPtAssignment, setHasPtAssignment] = useState(false);
   const [actionModal, setActionModal] = useState<ActionModalKey>(null);
   const [actionBusy, setActionBusy] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
+  const [completedBilling, setCompletedBilling] = useState<CompletedBillingState | null>(null);
   const [editForm, setEditForm] = useState({
     fullName: "",
     email: "",
@@ -954,9 +1288,16 @@ export default function MemberProfilePage() {
     productCode: "",
     productVariantId: "",
     startDate: "",
-    dueInDays: "7",
+    sellingPrice: "",
+    discountPercent: "",
     notes: "",
   });
+  const [lifecycleBillingForm, setLifecycleBillingForm] = useState({
+    paymentMode: "UPI",
+    receivedAmount: "",
+    balanceDueDate: "",
+  });
+  const [renewCardSubtype, setRenewCardSubtype] = useState<"DEBIT_CARD" | "CREDIT_CARD">("DEBIT_CARD");
   const [freezeForm, setFreezeForm] = useState({
     freezeDays: "7",
     reason: "",
@@ -1131,7 +1472,7 @@ export default function MemberProfilePage() {
     (async () => {
       setSupportLoading(true);
       try {
-        const [branchPage, coachRows, staffRows, memberRows, products, variants, billing, inquiryPage] = await Promise.all([
+        const [branchPage, coachRows, staffRows, memberRows, products, variants, billing, membershipPolicy, inquiryPage] = await Promise.all([
           branchService.listBranches(token, { page: 0, size: 100 }),
           usersService.searchUsers(token, { role: "COACH", active: true }),
           usersService.searchUsers(token, { role: "STAFF", active: true }),
@@ -1139,6 +1480,7 @@ export default function MemberProfilePage() {
           subscriptionService.getCatalogProducts(token),
           subscriptionService.getCatalogVariants(token),
           subscriptionService.getBillingSettings(token),
+          subscriptionService.getMembershipPolicySettings(token),
           subscriptionService.searchInquiriesPaged(token, {}, 0, 200),
         ]);
 
@@ -1153,6 +1495,7 @@ export default function MemberProfilePage() {
         setCatalogProducts(products);
         setCatalogVariants(variants);
         setBillingSettings(billing);
+        setMembershipPolicySettings(membershipPolicy);
         setTransferInquiries(
           (inquiryPage.content || []).filter((item) => {
             const status = String(item.status || "").toUpperCase();
@@ -1241,12 +1584,13 @@ export default function MemberProfilePage() {
             break;
           case "attendance":
           {
-            const [attendance, accessState, biometricDevices, biometricLogs] = await withTabTimeout(
+            const [attendance, accessState, biometricDevices, biometricLogs, enrollments] = await withTabTimeout(
               Promise.all([
                 engagementService.getAttendanceByMember(token, memberId),
                 usersService.getMemberAccessState(token, memberId),
                 engagementService.listBiometricDevices(token).catch(() => []),
                 engagementService.getBiometricLogs(token).catch(() => []),
+                engagementService.getMemberBiometricEnrollments(token, memberId).catch(() => []),
               ]),
               "attendance",
             );
@@ -1257,6 +1601,7 @@ export default function MemberProfilePage() {
               records: attendance,
               biometricDevices,
               biometricLogs,
+              enrollments,
             };
             break;
           }
@@ -1479,6 +1824,27 @@ export default function MemberProfilePage() {
     }
   };
 
+  const viewDocumentPdf = async (type: "invoice" | "receipt", id: number | string) => {
+    if (!token) {
+      return;
+    }
+
+    const busyKey = `${type}-view-${id}`;
+    setDocumentBusyKey(busyKey);
+    try {
+      const blob = type === "invoice"
+        ? await subscriptionService.getInvoicePdf(token, id)
+        : await subscriptionService.getReceiptPdf(token, id);
+      const url = URL.createObjectURL(new Blob([blob], { type: "application/pdf" }));
+      window.open(url, "_blank", "noopener,noreferrer");
+      globalThis.setTimeout(() => URL.revokeObjectURL(url), 10000);
+    } catch (error) {
+      setActionError(error instanceof ApiError ? error.message : error instanceof Error ? error.message : `Unable to open ${type} document.`);
+    } finally {
+      setDocumentBusyKey(null);
+    }
+  };
+
   const shareDocumentPdf = async (type: "invoice" | "receipt", id: number | string, filename: string, title: string) => {
     if (!token) {
       return;
@@ -1661,7 +2027,7 @@ export default function MemberProfilePage() {
   const shellLatestReceiptNumber = pickFromSourcesString(shellSources, ["latestReceiptNumber"]);
   const attendancePayload = toRecord(tabData.attendance);
   const attendanceRecords = Array.isArray(attendancePayload.records) ? attendancePayload.records : [];
-  const biometricDeviceRecords = toArray<RecordLike>(attendancePayload.biometricDevices);
+  const biometricDeviceRecords = toArray<RecordLike>(attendancePayload.biometricDevices).filter((device) => isRealBiometricDevice(device));
   const availableBiometricDevices = biometricDeviceRecords.filter((device) => {
     const deviceBranchCode = pickString(device, ["branchCode"]);
     if (!branchCode || !deviceBranchCode) {
@@ -1674,6 +2040,51 @@ export default function MemberProfilePage() {
     const logPin = pickString(entry, ["deviceUserId"]);
     return logMemberId === String(memberId) || (!!normalizedPhonePin && logPin === normalizedPhonePin);
   });
+  const enrollmentRecords = toArray<RecordLike>(attendancePayload.enrollments);
+  const enrollmentByDeviceSerial = new Map(
+    enrollmentRecords.map((entry) => [
+      pickString(entry, ["deviceSerialNumber"]),
+      entry,
+    ]),
+  );
+  const onlineBiometricDevices = availableBiometricDevices.filter((device) => isBiometricDeviceOnline(device));
+  const overallDeviceEnrollmentStatuses = availableBiometricDevices.map((device) =>
+    pickString(enrollmentByDeviceSerial.get(pickString(device, ["serialNumber"])), ["status"]),
+  );
+  const displayAccessStatus = deriveOverallDeviceAccessStatus(overallDeviceEnrollmentStatuses);
+  const biometricDeviceNameBySerial = new Map(
+    availableBiometricDevices.map((device, index) => [
+      pickString(device, ["serialNumber"]),
+      friendlyBiometricDeviceName(device, index),
+    ]),
+  );
+  const attendanceSourceRecords = biometricLogRecords.length > 0 ? biometricLogRecords : toArray<RecordLike>(attendanceRecords);
+  const attendanceLogRows = attendanceSourceRecords
+    .map((entry, index) => {
+      const timestamp =
+        pickString(entry, ["punchTimestamp", "timestamp", "checkInTime", "recordedAt", "createdAt"]) ||
+        pickString(entry, ["checkOutTime"]);
+      const deviceSerial = pickString(entry, ["deviceSerialNumber", "deviceSerial", "serialNumber"]);
+      return {
+        id: pickString(entry, ["id"]) || `${deviceSerial || "attendance"}-${timestamp || index}`,
+        timestamp,
+        dateLabel: formatDateOnly(timestamp),
+        timeLabel: formatTimeOnly(timestamp),
+        deviceLabel:
+          biometricDeviceNameBySerial.get(deviceSerial) ||
+          pickString(entry, ["deviceName", "device", "gateName"]) ||
+          deviceSerial ||
+          "-",
+        eventLabel: attendanceEventLabel(entry),
+        statusLabel: attendanceRecordStatusLabel(entry),
+      };
+    })
+    .sort((left, right) => {
+      const leftTime = left.timestamp ? new Date(left.timestamp).getTime() : 0;
+      const rightTime = right.timestamp ? new Date(right.timestamp).getTime() : 0;
+      return rightTime - leftTime;
+    });
+  const checkInRows = attendanceLogRows.filter((entry) => entry.eventLabel.toUpperCase().includes("CHECK-IN"));
 
   const overviewBilling = tabData.billing || [];
   const invoiceStats = extractInvoiceStats(overviewBilling);
@@ -1765,13 +2176,27 @@ export default function MemberProfilePage() {
   const portfolioMembershipItems = toArray(subscriptionsDashboardRecord.memberships)
     .map(extractMembershipPortfolioItem)
     .filter((entry): entry is MembershipPortfolioItem => entry !== null);
-  const portfolioPrimaryMembership = extractMembershipPortfolioItem(subscriptionsDashboardRecord.primaryMembership)
-    || portfolioMembershipItems[0]
-    || null;
-  const portfolioTransformationMembership = extractMembershipPortfolioItem(subscriptionsDashboardRecord.transformationMembership);
+  const todayIsoDate = new Date().toISOString().slice(0, 10);
+  const isUpcomingMembershipRecord = (entry: MembershipPortfolioItem | null | undefined) => {
+    if (!entry) {
+      return false;
+    }
+    const normalizedStatus = String(entry.status || "").toUpperCase();
+    return (Boolean(entry.startDate) && entry.startDate > todayIsoDate) || normalizedStatus === "PENDING" || normalizedStatus === "ISSUED";
+  };
+  const currentPortfolioMembershipItems = portfolioMembershipItems.filter((entry) => !isUpcomingMembershipRecord(entry));
+  const portfolioPrimaryCandidate = extractMembershipPortfolioItem(subscriptionsDashboardRecord.primaryMembership);
+  const portfolioPrimaryMembership = !isUpcomingMembershipRecord(portfolioPrimaryCandidate)
+    ? portfolioPrimaryCandidate || currentPortfolioMembershipItems[0] || null
+    : currentPortfolioMembershipItems[0] || null;
+  const portfolioTransformationCandidate = extractMembershipPortfolioItem(subscriptionsDashboardRecord.transformationMembership);
+  const portfolioTransformationMembership = !isUpcomingMembershipRecord(portfolioTransformationCandidate)
+    ? portfolioTransformationCandidate
+    : currentPortfolioMembershipItems.find((entry) => entry.family === "TRANSFORMATION") || null;
   const portfolioSecondaryMemberships = toArray(subscriptionsDashboardRecord.secondaryMemberships)
     .map(extractMembershipPortfolioItem)
-    .filter((entry): entry is MembershipPortfolioItem => entry !== null);
+    .filter((entry): entry is MembershipPortfolioItem => entry !== null)
+    .filter((entry) => !isUpcomingMembershipRecord(entry));
   const hasActivePtMembership = portfolioMembershipItems.some((entry) => {
     const normalizedStatus = String(entry.status || "").toUpperCase();
     return entry.family === "PT" && !["EXPIRED", "LAPSED", "INACTIVE", "CANCELLED", "CANCELED"].includes(normalizedStatus);
@@ -1790,7 +2215,7 @@ export default function MemberProfilePage() {
           portfolioPrimaryMembership,
           ...portfolioSecondaryMemberships.filter((entry) => entry.subscriptionId !== portfolioPrimaryMembership.subscriptionId),
         ]
-      : portfolioMembershipItems;
+      : currentPortfolioMembershipItems;
   const fallbackOverviewMemberships: MembershipPortfolioItem[] = [
     ...(planName && planName !== "-" && planName !== "No active membership"
       ? [
@@ -1851,7 +2276,7 @@ export default function MemberProfilePage() {
       : []),
   ].filter((entry, index, array) => array.findIndex((item) => item.subscriptionId === entry.subscriptionId) === index);
   const overviewMembershipCards = overviewDisplayedMemberships.length ? overviewDisplayedMemberships : fallbackOverviewMemberships;
-  const selectedMembershipRecord = portfolioMembershipItems.find((entry) => entry.subscriptionId === selectedMembershipId)
+  const selectedMembershipRecord = currentPortfolioMembershipItems.find((entry) => entry.subscriptionId === selectedMembershipId)
     || portfolioPrimaryMembership
     || null;
   const selectedProductCategoryCode = selectedMembershipRecord?.categoryCode || productCategoryCode;
@@ -1888,12 +2313,12 @@ export default function MemberProfilePage() {
       return;
     }
     setSelectedMembershipId((current) => {
-      if (current && portfolioMembershipItems.some((entry) => entry.subscriptionId === current)) {
+      if (current && currentPortfolioMembershipItems.some((entry) => entry.subscriptionId === current)) {
         return current;
       }
       return portfolioPrimaryMembership.subscriptionId;
     });
-  }, [portfolioMembershipItems, portfolioPrimaryMembership]);
+  }, [currentPortfolioMembershipItems, portfolioPrimaryMembership]);
   const entitlementFeatures = entitlementRecords.map((entry) => String(entry.feature || "").toUpperCase());
   const hasFreezeEntitlement = entitlementFeatures.some((feature) =>
     feature === "PAUSE_BENEFIT" ||
@@ -2187,6 +2612,17 @@ export default function MemberProfilePage() {
     () => catalogVariants.find((variant) => String(variant.variantId) === String(lifecycleForm.productVariantId)),
     [catalogVariants, lifecycleForm.productVariantId],
   );
+  const isRenewLifecycleModal = actionModal === "renew";
+  const isUpgradeLifecycleModal = actionModal === "upgrade";
+  const projectedRenewalEndDate = useMemo(
+    () =>
+      projectMembershipEndDate(
+        lifecycleForm.startDate,
+        selectedLifecycleVariant?.durationMonths || 0,
+        selectedLifecycleVariant?.validityDays || 0,
+      ),
+    [lifecycleForm.startDate, selectedLifecycleVariant],
+  );
   const transferInquiryOptions = useMemo(
     () => transferInquiries.filter((inquiry) => inquiry.memberId && String(inquiry.memberId) !== String(memberId)),
     [memberId, transferInquiries],
@@ -2194,11 +2630,35 @@ export default function MemberProfilePage() {
   const currentLifecycleBasePrice = Number(currentCatalogVariant?.basePrice || 0);
   const targetLifecycleBasePrice = Number(selectedLifecycleVariant?.basePrice || 0);
   const commercialTaxRate = Number(billingSettings?.gstPercentage || 0);
+  const renewCommercial = useMemo(
+    () =>
+      resolveCommercialBreakdown(
+        targetLifecycleBasePrice,
+        lifecycleForm.sellingPrice,
+        lifecycleForm.discountPercent,
+      ),
+    [lifecycleForm.discountPercent, lifecycleForm.sellingPrice, targetLifecycleBasePrice],
+  );
+  const renewTaxableAmount = roundAmount(renewCommercial.sellingPrice);
+  const renewHalfTaxAmount = roundAmount((renewTaxableAmount * commercialTaxRate) / 200);
+  const renewTaxAmount = renewHalfTaxAmount * 2;
+  const renewInvoiceTotal = renewTaxableAmount + renewTaxAmount;
+  const renewReceivedAmount = Number(lifecycleBillingForm.receivedAmount || 0);
+  const renewBalanceAmount = Math.max(renewInvoiceTotal - renewReceivedAmount, 0);
+  const renewPreviewStatus = renewReceivedAmount >= renewInvoiceTotal ? "Paid" : renewReceivedAmount > 0 ? "Partially Paid" : "Pending";
+  const currentPreviewDate = new Date().toLocaleDateString("en-IN");
+  const renewalFeatureList = useMemo(
+    () =>
+      parseFeatureList(selectedLifecycleVariant?.includedFeatures)
+        .filter((feature) => shouldShowPackageFeatureChip(feature))
+        .filter((feature, index, array) => array.indexOf(feature) === index),
+    [selectedLifecycleVariant?.includedFeatures],
+  );
   const upgradeBaseDifference = Math.max(targetLifecycleBasePrice - currentLifecycleBasePrice, 0);
   const lifecycleTaxableAmount = actionModal === "upgrade" ? upgradeBaseDifference : targetLifecycleBasePrice;
-  const lifecycleTaxAmount = (lifecycleTaxableAmount * commercialTaxRate) / 100;
-  const lifecycleHalfTaxAmount = lifecycleTaxAmount / 2;
-  const lifecycleInvoiceTotal = lifecycleTaxableAmount + lifecycleTaxAmount;
+  const lifecycleHalfTaxAmount = roundAmount((lifecycleTaxableAmount * commercialTaxRate) / 200);
+  const lifecycleTaxAmount = lifecycleHalfTaxAmount * 2;
+  const lifecycleInvoiceTotal = roundAmount(lifecycleTaxableAmount) + lifecycleTaxAmount;
   const selectedPtVariant = useMemo(
     () => ptVariants.find((variant) => String(variant.variantId) === String(ptForm.productVariantId)),
     [ptForm.productVariantId, ptVariants],
@@ -2249,6 +2709,10 @@ export default function MemberProfilePage() {
   const openActionModal = (modal: ActionModalKey) => {
     resetActionFeedback();
     if (modal === "renew" || modal === "upgrade") {
+      const defaultVariantId = modal === "upgrade" && isFlexPlan ? "" : selectedProductVariantId || "";
+      const defaultVariant =
+        catalogVariants.find((variant) => String(variant.variantId) === String(defaultVariantId)) ||
+        currentCatalogVariant;
       const defaultLifecycleCategory =
         modal === "upgrade" && isFlexPlan
           ? "FLAGSHIP"
@@ -2256,13 +2720,22 @@ export default function MemberProfilePage() {
       setLifecycleForm({
         categoryCode: defaultLifecycleCategory,
         productCode: modal === "upgrade" && isFlexPlan ? "" : selectedProductCode || "",
-        productVariantId: modal === "upgrade" && isFlexPlan ? "" : selectedProductVariantId || "",
+        productVariantId: defaultVariantId,
         startDate:
           modal === "renew"
             ? (selectedExpiryDate ? new Date(new Date(selectedExpiryDate).getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10))
             : new Date().toISOString().slice(0, 10),
-        dueInDays: "7",
+        sellingPrice:
+          modal === "renew" && defaultVariant?.basePrice
+            ? formatDecimalInput(Number(defaultVariant.basePrice))
+            : "",
+        discountPercent: "",
         notes: "",
+      });
+      setLifecycleBillingForm({
+        paymentMode: "UPI",
+        receivedAmount: "",
+        balanceDueDate: "",
       });
     }
     if (modal === "transfer") {
@@ -2356,42 +2829,182 @@ export default function MemberProfilePage() {
     }
   };
 
+  const handleRenewBillingContinue = () => {
+    if (!token || !memberId || !lifecycleForm.productVariantId) {
+      setActionError("Renewal plan details are incomplete.");
+      return;
+    }
+    if (!canRenewMembership) {
+      setActionError("Renewal is not available for this membership.");
+      return;
+    }
+    const sellingPrice = renewCommercial.sellingPrice;
+    if (sellingPrice <= 0) {
+      setActionError("Enter a valid selling price before continuing.");
+      return;
+    }
+    setActionError(null);
+    setLifecycleBillingForm((current) => ({
+      ...current,
+      receivedAmount: current.receivedAmount || String(roundAmount(renewInvoiceTotal)),
+    }));
+    setRenewCardSubtype("DEBIT_CARD");
+    setActionModal("renew-billing");
+  };
+
   const handleSubscriptionAction = async (action: "renew" | "upgrade") => {
+    if (action === "renew") {
+      handleRenewBillingContinue();
+      return;
+    }
     if (!token || !memberId || !lifecycleForm.productVariantId) {
       setActionError("Choose a target variant before continuing.");
       return;
     }
-    if (action === "upgrade" && !canUpgradeMembership) {
+    if (!canUpgradeMembership) {
       setActionError("Upgrade is not available for this membership.");
-      return;
-    }
-    if (action === "renew" && !canRenewMembership) {
-      setActionError("Renewal is not available for this membership.");
       return;
     }
 
     setActionBusy(true);
     setActionError(null);
     try {
-      const payload = {
+      const response = await subscriptionService.upgradeSubscription(token, memberId, {
         subscriptionId: selectedSubscriptionId ? Number(selectedSubscriptionId) : undefined,
         productVariantId: Number(lifecycleForm.productVariantId),
         startDate: lifecycleForm.startDate || undefined,
-        dueInDays: lifecycleForm.dueInDays ? Number(lifecycleForm.dueInDays) : undefined,
         notes: lifecycleForm.notes || undefined,
+      });
+
+      await reloadShell();
+      setActiveTab("billing");
+      setActionSuccess(
+        `Invoice ${String((response as { invoiceNumber?: string } | undefined)?.invoiceNumber || "").trim() || "generated"} is ready in Billing. Complete payment to activate the upgrade.`,
+      );
+      setActionModal(null);
+    } catch (error) {
+      setActionError(error instanceof ApiError ? error.message : "Unable to upgrade membership.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleRenewPayment = async () => {
+    if (!token || !memberId || !selectedSubscriptionId || !lifecycleForm.productVariantId) {
+      setActionError("Renewal details are incomplete.");
+      return;
+    }
+
+    const receivedAmount = roundAmount(Math.max(0, Number(lifecycleBillingForm.receivedAmount || 0)));
+    if (!Number.isFinite(receivedAmount)) {
+      setActionError("Enter a valid received amount.");
+      return;
+    }
+    if (receivedAmount > renewInvoiceTotal) {
+      setActionError("Received amount cannot exceed the invoice total.");
+      return;
+    }
+    if (receivedAmount < renewInvoiceTotal && !lifecycleBillingForm.balanceDueDate) {
+      setActionError("Choose the balance due date for partial payments.");
+      return;
+    }
+
+    const operatorId = Number((user as { id?: string | number } | null)?.id || 0);
+    const assignedToStaffId = Number(editForm.clientRepStaffId || 0) || undefined;
+
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      const response = (await subscriptionService.renewSubscription(token, memberId, {
+        subscriptionId: Number(selectedSubscriptionId),
+        productVariantId: Number(lifecycleForm.productVariantId),
+        startDate: lifecycleForm.startDate || undefined,
+        inquiryId: sourceInquiryId || undefined,
+        notes: lifecycleForm.notes || undefined,
+        discountAmount: renewCommercial.discountAmount > 0 ? roundAmount(renewCommercial.discountAmount) : undefined,
+        discountedByStaffId: operatorId > 0 ? operatorId : undefined,
+      })) as {
+        invoiceId?: number;
+        invoiceNumber?: string;
+        newSubscriptionId?: number;
+        variantName?: string;
+        startDate?: string;
+        endDate?: string;
+        invoiceTotal?: number;
       };
 
-      if (action === "renew") {
-        await subscriptionService.renewSubscription(token, memberId, payload);
-      } else {
-        await subscriptionService.upgradeSubscription(token, memberId, payload);
+      const invoiceId = Number(response.invoiceId || 0);
+      const newSubscriptionId = Number(response.newSubscriptionId || 0);
+      const invoiceNumber = String(response.invoiceNumber || "").trim();
+      const invoiceTotal = roundAmount(Number(response.invoiceTotal || renewInvoiceTotal));
+
+      if (!Number.isFinite(invoiceId) || invoiceId <= 0 || !Number.isFinite(newSubscriptionId) || newSubscriptionId <= 0) {
+        throw new Error("Renewal invoice was created without valid payment references.");
+      }
+
+      let paymentReceipt: Awaited<ReturnType<typeof subscriptionService.recordPayment>> | null = null;
+      let membershipActivated = false;
+      const payFullInvoice = !lifecycleBillingForm.balanceDueDate && receivedAmount > 0;
+      const paymentAmount = payFullInvoice ? invoiceTotal : receivedAmount;
+      if (receivedAmount > 0) {
+        paymentReceipt = await subscriptionService.recordPayment(token, invoiceId, {
+          memberId: Number(memberId),
+          amount: paymentAmount,
+          paymentMode: lifecycleBillingForm.paymentMode,
+          inquiryId: sourceInquiryId || undefined,
+        });
+
+        const activationThresholdMet = meetsActivationThreshold(
+          invoiceTotal,
+          paymentReceipt?.totalPaidAmount || paymentAmount,
+          membershipPolicySettings.minPartialPaymentPercent,
+        );
+        if (activationThresholdMet) {
+          await subscriptionService.activateMembership(token, newSubscriptionId);
+          membershipActivated = true;
+        }
+      }
+
+      const balanceAmount = Math.max(
+        0,
+        roundAmount(Number((paymentReceipt?.balanceAmount ?? invoiceTotal - paymentAmount) || 0)),
+      );
+
+      if (balanceAmount > 0 && lifecycleBillingForm.balanceDueDate && sourceInquiryId) {
+        await subscriptionService.createInquiryFollowUp(token, sourceInquiryId, {
+          dueAt: `${lifecycleBillingForm.balanceDueDate}T09:00:00`,
+          assignedToStaffId,
+          createdByStaffId: operatorId > 0 ? operatorId : undefined,
+          notes: `Collect the remaining renewal balance of ${formatRoundedInr(balanceAmount)} for invoice ${invoiceNumber || invoiceId}.`,
+        });
       }
 
       await reloadShell();
-      setActionSuccess(`Membership ${action} completed.`);
+      setTabData((current) => ({ ...current, billing: undefined, subscriptions: undefined }));
+      if (paymentReceipt) {
+        setCompletedBilling({
+          context: "renewal",
+          title: "Renewal Payment Recorded",
+          message: invoiceNumber
+            ? `Invoice ${invoiceNumber} was created and the payment was recorded successfully.`
+            : "Renewal invoice and payment were recorded successfully.",
+          invoiceId,
+          invoiceNumber: invoiceNumber || `invoice-${invoiceId}`,
+          receiptId: paymentReceipt.receiptId,
+          receiptNumber: paymentReceipt.receiptNumber || undefined,
+          paymentStatus: paymentReceipt.paymentStatus || (balanceAmount > 0 ? "PARTIALLY_PAID" : "PAID"),
+          totalPaidAmount: Number(paymentReceipt.totalPaidAmount || receivedAmount),
+          balanceAmount,
+        });
+      }
+      setActionSuccess(
+        membershipActivated
+          ? `Renewal invoiced${invoiceNumber ? ` as ${invoiceNumber}` : ""} and activated.`
+          : `Renewal invoiced${invoiceNumber ? ` as ${invoiceNumber}` : ""}. Activation will happen after ${membershipPolicySettings.minPartialPaymentPercent}% payment collection.`,
+      );
       setActionModal(null);
     } catch (error) {
-      setActionError(error instanceof ApiError ? error.message : `Unable to ${action} membership.`);
+      setActionError(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Unable to renew membership.");
     } finally {
       setActionBusy(false);
     }
@@ -2491,8 +3104,8 @@ export default function MemberProfilePage() {
   };
 
   const handlePtAssignment = async () => {
-    if (!token || !memberId || !ptForm.coachId || !email) {
-      setActionError("Choose a coach and make sure the member email is available.");
+    if (!token || !memberId || !ptForm.coachId) {
+      setActionError("Choose a coach before continuing.");
       return;
     }
     if (!canShowPtActions) {
@@ -2501,10 +3114,6 @@ export default function MemberProfilePage() {
     }
 
     const coach = coaches.find((item) => item.id === ptForm.coachId);
-    if (!coach?.email) {
-      setActionError("Selected coach does not have an email configured.");
-      return;
-    }
     if (selectedPtVariant && primaryMembershipDurationLimit > 0 && selectedPtVariant.durationMonths > primaryMembershipDurationLimit) {
       setActionError(`PT duration cannot be greater than the primary membership duration of ${primaryMembershipDurationLimit} month${primaryMembershipDurationLimit === 1 ? "" : "s"}.`);
       return;
@@ -2513,11 +3122,14 @@ export default function MemberProfilePage() {
     setActionBusy(true);
     setActionError(null);
     try {
+      const memberEmailForAssignment = email || buildSyntheticInternalEmail(phone || memberId, "members.fomotraining.internal");
+      const coachEmailForAssignment =
+        coach?.email || buildSyntheticInternalEmail(coach?.mobile || coach?.id || ptForm.coachId, "staff.fomotraining.internal");
       const payload: ClientAssignmentRequest = {
         memberId: Number(memberId),
-        memberEmail: email,
+        memberEmail: memberEmailForAssignment,
         coachId: Number(ptForm.coachId),
-        coachEmail: coach.email,
+        coachEmail: coachEmailForAssignment,
         trainingType: "PERSONAL_TRAINING",
         startDate: ptForm.startDate || new Date().toISOString().slice(0, 10),
         endDate: ptForm.endDate || undefined,
@@ -2534,11 +3146,12 @@ export default function MemberProfilePage() {
     }
   };
 
-  const handleAccessAction = async (action: string) => {
+  const handleAccessAction = async (action: string, serialOverride?: string) => {
     if (!token || !memberId) {
       return;
     }
-    if (!selectedBiometricDeviceSerial) {
+    const targetSerial = serialOverride || selectedBiometricDeviceSerial;
+    if (!targetSerial) {
       setActionError("Select a biometric device before continuing.");
       return;
     }
@@ -2551,9 +3164,10 @@ export default function MemberProfilePage() {
     setActionError(null);
     try {
       const biometricPayload = {
-        serialNumber: selectedBiometricDeviceSerial,
+        serialNumber: targetSerial,
         pin: normalizedPhonePin,
         name: memberDisplayName,
+        memberId: Number(memberId),
       };
       if (action === "ADD_USER") {
         await engagementService.enrollBiometricUser(token, biometricPayload);
@@ -2565,14 +3179,13 @@ export default function MemberProfilePage() {
         await engagementService.unblockBiometricUser(token, biometricPayload);
       } else if (action === "DELETE_USER") {
         await engagementService.deleteBiometricUser(token, {
-          serialNumber: selectedBiometricDeviceSerial,
+          serialNumber: targetSerial,
           pin: normalizedPhonePin,
+          memberId: Number(memberId),
         });
       }
-      const nextState = await usersService.applyMemberAccessAction(token, memberId, {
-        action,
-        notes: accessNotes || undefined,
-      });
+      const refreshedEnrollments = await engagementService.getMemberBiometricEnrollments(token, memberId).catch(() => enrollmentRecords);
+      const refreshedBiometricDevices = await engagementService.listBiometricDevices(token).catch(() => availableBiometricDevices);
       const refreshedBiometricLogs = await engagementService.getBiometricLogs(token).catch(() => biometricLogRecords);
       const refreshedAttendanceLogs = refreshedBiometricLogs.filter((entry) => {
         const logMemberId = pickString(toRecord(entry), ["memberId"]);
@@ -2581,7 +3194,6 @@ export default function MemberProfilePage() {
       });
       setTabData((current) => ({
         ...current,
-        "recovery-services": nextState,
         "audit-trail": undefined,
         attendance: (() => {
           const currentAttendancePayload = toRecord(current.attendance);
@@ -2590,12 +3202,13 @@ export default function MemberProfilePage() {
             : attendanceRecords;
           return {
             records: currentAttendanceRecords,
-            biometricDevices: availableBiometricDevices,
+            biometricDevices: refreshedBiometricDevices,
             biometricLogs: refreshedAttendanceLogs,
+            enrollments: refreshedEnrollments,
           };
         })(),
       }));
-      setActionSuccess("Biometric device command queued and access state updated.");
+      setActionSuccess("Biometric device command queued. Device status will update after the ESSL machine confirms it.");
       setActionModal(null);
     } catch (error) {
       setActionError(error instanceof ApiError ? error.message : "Unable to sync member access with the biometric device.");
@@ -2971,14 +3584,29 @@ export default function MemberProfilePage() {
         const data = tabData.subscriptions;
         if (!data) return null;
         const dashboardRecord = toRecord(data.dashboard);
-        const primaryMembershipRecord = extractMembershipPortfolioItem(dashboardRecord.primaryMembership);
-        const transformationMembershipRecord = extractMembershipPortfolioItem(dashboardRecord.transformationMembership);
+        const primaryMembershipCandidate = extractMembershipPortfolioItem(dashboardRecord.primaryMembership);
+        const transformationMembershipCandidate = extractMembershipPortfolioItem(dashboardRecord.transformationMembership);
         const membershipPortfolio = toArray(dashboardRecord.memberships)
           .map(extractMembershipPortfolioItem)
           .filter((entry): entry is MembershipPortfolioItem => entry !== null);
+        const isUpcomingMembershipRecord = (entry: MembershipPortfolioItem | null | undefined) => {
+          if (!entry) {
+            return false;
+          }
+          const normalizedStatus = String(entry.status || "").toUpperCase();
+          return (Boolean(entry.startDate) && entry.startDate > todayIsoDate) || normalizedStatus === "PENDING" || normalizedStatus === "ISSUED";
+        };
+        const currentMembershipPortfolio = membershipPortfolio.filter((entry) => !isUpcomingMembershipRecord(entry));
+        const primaryMembershipRecord = !isUpcomingMembershipRecord(primaryMembershipCandidate)
+          ? primaryMembershipCandidate || currentMembershipPortfolio[0] || null
+          : currentMembershipPortfolio[0] || null;
+        const transformationMembershipRecord = !isUpcomingMembershipRecord(transformationMembershipCandidate)
+          ? transformationMembershipCandidate
+          : currentMembershipPortfolio.find((entry) => entry.family === "TRANSFORMATION") || null;
         const secondaryMembershipRecords = toArray(dashboardRecord.secondaryMemberships)
           .map(extractMembershipPortfolioItem)
-          .filter((entry): entry is MembershipPortfolioItem => entry !== null);
+          .filter((entry): entry is MembershipPortfolioItem => entry !== null)
+          .filter((entry) => !isUpcomingMembershipRecord(entry));
         const displayedMemberships = (transformationMembershipRecord
           ? [
               transformationMembershipRecord,
@@ -2993,8 +3621,17 @@ export default function MemberProfilePage() {
                 primaryMembershipRecord,
                 ...secondaryMembershipRecords.filter((entry) => entry.subscriptionId !== primaryMembershipRecord.subscriptionId),
               ]
-            : membershipPortfolio).filter((entry) => entry.family !== "CREDIT_PACK");
+            : currentMembershipPortfolio).filter((entry) => entry.family !== "CREDIT_PACK");
         const shouldShowEntitlementsBesideMembership = displayedMemberships.length <= 1;
+        const upcomingMemberships = membershipPortfolio.filter((entry) => {
+          if (entry.family === "CREDIT_PACK") {
+            return false;
+          }
+          if (displayedMemberships.some((displayed) => displayed.subscriptionId === entry.subscriptionId)) {
+            return false;
+          }
+          return isUpcomingMembershipRecord(entry);
+        });
         const programEnrollmentRecords = toArray<RecordLike>(data.programEnrollments);
         const displayedEntitlementRecords = (() => {
           const existingPauseBenefit = normalizedEntitlementRecords.some(
@@ -3267,6 +3904,31 @@ export default function MemberProfilePage() {
                     <p className="text-sm text-slate-300">No memberships found.</p>
                   </ProfilePanel>
                 )}
+                {upcomingMemberships.length > 0 ? (
+                  <ProfilePanel title="Upcoming Memberships" subtitle="Renewals and future-cycle memberships waiting for activation or start date." accent="amber">
+                    <div className="space-y-3">
+                      {upcomingMemberships.map((membership) => (
+                        <div key={`upcoming-${membership.subscriptionId}`} className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-4">
+                          <div className="flex flex-wrap items-start gap-3">
+                            <div className="space-y-1">
+                              <p className="text-lg font-semibold text-white">{trimMembershipCardTitle(membership.variantName || membership.productName || membership.productCode)}</p>
+                              <p className="text-sm text-slate-300">Category: {humanizeLabel(membership.categoryCode)}</p>
+                            </div>
+                            <span className="ml-auto rounded-full border border-amber-400/30 bg-amber-500/15 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-amber-200">
+                              {humanizeLabel(membership.status)}
+                            </span>
+                          </div>
+                          <div className="mt-4 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                            <StatPill label="Start Date" value={formatDateOnly(membership.startDate || undefined)} />
+                            <StatPill label="Expiry Date" value={formatDateOnly(membership.expiryDate || undefined)} />
+                            <StatPill label="Invoice" value={membership.invoiceNumber || "-"} />
+                            <StatPill label="Receipt" value={membership.receiptNumber || "-"} />
+                          </div>
+                        </div>
+                      ))}
+                    </div>
+                  </ProfilePanel>
+                ) : null}
               </div>
               {shouldShowEntitlementsBesideMembership && shouldShowEntitlementsPanel ? (
                 <div className="xl:min-w-0">
@@ -3287,49 +3949,146 @@ export default function MemberProfilePage() {
       case "attendance":
         return (
           <div className="space-y-6">
-            <ProfilePanel title="Attendance Timeline" subtitle="Check-ins and check-outs" accent="slate">
-              <GenericTable items={attendanceRecords} emptyLabel="No attendance records available." />
-            </ProfilePanel>
-            <ProfilePanel title="Access & Biometrics" subtitle="Operational access state for this member" accent="slate">
-              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-                {[
-                  { label: "Status", value: tabData["recovery-services"]?.status || "NOT_ADDED" },
-                  { label: "External Reference", value: tabData["recovery-services"]?.externalReference || `MEMBER-${memberId}` },
-                  { label: "Last Action", value: tabData["recovery-services"]?.lastAction || "-" },
-                  { label: "Updated At", value: formatDateTime(tabData["recovery-services"]?.updatedAt) },
-                ].map((entry) => (
-                  <div key={entry.label} className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">{entry.label}</p>
-                    <p className="mt-2 text-base font-medium text-white">{entry.value}</p>
+            {actionError && actionModal !== "biometric" ? (
+              <div className="rounded-2xl border border-rose-500/20 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
+                {actionError}
+              </div>
+            ) : null}
+            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+              {[
+                { label: "Access Status", value: displayAccessStatus },
+                { label: "Biometric PIN", value: normalizedPhonePin || "-" },
+                { label: "Total Check-ins", value: String(checkInRows.length) },
+                { label: "Devices", value: String(availableBiometricDevices.length) },
+              ].map((entry) => (
+                <div key={entry.label} className="rounded-[24px] border border-white/8 bg-white/[0.03] p-4">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">{entry.label}</p>
+                  <p className="mt-2 text-2xl font-semibold text-white">{entry.value}</p>
+                </div>
+              ))}
+            </div>
+            <ProfilePanel
+              title="Manage Access Devices"
+              subtitle={`${onlineBiometricDevices.length} control point${onlineBiometricDevices.length === 1 ? "" : "s"} online`}
+              accent="slate"
+            >
+              <div className="grid gap-4 xl:grid-cols-2">
+                {availableBiometricDevices.length ? (
+                  availableBiometricDevices.map((device, index) => {
+                    const serial = pickString(device, ["serialNumber"]);
+                    const deviceName = friendlyBiometricDeviceName(device, index);
+                    const enrollment = enrollmentByDeviceSerial.get(serial);
+                    const deviceEnrollmentStatus = pickString(enrollment, ["status"]) || "NOT_ADDED";
+                    const statusLabel = biometricDeviceStatusLabel(device);
+                    const enrollmentLabel = accessEnrollmentLabel(deviceEnrollmentStatus);
+                    const normalizedEnrollmentStatus = normalizeEnrollmentStatus(deviceEnrollmentStatus);
+                    const showAddAction = normalizedEnrollmentStatus === "NOT_ADDED" || normalizedEnrollmentStatus === "DELETED" || normalizedEnrollmentStatus === "FAILED";
+                    const showBlockAction = normalizedEnrollmentStatus === "ENROLLED";
+                    const showUnblockAction = normalizedEnrollmentStatus === "BLOCKED";
+                    const showReAddAction = normalizedEnrollmentStatus !== "PENDING";
+                    return (
+                      <div key={serial || deviceName} className="rounded-[28px] border border-white/8 bg-white/[0.03] p-5">
+                        <div className="flex items-start justify-between gap-4">
+                          <div>
+                            <h3 className="text-lg font-semibold text-white">{deviceName}</h3>
+                            <p className="mt-1 text-sm text-slate-400">{serial || "Serial not available"}</p>
+                          </div>
+                          <span className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${accessEnrollmentTone(deviceEnrollmentStatus)}`}>
+                            {enrollmentLabel}
+                          </span>
+                        </div>
+                        <div className="mt-5 flex items-center gap-2">
+                          <span className={`h-2.5 w-2.5 rounded-full ${isBiometricDeviceOnline(device) ? "bg-emerald-400" : "bg-slate-500"}`} />
+                          <span className={`text-xs font-semibold uppercase tracking-[0.2em] ${biometricDeviceStatusTone(device)}`}>{statusLabel}</span>
+                        </div>
+                        <div className="mt-5 flex flex-wrap gap-2">
+                          {showAddAction ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleAccessAction("ADD_USER", serial)}
+                              disabled={actionBusy || !serial}
+                              className="rounded-xl bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.08] disabled:opacity-50"
+                            >
+                              {actionBusy ? "Working..." : "Add User"}
+                            </button>
+                          ) : null}
+                          {showReAddAction ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleAccessAction("RE_ADD_USER", serial)}
+                              disabled={actionBusy || !serial}
+                              className="rounded-xl bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.08] disabled:opacity-50"
+                            >
+                              {actionBusy ? "Working..." : "Re-add"}
+                            </button>
+                          ) : null}
+                          {showBlockAction ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleAccessAction("BLOCK_USER", serial)}
+                              disabled={actionBusy || !serial}
+                              className="rounded-xl bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.08] disabled:opacity-50"
+                            >
+                              {actionBusy ? "Working..." : "Block"}
+                            </button>
+                          ) : null}
+                          {showUnblockAction ? (
+                            <button
+                              type="button"
+                              onClick={() => void handleAccessAction("UNBLOCK_USER", serial)}
+                              disabled={actionBusy || !serial}
+                              className="rounded-xl bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.08] disabled:opacity-50"
+                            >
+                              {actionBusy ? "Working..." : "Unblock"}
+                            </button>
+                          ) : null}
+                          <button
+                            type="button"
+                            onClick={() => void handleAccessAction("DELETE_USER", serial)}
+                            disabled={actionBusy || !serial}
+                            className="rounded-xl border border-white/10 bg-white/[0.02] px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-white/[0.06] disabled:opacity-50"
+                          >
+                            {actionBusy ? "Working..." : "Delete"}
+                          </button>
+                        </div>
+                      </div>
+                    );
+                  })
+                ) : (
+                  <div className="rounded-[28px] border border-dashed border-white/10 bg-white/[0.02] px-5 py-10 text-center text-sm text-slate-400">
+                    No biometric devices are available for this branch yet.
                   </div>
-                ))}
-              </div>
-              <div className="mt-4 grid gap-4 md:grid-cols-3">
-                <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Biometric PIN</p>
-                  <p className="mt-2 text-base font-medium text-white">{normalizedPhonePin || "-"}</p>
-                </div>
-                <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Branch Devices</p>
-                  <p className="mt-2 text-base font-medium text-white">{availableBiometricDevices.length}</p>
-                </div>
-                <div className="rounded-2xl border border-white/8 bg-white/[0.03] p-4">
-                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Recent Biometric Logs</p>
-                  <p className="mt-2 text-base font-medium text-white">{biometricLogRecords.length}</p>
-                </div>
-              </div>
-              <div className="mt-5 flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => openActionModal("biometric")}
-                  className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08]"
-                >
-                  Manage Access Actions
-                </button>
+                )}
               </div>
             </ProfilePanel>
-            <ProfilePanel title="Biometric Device Logs" subtitle="Recent attendance punches from the ESSL device for this member" accent="slate">
-              <GenericTable items={biometricLogRecords} emptyLabel="No biometric device logs available for this member yet." />
+            <ProfilePanel title="Attendance Logs" subtitle="Recent member entries recorded from attendance and biometric sources" accent="slate">
+              <div className="overflow-hidden rounded-[24px] border border-white/8 bg-[#0f1726]">
+                <div className="grid grid-cols-[1.15fr_0.9fr_1.2fr_1fr_0.9fr] gap-3 border-b border-white/8 px-5 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  <span>Date</span>
+                  <span>Time</span>
+                  <span>Device</span>
+                  <span>Event Type</span>
+                  <span>Status</span>
+                </div>
+                {attendanceLogRows.length ? (
+                  attendanceLogRows.map((entry) => (
+                    <div
+                      key={entry.id}
+                      className="grid grid-cols-[1.15fr_0.9fr_1.2fr_1fr_0.9fr] gap-3 border-b border-white/6 px-5 py-4 text-sm last:border-b-0"
+                    >
+                      <span className="font-medium text-white">{entry.dateLabel}</span>
+                      <span className="text-slate-300">{entry.timeLabel}</span>
+                      <span className="text-slate-200">{entry.deviceLabel}</span>
+                      <span className={`font-semibold ${attendanceEventTone(entry.eventLabel)}`}>{entry.eventLabel}</span>
+                      <span className={`font-semibold ${attendanceRecordStatusTone(entry.statusLabel)}`}>{entry.statusLabel}</span>
+                    </div>
+                  ))
+                ) : (
+                  <div className="px-5 py-12 text-center text-sm text-slate-400">
+                    No attendance logs are available for this member yet.
+                  </div>
+                )}
+              </div>
             </ProfilePanel>
           </div>
         );
@@ -3745,6 +4504,118 @@ export default function MemberProfilePage() {
           {actionSuccess}
         </div>
       ) : null}
+      {completedBilling ? (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/60 px-4 py-8 backdrop-blur-sm">
+          <div className="w-full max-w-3xl rounded-[28px] border border-white/10 bg-[#111821] p-6 shadow-[0_30px_120px_rgba(0,0,0,0.45)]">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-emerald-300">{completedBilling.context === "renewal" ? "Renewal Completed" : "Billing Completed"}</p>
+                <h3 className="mt-2 text-2xl font-semibold text-white">{completedBilling.title}</h3>
+                <p className="mt-2 text-sm text-slate-300">{completedBilling.message}</p>
+              </div>
+              <button
+                type="button"
+                onClick={() => setCompletedBilling(null)}
+                className="rounded-full border border-white/10 bg-white/[0.04] p-2 text-slate-300 hover:bg-white/[0.08]"
+              >
+                <MoreHorizontal className="h-5 w-5" />
+              </button>
+            </div>
+
+            <div className="mt-6 grid gap-4 md:grid-cols-2">
+              <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Billing Records</p>
+                <dl className="mt-3 space-y-2 text-sm text-slate-300">
+                  <div className="flex items-center justify-between gap-3"><dt>Invoice ID</dt><dd className="font-semibold text-white">{completedBilling.invoiceId}</dd></div>
+                  <div className="flex items-center justify-between gap-3"><dt>Invoice Number</dt><dd className="font-semibold text-white">{completedBilling.invoiceNumber}</dd></div>
+                  <div className="flex items-center justify-between gap-3"><dt>Receipt ID</dt><dd className="font-semibold text-white">{completedBilling.receiptId || "-"}</dd></div>
+                  <div className="flex items-center justify-between gap-3"><dt>Receipt Number</dt><dd className="font-semibold text-white">{completedBilling.receiptNumber || "-"}</dd></div>
+                  <div className="flex items-center justify-between gap-3"><dt>Payment Status</dt><dd>{humanizeLabel(completedBilling.paymentStatus)}</dd></div>
+                  <div className="flex items-center justify-between gap-3"><dt>Total Paid</dt><dd>{formatRoundedInr(completedBilling.totalPaidAmount)}</dd></div>
+                  <div className="flex items-center justify-between gap-3"><dt>Balance Due</dt><dd>{formatRoundedInr(completedBilling.balanceAmount)}</dd></div>
+                </dl>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Document Actions</p>
+                <div className="mt-3 space-y-3">
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      type="button"
+                      onClick={() => void viewDocumentPdf("invoice", completedBilling.invoiceId)}
+                      disabled={documentBusyKey === `invoice-view-${completedBilling.invoiceId}`}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                    >
+                      <Printer className="h-4 w-4" />
+                      View Invoice
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void downloadDocumentPdf("invoice", completedBilling.invoiceId, completedBilling.invoiceNumber)}
+                      disabled={documentBusyKey === `invoice-download-${completedBilling.invoiceId}`}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                    >
+                      <Download className="h-4 w-4" />
+                      Download Invoice
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void shareDocumentPdf("invoice", completedBilling.invoiceId, completedBilling.invoiceNumber, `Invoice ${completedBilling.invoiceNumber}`)}
+                      disabled={documentBusyKey === `invoice-share-${completedBilling.invoiceId}`}
+                      className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                    >
+                      <Share2 className="h-4 w-4" />
+                      Share Invoice
+                    </button>
+                  </div>
+                  {completedBilling.receiptId ? (
+                    <div className="flex flex-wrap gap-2">
+                      <button
+                        type="button"
+                        onClick={() => void viewDocumentPdf("receipt", completedBilling.receiptId!)}
+                        disabled={documentBusyKey === `receipt-view-${completedBilling.receiptId}`}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                      >
+                        <Printer className="h-4 w-4" />
+                        View Receipt
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void downloadDocumentPdf("receipt", completedBilling.receiptId!, completedBilling.receiptNumber || `receipt-${completedBilling.receiptId}`)}
+                        disabled={documentBusyKey === `receipt-download-${completedBilling.receiptId}`}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                      >
+                        <Download className="h-4 w-4" />
+                        Download Receipt
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => void shareDocumentPdf("receipt", completedBilling.receiptId!, completedBilling.receiptNumber || `receipt-${completedBilling.receiptId}`, `Receipt ${completedBilling.receiptNumber || completedBilling.receiptId}`)}
+                        disabled={documentBusyKey === `receipt-share-${completedBilling.receiptId}`}
+                        className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                      >
+                        <Share2 className="h-4 w-4" />
+                        Share Receipt
+                      </button>
+                    </div>
+                  ) : (
+                    <p className="text-sm text-slate-400">No receipt was generated because no payment was collected.</p>
+                  )}
+                </div>
+              </div>
+            </div>
+
+            <div className="mt-6 flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setCompletedBilling(null)}
+                className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
+              >
+                Close
+              </button>
+            </div>
+          </div>
+        </div>
+      ) : null}
       {loadingShell ? (
         <div className="inline-flex items-center gap-2 rounded-lg bg-slate-100 px-3 py-2 text-sm text-slate-600">
           <Loader2 className="h-4 w-4 animate-spin" />
@@ -3765,7 +4636,7 @@ export default function MemberProfilePage() {
                     <div className="flex flex-wrap items-center gap-3">
                       <h1 className="text-4xl font-semibold tracking-tight text-white">{memberName}</h1>
                       <span className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] ${statusTone(membershipStatus)}`}>
-                        {membershipStatus}
+                        {humanizeLabel(membershipStatus)}
                       </span>
                     </div>
                     <p className="text-sm font-medium uppercase tracking-[0.24em] text-slate-400">
@@ -4009,86 +4880,217 @@ export default function MemberProfilePage() {
           </Modal>
 
           <Modal
-            open={actionModal === "renew" || actionModal === "upgrade"}
+            open={isRenewLifecycleModal || isUpgradeLifecycleModal}
             onClose={() => setActionModal(null)}
-            title={actionModal === "renew" ? "Renew Membership" : "Upgrade Membership"}
-            size="lg"
+            title={isRenewLifecycleModal ? "Renew Membership" : "Upgrade Membership"}
+            size="xl"
             footer={
               <>
                 <button type="button" onClick={() => setActionModal(null)} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Cancel</button>
                 <button
                   type="button"
-                  onClick={() => void handleSubscriptionAction((actionModal === "renew" ? "renew" : "upgrade") as "renew" | "upgrade")}
+                  onClick={() => void handleSubscriptionAction((isRenewLifecycleModal ? "renew" : "upgrade") as "renew" | "upgrade")}
                   disabled={actionBusy}
                   className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
                 >
-                  {actionBusy ? "Processing..." : "Continue"}
+                  {actionBusy ? "Processing..." : "Continue To Billing"}
                 </button>
               </>
             }
           >
             <div className="space-y-4">
               {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-                {actionModal === "renew"
-                  ? "Renewal creates the next cycle for this membership. If the current membership is active, the renewed plan should start after the current expiry."
-                    : "Upgrade applies the selected higher package or duration. The invoice is generated only for the difference between the existing sold membership value and the selected target plan."}
-              </div>
-              <div className="grid gap-4 md:grid-cols-2">
-                <label className="space-y-2 text-sm">
-                  <span className="font-medium text-slate-700">Category</span>
-                  <select
-                    value={lifecycleForm.categoryCode}
-                    onChange={(event) => setLifecycleForm((current) => ({ ...current, categoryCode: event.target.value, productCode: "", productVariantId: "" }))}
-                    className="w-full rounded-xl border border-slate-200 px-3 py-2"
-                  >
-                    <option value="">Select Category</option>
-                    {lifecycleCategoryOptions.map((category) => (
-                      <option key={category} value={category}>{humanizeLabel(category)}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="space-y-2 text-sm">
-                  <span className="font-medium text-slate-700">Product</span>
-                  <select
-                    value={lifecycleForm.productCode}
-                    onChange={(event) => setLifecycleForm((current) => ({ ...current, productCode: event.target.value, productVariantId: "" }))}
-                    className="w-full rounded-xl border border-slate-200 px-3 py-2"
-                  >
-                    <option value="">Select Product</option>
-                    {filteredLifecycleProducts.map((product) => (
-                      <option key={product.productId} value={product.productCode}>{product.productName}</option>
-                    ))}
-                  </select>
-                </label>
-                <label className="space-y-2 text-sm">
-                  <span className="font-medium text-slate-700">Variant</span>
-                  <select
-                    value={lifecycleForm.productVariantId}
-                    onChange={(event) => setLifecycleForm((current) => ({ ...current, productVariantId: event.target.value }))}
-                    className="w-full rounded-xl border border-slate-200 px-3 py-2"
-                  >
-                    <option value="">Select Variant</option>
-                    {filteredLifecycleVariants.map((variant) => (
-                      <option key={variant.variantId} value={variant.variantId}>
-                        {variant.variantName} · {variant.durationMonths > 0 ? `${variant.durationMonths} months` : `${variant.validityDays} days`}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="space-y-2 text-sm">
-                  <span className="font-medium text-slate-700">Start Date</span>
-                  <input type="date" value={lifecycleForm.startDate} onChange={(event) => setLifecycleForm((current) => ({ ...current, startDate: event.target.value }))} className="w-full rounded-xl border border-slate-200 px-3 py-2" />
-                </label>
-                <label className="space-y-2 text-sm">
-                  <span className="font-medium text-slate-700">Due In Days</span>
-                  <input type="number" min={1} value={lifecycleForm.dueInDays} onChange={(event) => setLifecycleForm((current) => ({ ...current, dueInDays: event.target.value }))} className="w-full rounded-xl border border-slate-200 px-3 py-2" />
-                </label>
-                <label className="space-y-2 text-sm md:col-span-2">
-                  <span className="font-medium text-slate-700">Notes</span>
-                  <textarea value={lifecycleForm.notes} onChange={(event) => setLifecycleForm((current) => ({ ...current, notes: event.target.value }))} className="min-h-[88px] w-full rounded-xl border border-slate-200 px-3 py-2" />
-                </label>
-              </div>
+              {!isRenewLifecycleModal ? (
+                <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
+                  Upgrade applies the selected higher package or duration. The invoice is generated only for the difference between the existing sold membership value and the selected target plan.
+                </div>
+              ) : null}
+              {isRenewLifecycleModal ? (
+                <div className="overflow-hidden rounded-[30px] border border-[#c42924]/35 bg-[linear-gradient(135deg,rgba(196,41,36,0.18),rgba(196,41,36,0.06))]">
+                  <div className="grid lg:grid-cols-[0.95fr_1.05fr]">
+                    <div className="border-b border-white/8 px-6 py-6 lg:border-b-0 lg:border-r">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.26em] text-[#ff8c86]">Operation Renewal</p>
+                      <div className="mt-6 rounded-[24px] border border-white/10 bg-black/15 px-4 py-4">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#ffc3c0]/75">Target Plan</p>
+                        <p className="mt-3 text-3xl font-semibold tracking-tight text-white">
+                          {selectedLifecycleVariant ? normalizeDisplayPlanName(selectedLifecycleVariant.variantName) : planName}
+                        </p>
+                        {renewalFeatureList.length ? (
+                          <div className="mt-4 flex flex-wrap gap-2">
+                            {renewalFeatureList.map((feature) => (
+                              <span
+                                key={feature}
+                                className="rounded-full border border-white/10 bg-white/[0.06] px-3 py-1 text-[11px] font-medium tracking-[0.08em] text-[#ffe1df]"
+                              >
+                                {feature}
+                              </span>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="mt-2 text-sm leading-6 text-[#ffd7d6]">
+                            Continue the same package for the next membership cycle with updated commercial values before billing.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                    <div className="px-6 py-6">
+                      <div className="grid gap-5 sm:grid-cols-2">
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#ffc3c0]/75">Current Status</p>
+                          <p className="mt-2 text-lg font-semibold text-white">{planName}</p>
+                          <p className="mt-1 text-sm text-[#ffd7d6]">{planDuration}</p>
+                        </div>
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#ffc3c0]/75">Valid From / To</p>
+                          <p className="mt-2 text-sm font-medium text-white">
+                            {formatDateOnly(selectedStartDate)} - {formatDateOnly(selectedExpiryDate)}
+                          </p>
+                        </div>
+                      </div>
+                      <div className="mt-6 rounded-[24px] border border-white/10 bg-black/15 px-5 py-5">
+                        <div className="space-y-4 text-sm">
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-[#ffd7d6]">Start Date</span>
+                            <input
+                              type="date"
+                              value={lifecycleForm.startDate}
+                              onChange={(event) => setLifecycleForm((current) => ({ ...current, startDate: event.target.value }))}
+                              className="w-[210px] rounded-xl border border-white/10 bg-white/[0.06] px-3 py-2 text-right text-sm font-medium text-white outline-none transition focus:border-white/20"
+                            />
+                          </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-[#ffd7d6]">Expiry Date</span>
+                            <span className="text-base font-semibold text-white">{formatDateOnly(projectedRenewalEndDate)}</span>
+                          </div>
+                          <div className="h-px bg-white/10" />
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-[#ffd7d6]">Standard Plan Price</span>
+                            <span className="text-base font-semibold text-white">{formatRoundedInr(targetLifecycleBasePrice)}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-[#ffd7d6]">Selling Price</span>
+                            <input
+                              value={lifecycleForm.sellingPrice}
+                              onChange={(event) => {
+                                const value = sanitizeIntegerString(event.target.value);
+                                const parsed = value ? Number(value) : undefined;
+                                const sellingPrice = parsed === undefined ? undefined : Math.min(Math.max(parsed, 0), targetLifecycleBasePrice || parsed);
+                                setLifecycleForm((current) => ({
+                                  ...current,
+                                  sellingPrice: sellingPrice === undefined ? value : String(roundAmount(sellingPrice)),
+                                  discountPercent:
+                                    sellingPrice !== undefined && targetLifecycleBasePrice > 0
+                                      ? formatDecimalInput(((targetLifecycleBasePrice - sellingPrice) / targetLifecycleBasePrice) * 100)
+                                      : current.discountPercent,
+                                }));
+                              }}
+                              className="w-[210px] border-0 bg-transparent p-0 text-right text-base font-semibold text-white outline-none"
+                              inputMode="decimal"
+                            />
+                          </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-[#ffd7d6]">Discount</span>
+                            <div className="flex items-center gap-3">
+                              {Number(lifecycleForm.discountPercent || 0) > 0 ? (
+                                <span className="rounded-full bg-[#c42924]/20 px-2 py-1 text-[10px] font-semibold uppercase tracking-[0.18em] text-[#ff8c86]">
+                                  {Math.round(Number(lifecycleForm.discountPercent || 0))}% off
+                                </span>
+                              ) : null}
+                              <input
+                                value={lifecycleForm.discountPercent}
+                                onChange={(event) => {
+                                  const value = sanitizeNumericString(event.target.value);
+                                  const parsed = value ? Math.min(100, Math.max(0, Number(value))) : undefined;
+                                  setLifecycleForm((current) => ({
+                                    ...current,
+                                    discountPercent: value,
+                                    sellingPrice:
+                                      parsed === undefined
+                                        ? current.sellingPrice
+                                        : formatDecimalInput(targetLifecycleBasePrice * (1 - parsed / 100)),
+                                  }));
+                                }}
+                                className="w-[90px] border-0 bg-transparent p-0 text-right text-base font-semibold text-white outline-none"
+                                inputMode="decimal"
+                                placeholder="0"
+                              />
+                            </div>
+                          </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-[#ffd7d6]">CGST (Included)</span>
+                            <span className="text-base font-medium text-white">{formatRoundedInr(renewHalfTaxAmount)}</span>
+                          </div>
+                          <div className="flex items-center justify-between gap-4">
+                            <span className="text-[#ffd7d6]">SGST (Included)</span>
+                            <span className="text-base font-medium text-white">{formatRoundedInr(renewHalfTaxAmount)}</span>
+                          </div>
+                          <div className="h-px bg-white/10" />
+                          <div className="flex items-end justify-between gap-4">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#ffc3c0]/75">Total Payable</p>
+                              <p className="mt-1 text-xs uppercase tracking-[0.18em] text-[#ffb9b6]/70">All taxes inclusive</p>
+                            </div>
+                            <span className="text-3xl font-semibold text-white">{formatRoundedInr(renewInvoiceTotal)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              ) : (
+                <div className="grid gap-4 md:grid-cols-2">
+                  <label className="space-y-2 text-sm">
+                    <span className="font-medium text-slate-700">Category</span>
+                    <select
+                      value={lifecycleForm.categoryCode}
+                      onChange={(event) => setLifecycleForm((current) => ({ ...current, categoryCode: event.target.value, productCode: "", productVariantId: "" }))}
+                      className="w-full rounded-xl border border-slate-200 px-3 py-2"
+                    >
+                      <option value="">Select Category</option>
+                      {lifecycleCategoryOptions.map((category) => (
+                        <option key={category} value={category}>{humanizeLabel(category)}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-2 text-sm">
+                    <span className="font-medium text-slate-700">Product</span>
+                    <select
+                      value={lifecycleForm.productCode}
+                      onChange={(event) => setLifecycleForm((current) => ({ ...current, productCode: event.target.value, productVariantId: "" }))}
+                      className="w-full rounded-xl border border-slate-200 px-3 py-2"
+                    >
+                      <option value="">Select Product</option>
+                      {filteredLifecycleProducts.map((product) => (
+                        <option key={product.productId} value={product.productCode}>{product.productName}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-2 text-sm">
+                    <span className="font-medium text-slate-700">Variant</span>
+                    <select
+                      value={lifecycleForm.productVariantId}
+                      onChange={(event) => setLifecycleForm((current) => ({ ...current, productVariantId: event.target.value }))}
+                      className="w-full rounded-xl border border-slate-200 px-3 py-2"
+                    >
+                      <option value="">Select Variant</option>
+                      {filteredLifecycleVariants.map((variant) => (
+                        <option key={variant.variantId} value={variant.variantId}>
+                          {variant.variantName} · {variant.durationMonths > 0 ? `${variant.durationMonths} months` : `${variant.validityDays} days`}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="space-y-2 text-sm">
+                    <span className="font-medium text-slate-700">Start Date</span>
+                    <input type="date" value={lifecycleForm.startDate} onChange={(event) => setLifecycleForm((current) => ({ ...current, startDate: event.target.value }))} className="w-full rounded-xl border border-slate-200 px-3 py-2" />
+                  </label>
+                  <label className="space-y-2 text-sm md:col-span-2">
+                    <span className="font-medium text-slate-700">Notes</span>
+                    <textarea value={lifecycleForm.notes} onChange={(event) => setLifecycleForm((current) => ({ ...current, notes: event.target.value }))} className="min-h-[88px] w-full rounded-xl border border-slate-200 px-3 py-2" />
+                  </label>
+                </div>
+              )}
+              {isUpgradeLifecycleModal ? (
               <div className="rounded-2xl border border-white/8 bg-slate-900 px-4 py-4 text-sm text-slate-200">
                 <div className="grid gap-3 md:grid-cols-2">
                   <div>
@@ -4106,25 +5108,244 @@ export default function MemberProfilePage() {
                         ? `${formatPlanDuration(selectedLifecycleVariant.durationMonths, selectedLifecycleVariant.validityDays)} · ${formatInr(selectedLifecycleVariant.basePrice)}`
                         : "Invoice will be generated from the selected target variant once you continue."}
                     </p>
+                    {isRenewLifecycleModal ? (
+                      <div className="mt-3 grid gap-2 sm:grid-cols-2">
+                        <div className="rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">Start Date</p>
+                          <p className="mt-1 text-sm font-medium text-white">{formatDateOnly(lifecycleForm.startDate)}</p>
+                        </div>
+                        <div className="rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">Expiry Date</p>
+                          <p className="mt-1 text-sm font-medium text-white">{formatDateOnly(projectedRenewalEndDate)}</p>
+                        </div>
+                      </div>
+                    ) : null}
                   </div>
                 </div>
                 {selectedLifecycleVariant ? (
                   <div className="mt-4 space-y-3">
-                    {actionModal === "upgrade" ? (
+                    {isUpgradeLifecycleModal ? (
                       <p className="text-xs text-slate-400">
                         The portal is showing the catalog plan comparison below. Final upgrade billing is computed in the backend from the member&apos;s existing sold value and the selected target plan.
                       </p>
                     ) : null}
                     <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                      <StatPill label="Current Plan Price" value={formatRoundedInr(currentLifecycleBasePrice)} />
-                      <StatPill label="Target Plan Price" value={formatRoundedInr(targetLifecycleBasePrice)} />
-                      <StatPill label={actionModal === "upgrade" ? "Reference Base Difference" : "Taxable Amount"} value={formatRoundedInr(lifecycleTaxableAmount)} />
-                      <StatPill label={`CGST (${commercialTaxRate / 2}%)`} value={formatRoundedInr(lifecycleHalfTaxAmount)} />
-                      <StatPill label={`SGST (${commercialTaxRate / 2}%)`} value={formatRoundedInr(lifecycleHalfTaxAmount)} />
-                      <StatPill label={actionModal === "upgrade" ? "Estimated Invoice Total" : "Invoice Total"} value={formatRoundedInr(lifecycleInvoiceTotal)} />
+                      {isRenewLifecycleModal ? (
+                        <>
+                          <StatPill label="Plan Price" value={formatRoundedInr(targetLifecycleBasePrice)} />
+                          <StatPill label="Selling Price" value={formatRoundedInr(renewCommercial.sellingPrice)} />
+                          <StatPill label="Discount" value={formatRoundedInr(renewCommercial.discountAmount)} />
+                          <StatPill label={`CGST (${commercialTaxRate / 2}%)`} value={formatRoundedInr(renewHalfTaxAmount)} />
+                          <StatPill label={`SGST (${commercialTaxRate / 2}%)`} value={formatRoundedInr(renewHalfTaxAmount)} />
+                          <StatPill label="Total Payable" value={formatRoundedInr(renewInvoiceTotal)} />
+                        </>
+                      ) : (
+                        <>
+                          <StatPill label="Current Plan Price" value={formatRoundedInr(currentLifecycleBasePrice)} />
+                          <StatPill label="Target Plan Price" value={formatRoundedInr(targetLifecycleBasePrice)} />
+                          <StatPill label="Reference Base Difference" value={formatRoundedInr(lifecycleTaxableAmount)} />
+                          <StatPill label={`CGST (${commercialTaxRate / 2}%)`} value={formatRoundedInr(lifecycleHalfTaxAmount)} />
+                          <StatPill label={`SGST (${commercialTaxRate / 2}%)`} value={formatRoundedInr(lifecycleHalfTaxAmount)} />
+                          <StatPill label="Estimated Invoice Total" value={formatRoundedInr(lifecycleInvoiceTotal)} />
+                        </>
+                      )}
                     </div>
                   </div>
                 ) : null}
+              </div>
+              ) : null}
+            </div>
+          </Modal>
+
+          <Modal
+            open={actionModal === "renew-billing"}
+            onClose={() => setActionModal(null)}
+            title="Renewal Billing"
+            size="xl"
+            footer={
+              <>
+                <button type="button" onClick={() => setActionModal("renew")} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Back</button>
+                <button type="button" onClick={() => void handleRenewPayment()} disabled={actionBusy} className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                  {actionBusy ? "Saving..." : "Create Invoice & Record Payment"}
+                </button>
+              </>
+            }
+          >
+            <div className="space-y-4">
+              {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
+              <div className="space-y-5">
+                <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
+                  <div className="mb-4 flex items-center gap-3">
+                    <CreditCard className="h-5 w-5 text-[#ffb4b1]" />
+                    <div>
+                      <h4 className="text-sm font-semibold text-white">Invoice Summary</h4>
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-[#0f141d] p-4">
+                    <dl className="grid gap-x-8 gap-y-3 text-sm text-slate-300 sm:grid-cols-2">
+                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Number</dt><dd className="text-right font-semibold text-white">Generated on submit</dd></div>
+                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Date</dt><dd className="text-right">{currentPreviewDate}</dd></div>
+                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Membership</dt><dd className="text-right font-medium text-white">{selectedLifecycleVariant ? normalizeDisplayPlanName(selectedLifecycleVariant.variantName) : planName}</dd></div>
+                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Status</dt><dd className="text-right font-medium text-white">{renewPreviewStatus}</dd></div>
+                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Start Date</dt><dd className="text-right">{formatDateOnly(lifecycleForm.startDate)}</dd></div>
+                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">End Date</dt><dd className="text-right">{formatDateOnly(projectedRenewalEndDate)}</dd></div>
+                      <div className="flex items-center justify-between gap-4 sm:col-span-2"><dt className="text-slate-400">Bill Rep</dt><dd className="text-right">{user?.name || "-"}</dd></div>
+                    </dl>
+                  </div>
+                </div>
+
+                <div className="grid gap-5 xl:grid-cols-[minmax(0,1.12fr)_380px]">
+                  <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
+                    <div className="mb-4 flex items-center gap-3">
+                      <CreditCard className="h-5 w-5 text-[#ffb4b1]" />
+                      <div>
+                        <h4 className="text-sm font-semibold text-white">Commercial Breakdown</h4>
+                      </div>
+                    </div>
+                    <div className="overflow-hidden rounded-2xl border border-white/10 bg-[#0f141d]">
+                      <table className="min-w-full table-fixed divide-y divide-white/10 text-sm text-slate-300">
+                        <thead className="bg-white/[0.03] text-xs uppercase tracking-[0.18em] text-slate-400">
+                          <tr>
+                            <th className="w-[48%] px-4 py-3 text-left font-semibold">Description</th>
+                            <th className="w-[17%] px-4 py-3 text-right font-semibold">Plan Price</th>
+                            <th className="w-[18%] px-4 py-3 text-right font-semibold">Selling Price</th>
+                            <th className="w-[17%] px-4 py-3 text-right font-semibold">Discount</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/10">
+                          <tr className="bg-[#101722]">
+                            <td className="px-4 py-3 text-white">{selectedLifecycleVariant ? normalizeDisplayPlanName(selectedLifecycleVariant.variantName) : planName}</td>
+                            <td className="px-4 py-3 text-right">{formatRoundedInr(renewCommercial.baseAmount)}</td>
+                            <td className="px-4 py-3 text-right">{formatRoundedInr(renewCommercial.sellingPrice)}</td>
+                            <td className="px-4 py-3 text-right">{formatRoundedInr(renewCommercial.discountAmount)}</td>
+                          </tr>
+                        </tbody>
+                        <tfoot className="divide-y divide-white/10 bg-black/10">
+                          <tr>
+                            <td className="px-4 py-3 font-semibold text-white">Total Plan Price</td>
+                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(renewCommercial.baseAmount)}</td>
+                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(renewCommercial.sellingPrice)}</td>
+                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(renewCommercial.discountAmount)}</td>
+                          </tr>
+                          <tr>
+                            <td className="px-4 py-3">CGST @ {commercialTaxRate / 2}%</td>
+                            <td className="px-4 py-3" />
+                            <td className="px-4 py-3 text-right">{formatRoundedInr(renewHalfTaxAmount)}</td>
+                            <td className="px-4 py-3" />
+                          </tr>
+                          <tr>
+                            <td className="px-4 py-3">SGST @ {commercialTaxRate / 2}%</td>
+                            <td className="px-4 py-3" />
+                            <td className="px-4 py-3 text-right">{formatRoundedInr(renewHalfTaxAmount)}</td>
+                            <td className="px-4 py-3" />
+                          </tr>
+                          <tr className="text-base">
+                            <td className="px-4 py-3 font-semibold text-white">Total Payable</td>
+                            <td className="px-4 py-3" />
+                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(renewInvoiceTotal)}</td>
+                            <td className="px-4 py-3" />
+                          </tr>
+                        </tfoot>
+                      </table>
+                    </div>
+                  </div>
+
+                  <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
+                    <div className="mb-4 flex items-center gap-3">
+                      <Wallet className="h-5 w-5 text-[#ffb4b1]" />
+                      <div>
+                        <h4 className="text-sm font-semibold text-white">Payment Collection</h4>
+                      </div>
+                    </div>
+                    <div className="space-y-4">
+                    <label className="space-y-2">
+                      <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Received Amount</span>
+                      <input
+                        className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
+                        value={lifecycleBillingForm.receivedAmount}
+                        onChange={(event) => setLifecycleBillingForm((current) => ({ ...current, receivedAmount: sanitizeIntegerString(event.target.value) }))}
+                        placeholder="Enter collected amount"
+                        inputMode="numeric"
+                      />
+                    </label>
+
+                    <div className="space-y-2">
+                      <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Payment Mode</span>
+                      <div className="grid grid-cols-3 gap-2">
+                        {String(billingSettings?.paymentModesEnabled || "UPI,CARD,CASH")
+                          .split(",")
+                          .map((mode) => mode.trim())
+                          .filter((mode) => ["UPI", "CARD", "CASH"].includes(mode.toUpperCase()))
+                          .map((mode) => {
+                            const selected = lifecycleBillingForm.paymentMode === mode;
+                            return (
+                              <button
+                                key={mode}
+                                type="button"
+                                onClick={() => setLifecycleBillingForm((current) => ({ ...current, paymentMode: mode }))}
+                                className={`rounded-2xl border px-4 py-4 text-sm font-semibold uppercase tracking-[0.18em] transition ${
+                                  selected
+                                    ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
+                                    : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20"
+                                }`}
+                              >
+                                {humanizeLabel(mode)}
+                              </button>
+                            );
+                          })}
+                      </div>
+                      {lifecycleBillingForm.paymentMode === "CARD" ? (
+                        <div className="grid grid-cols-2 gap-2">
+                          {[
+                            { value: "DEBIT_CARD", label: "Debit Card" },
+                            { value: "CREDIT_CARD", label: "Credit Card" },
+                          ].map((option) => {
+                            const selected = renewCardSubtype === option.value;
+                            return (
+                              <button
+                                key={option.value}
+                                type="button"
+                                onClick={() => setRenewCardSubtype(option.value as "DEBIT_CARD" | "CREDIT_CARD")}
+                                className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                                  selected
+                                    ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
+                                    : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20"
+                                }`}
+                              >
+                                {option.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      ) : null}
+                    </div>
+
+                    {Number(lifecycleBillingForm.receivedAmount || 0) < renewInvoiceTotal ? (
+                      <label className="space-y-2">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Balance Due Date</span>
+                        <input
+                          type="date"
+                          className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                          value={lifecycleBillingForm.balanceDueDate}
+                          onChange={(event) => setLifecycleBillingForm((current) => ({ ...current, balanceDueDate: event.target.value }))}
+                        />
+                      </label>
+                    ) : null}
+
+                    <div className="rounded-2xl border border-white/10 bg-[#0f141d] p-4">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Receipt Preview</p>
+                      <dl className="mt-3 space-y-2 text-sm text-slate-300">
+                        <div className="flex items-center justify-between gap-3"><dt>Receipt Number</dt><dd>Generated after payment</dd></div>
+                        <div className="flex items-center justify-between gap-3"><dt>Receipt Date</dt><dd>{currentPreviewDate}</dd></div>
+                        <div className="flex items-center justify-between gap-3"><dt>Payment Method</dt><dd>{lifecycleBillingForm.paymentMode === "CARD" ? (renewCardSubtype === "DEBIT_CARD" ? "Debit Card" : "Credit Card") : lifecycleBillingForm.paymentMode || "-"}</dd></div>
+                        <div className="flex items-center justify-between gap-3"><dt>Payment Status</dt><dd>{renewPreviewStatus}</dd></div>
+                        <div className="flex items-center justify-between gap-3"><dt>Total Paid</dt><dd>{formatRoundedInr(renewReceivedAmount)}</dd></div>
+                        <div className="flex items-center justify-between gap-3 border-t border-white/10 pt-2 text-base font-semibold text-white"><dt>Balance Due</dt><dd>{formatRoundedInr(renewBalanceAmount)}</dd></div>
+                      </dl>
+                    </div>
+                  </div>
+                </div>
+                </div>
               </div>
             </div>
           </Modal>
@@ -4195,7 +5416,7 @@ export default function MemberProfilePage() {
             <div className="space-y-4">
               {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
               <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-                Personal training is handled as a separate PT workflow. This action creates or renews the operational PT assignment. PT commercial billing can be generated against the PT invoice flow.
+                This currently creates the operational PT assignment only. PT commercial billing still needs a dedicated billing-first flow from the member profile.
               </div>
               {ptVariants.length > 0 ? (
                 <>

@@ -38,9 +38,9 @@ export function Modal({ open, onClose, title, size = "md", children, footer }: M
         if (e.target === overlayRef.current) onClose();
       }}
     >
-      <div className={`w-full ${sizeMap[size]} rounded-2xl bg-white shadow-xl`}>
+      <div className={`flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden ${sizeMap[size]} rounded-2xl bg-white shadow-xl`}>
         {/* Header */}
-        <div className="flex items-center justify-between border-b border-gray-100 px-6 py-4">
+        <div className="flex shrink-0 items-center justify-between border-b border-gray-100 px-6 py-4">
           <h2 className="text-lg font-bold text-gray-900">{title}</h2>
           <button
             type="button"
@@ -61,11 +61,11 @@ export function Modal({ open, onClose, title, size = "md", children, footer }: M
         </div>
 
         {/* Body */}
-        <div className="px-6 py-5">{children}</div>
+        <div className="min-h-0 overflow-y-auto px-6 py-5">{children}</div>
 
         {/* Footer */}
         {footer && (
-          <div className="flex items-center justify-end gap-3 border-t border-gray-100 px-6 py-4">
+          <div className="flex shrink-0 items-center justify-end gap-3 border-t border-gray-100 px-6 py-4">
             {footer}
           </div>
         )}

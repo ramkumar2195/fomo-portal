@@ -224,6 +224,7 @@ export interface PaymentReceipt {
   invoiceNumber: string;
   receiptId: number;
   receiptNumber: string;
+  transactionId?: string;
   amount: number;
   totalPaidAmount: number;
   balanceAmount: number;
@@ -571,6 +572,7 @@ function mapPaymentReceipt(payload: unknown): PaymentReceipt {
     invoiceNumber: toString(record, ["invoiceNumber"]),
     receiptId: toNumber(record, ["receiptId"]),
     receiptNumber: toString(record, ["receiptNumber"]),
+    transactionId: toString(record, ["transactionId", "transactionReference"]) || undefined,
     amount: toNumber(record, ["amount"]),
     totalPaidAmount: toNumber(record, ["totalPaidAmount"]),
     balanceAmount: toNumber(record, ["balanceAmount"]),
