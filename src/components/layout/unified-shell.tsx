@@ -302,9 +302,6 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
   const calendarHref = user?.role === "ADMIN" ? "/admin/classes" : "/portal/class-schedule";
   const notificationHref = user?.role === "ADMIN" ? "/admin/notifications" : "/portal/notifications";
 
-  const offsetClass = collapsed ? "md:pl-24" : "md:pl-72";
-  const headerOffsetClass = collapsed ? "md:left-24" : "md:left-72";
-
   useEffect(() => {
     const handlePointerDown = (event: MouseEvent) => {
       if (!searchRef.current?.contains(event.target as Node)) {
@@ -436,22 +433,22 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
       {/* Sidebar */}
       <aside
         className={`fixed inset-y-0 left-0 z-50 flex flex-col border-r border-white/8 bg-[#0b0f15] shadow-[0_30px_80px_rgba(0,0,0,0.42)] transition-all duration-200
-          ${collapsed ? "md:w-24" : "md:w-72"}
+          ${collapsed ? "md:w-24" : "md:w-[232px]"}
           ${mobileOpen ? "w-72" : "w-0 overflow-hidden md:overflow-visible"}
         `}
       >
         {/* Logo / Brand */}
-        <div className="flex h-16 items-center justify-between border-b border-white/8 px-4">
+        <div className="flex items-center justify-between border-b border-white/8 px-[18px] py-[14px]">
           <div className="flex items-center gap-2 overflow-hidden">
-            <div className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-[#c42924]">
+            <div className="flex h-[34px] w-[34px] shrink-0 items-center justify-center rounded-[9px] bg-[#C42924]">
               <span className="text-xs font-bold text-white">F</span>
             </div>
             {!collapsed && (
               <div className="min-w-0">
-                <p className="truncate text-xs font-semibold tracking-[0.24em] text-[#c42924]">
+                <p className="truncate text-[13px] font-medium text-white">
                   {brandTitle}
                 </p>
-                <p className="truncate text-[10px] text-slate-500">{brandSubtitle}</p>
+                <p className="truncate text-[11px] text-slate-500">{brandSubtitle}</p>
               </div>
             )}
           </div>
@@ -466,7 +463,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
         </div>
 
         {/* Navigation */}
-        <nav className="flex-1 space-y-2 overflow-y-auto p-3">
+        <nav className="flex-1 space-y-1 overflow-y-auto px-[10px] py-[10px] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {navSections.map((section) => {
             if (!section.children && section.href) {
               const active = matchesPathname(pathname, section.href, section.activeAliases);
@@ -476,9 +473,9 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                   href={section.href}
                   title={collapsed ? section.label : undefined}
                   onClick={() => setMobileOpen(false)}
-                  className={`group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
+                  className={`group flex items-center gap-[9px] rounded-[10px] px-[10px] py-[8px] text-[13px] transition ${
                     active
-                      ? "bg-[#c42924] text-white shadow-[0_10px_30px_rgba(196,41,36,0.22)]"
+                      ? "bg-[#C42924] font-medium text-white"
                       : "text-slate-400 hover:bg-white/[0.05] hover:text-white"
                   }`}
                 >
@@ -507,15 +504,15 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                     }
                     setOpenSectionKey((current) => (current === section.key ? null : section.key));
                   }}
-                  className={`flex w-full items-center gap-3 rounded-xl px-3 py-2 text-left transition ${
-                    sectionActive ? "bg-white/[0.06] text-[#c42924]" : "text-slate-500 hover:bg-white/[0.03]"
+                  className={`flex w-full items-center gap-[9px] rounded-[10px] px-[10px] py-[8px] text-left transition ${
+                    sectionActive ? "bg-white/[0.06] text-[#C42924]" : "text-slate-500 hover:bg-white/[0.03]"
                   }`}
                   title={collapsed ? section.label : undefined}
                 >
                   <span className="shrink-0">{section.icon}</span>
                   {!collapsed ? (
                     <>
-                      <span className="truncate text-sm font-semibold tracking-[0.02em] text-slate-200">{section.label}</span>
+                      <span className="truncate text-[13px] text-slate-200">{section.label}</span>
                       <ChevronDown
                         className={`ml-auto h-4 w-4 transition-transform ${sectionOpen ? "rotate-180" : ""}`}
                       />
@@ -523,7 +520,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                   ) : null}
                 </button>
                 {sectionOpen ? (
-                  <div className="space-y-1 pl-4">
+                  <div className="space-y-1 pl-5">
                   {section.children.map((item) => {
                     const active = isLinkActive(pathname, searchParams, item);
                     return (
@@ -532,13 +529,13 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                         href={item.href}
                         title={collapsed ? item.label : undefined}
                         onClick={() => setMobileOpen(false)}
-                        className={`group flex items-center gap-3 rounded-xl px-3 py-2.5 text-sm font-semibold transition ${
+                        className={`group flex items-center gap-[9px] rounded-[10px] px-[10px] py-[7px] text-[12px] transition ${
                           active
-                            ? "bg-[#c42924] text-white shadow-[0_10px_30px_rgba(196,41,36,0.22)]"
+                            ? "font-medium text-[#C42924]"
                             : "text-slate-400 hover:bg-white/[0.05] hover:text-white"
                         }`}
                       >
-                        <span className="shrink-0">{item.icon}</span>
+                        <span className="shrink-0 opacity-70">{item.icon}</span>
                         {!collapsed && <span className="truncate">{item.label}</span>}
                       </Link>
                     );
@@ -551,41 +548,45 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
         </nav>
 
         {/* User card */}
-        <div className="border-t border-white/8 p-3">
-          <div className={`rounded-xl border border-white/8 bg-white/[0.04] p-3 ${collapsed ? "text-center" : ""}`}>
-            {!collapsed && (
-              <>
-                <p className="text-xs font-semibold text-slate-500">Signed in as</p>
-                <p suppressHydrationWarning className="truncate text-sm font-bold text-white">
-                  {user?.name || "User"}
-                </p>
-                <p suppressHydrationWarning className="text-xs text-slate-500">
-                  {user?.designation?.replace(/_/g, " ") || user?.role || ""}
-                </p>
-              </>
-            )}
+        <div className="border-t border-white/8 px-[14px] py-3">
+          <div className={`${collapsed ? "flex justify-center" : "space-y-2"}`}>
+            <div className={`flex items-center gap-[10px] ${collapsed ? "justify-center" : ""}`}>
+              <div className="flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-full bg-[#C42924] text-[11px] font-medium text-white">
+              {(user?.name || "U").split(" ").map((part) => part[0]).slice(0, 2).join("").toUpperCase()}
+              </div>
+              {!collapsed ? (
+                <div className="min-w-0 flex-1">
+                  <p suppressHydrationWarning className="truncate text-[12px] font-medium text-white">
+                    {user?.name || "User"}
+                  </p>
+                  <p suppressHydrationWarning className="truncate text-[11px] text-slate-500">
+                    {user?.designation?.replace(/_/g, " ") || user?.role || ""}
+                  </p>
+                </div>
+              ) : null}
+            </div>
             <button
               type="button"
               onClick={handleLogout}
-              className={`mt-2 inline-flex items-center gap-1 rounded-lg border border-white/8 px-2.5 py-1.5 text-xs font-semibold text-slate-100 hover:bg-white/[0.08] ${
-                collapsed ? "mx-auto justify-center" : ""
+              className={`inline-flex items-center gap-1 rounded-lg border border-white/8 px-2.5 py-1.5 text-xs font-semibold text-slate-100 hover:bg-white/[0.08] ${
+                collapsed ? "justify-center" : "w-full justify-center"
               }`}
             >
               <LogOut className="h-3.5 w-3.5" />
-              {!collapsed && "Logout"}
+              {!collapsed ? "Logout" : null}
             </button>
           </div>
         </div>
       </aside>
 
       {/* Main content area */}
-      <div className={`${offsetClass} transition-all duration-200`}>
+      <div className={`${collapsed ? "md:pl-24" : "md:pl-[232px]"} transition-all duration-200`}>
         {/* Header */}
         <header
-          className={`fixed top-0 right-0 z-30 h-16 border-b border-white/[0.05] bg-[#0f141d]/94 shadow-[0_12px_40px_rgba(0,0,0,0.2)] backdrop-blur-xl supports-[backdrop-filter]:bg-[#0f141d]/88 ${headerOffsetClass} left-0 md:left-auto transition-all duration-200`}
+          className={`fixed top-0 right-0 z-30 h-[57px] border-b border-white/[0.05] bg-[#0f141d]/94 shadow-[0_12px_40px_rgba(0,0,0,0.2)] backdrop-blur ${collapsed ? "md:left-24" : "md:left-[232px]"} left-0 md:left-auto transition-all duration-200`}
         >
-          <div className="mx-auto flex h-full max-w-[1500px] items-center justify-between px-4 md:px-6">
-            <div className="flex items-center gap-3">
+          <div className="mx-auto flex h-full max-w-[1500px] items-center gap-4 px-7">
+            <div className="flex min-w-0 flex-1 items-center gap-3">
               {/* Mobile hamburger */}
               <button
                 type="button"
@@ -599,12 +600,12 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
               </button>
 
               {/* Search */}
-              <div className="hidden w-64 md:block lg:w-80">
-                <div ref={searchRef} className="relative">
+              <div className="hidden min-w-0 flex-1 md:block">
+                <div ref={searchRef} className="relative max-w-[340px]">
                   <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <input
                     type="text"
-                    placeholder="Search user name, mobile, or ID..."
+                    placeholder="Search member, mobile, or ID…"
                     value={globalSearchQuery}
                     onChange={(event) => {
                       setGlobalSearchQuery(event.target.value);
@@ -615,10 +616,10 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                         setGlobalSearchOpen(true);
                       }
                     }}
-                    className="relative z-10 w-full rounded-xl border border-white/10 bg-[#131b26] py-2 pr-4 pl-9 text-sm text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)] outline-none transition focus:border-[#c42924] focus:bg-[#172230]"
+                    className="relative z-10 w-full rounded-[10px] border border-white/10 bg-[#131b26] py-2 pr-4 pl-9 text-[13px] text-slate-100 outline-none transition focus:border-[#C42924]"
                   />
                   {globalSearchOpen ? (
-                    <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-50 overflow-hidden rounded-2xl border border-white/8 bg-[#131925] shadow-[0_24px_60px_rgba(0,0,0,0.42)]">
+                    <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-50 overflow-hidden rounded-[16px] border border-white/8 bg-[#131925] shadow-[0_24px_60px_rgba(0,0,0,0.42)]">
                       {globalSearchLoading ? (
                         <p className="px-4 py-3 text-sm text-slate-400">Searching users...</p>
                       ) : globalSearchQuery.trim().length < 2 ? (
@@ -659,7 +660,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
               </div>
             </div>
 
-            <div className="flex items-center gap-2">
+            <div className="flex shrink-0 items-center gap-2">
               {/* Branch selector */}
               {branches.length > 0 ? (
                 canSwitchBranches && branches.length > 1 ? (
@@ -675,7 +676,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                     ))}
                   </select>
                 ) : (
-                  <div className="rounded-lg border border-white/10 bg-[#131b26] px-3 py-2 text-sm font-medium text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]">
+                  <div className="rounded-full border border-white/10 bg-[#131b26] px-3 py-1.5 text-[12px] font-medium text-slate-100">
                     {selectedBranchName || branches[0]?.name || "Branch"}
                   </div>
                 )
@@ -685,7 +686,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                 href={calendarHref}
                 aria-label="Calendar"
                 title="Open class calendar"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-[#131b26] text-slate-300 transition hover:bg-[#1a2534] hover:text-white"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-[#131b26] text-slate-300 transition hover:bg-[#1a2534] hover:text-white"
               >
                 <CalendarDays className="h-4 w-4" />
               </Link>
@@ -693,7 +694,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                 href={notificationHref}
                 aria-label="Notifications"
                 title="Open notifications"
-                className="inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-[#131b26] text-slate-300 transition hover:bg-[#1a2534] hover:text-white"
+                className="inline-flex h-8 w-8 items-center justify-center rounded-full border border-white/10 bg-[#131b26] text-slate-300 transition hover:bg-[#1a2534] hover:text-white"
               >
                 <Bell className="h-4 w-4" />
               </Link>
@@ -701,7 +702,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
           </div>
         </header>
 
-        <main className="mx-auto max-w-[1500px] px-4 pt-24 pb-8 md:px-6">{children}</main>
+        <main className="mx-auto max-w-[1500px] px-8 pt-[85px] pb-8">{children}</main>
       </div>
     </div>
   );

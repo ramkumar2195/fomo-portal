@@ -176,13 +176,13 @@ function HeroStatCard({
     <button
       type="button"
       onClick={onClick}
-      className={`rounded-3xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:border-[#C42429] hover:shadow-md ${accentClass}`}
+      className={`rounded-3xl border border-white/10 bg-[#121722] p-5 text-left shadow-sm transition hover:border-[#C42429] hover:bg-[#171d29] hover:shadow-md ${accentClass}`}
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">{card.title}</p>
-          <p className="mt-3 text-4xl font-bold tracking-tight text-[#282828]">{card.value}</p>
-          <p className="mt-2 text-sm text-slate-600">{card.subtitle}</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">{card.title}</p>
+          <p className="mt-3 text-4xl font-bold tracking-tight text-white">{card.value}</p>
+          <p className="mt-2 text-sm text-slate-300">{card.subtitle}</p>
         </div>
         <div className={`inline-flex shrink-0 rounded-2xl p-3 ${card.iconClass}`}>{card.icon}</div>
       </div>
@@ -237,13 +237,13 @@ function MetricValueCard({
     <button
       type="button"
       onClick={onClick}
-      className="rounded-3xl border border-slate-200 bg-white p-5 text-left shadow-sm transition hover:border-[#C42429] hover:shadow-md"
+      className="rounded-3xl border border-white/10 bg-[#121722] p-5 text-left shadow-sm transition hover:border-[#C42429] hover:bg-[#171d29] hover:shadow-md"
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-semibold text-slate-600">{card.title}</p>
-          <p className="mt-4 text-4xl font-bold tracking-tight text-[#282828]">{card.value}</p>
-          <p className="mt-2 text-sm text-slate-500">{card.subtitle}</p>
+          <p className="text-sm font-semibold text-slate-300">{card.title}</p>
+          <p className="mt-4 text-4xl font-bold tracking-tight text-white">{card.value}</p>
+          <p className="mt-2 text-sm text-slate-400">{card.subtitle}</p>
         </div>
         <div className={`inline-flex shrink-0 rounded-2xl p-3 ${card.iconClass}`}>{card.icon}</div>
       </div>
@@ -265,11 +265,11 @@ function CompactMetricCard({
     <button
       type="button"
       onClick={onClick}
-      className="rounded-2xl border border-slate-200 bg-white p-4 text-left transition hover:border-[#C42429] hover:shadow-sm"
+      className="rounded-2xl border border-white/10 bg-[#121722] p-4 text-left transition hover:border-[#C42429] hover:bg-[#171d29] hover:shadow-sm"
     >
-      <p className="text-sm font-medium text-slate-500">{card.title}</p>
-      <p className="mt-2 text-3xl font-bold tracking-tight text-[#282828]">{card.value}</p>
-      {badge ? <div className="mt-3">{badge}</div> : <p className="mt-2 text-xs text-slate-500">{card.subtitle}</p>}
+      <p className="text-sm font-medium text-slate-400">{card.title}</p>
+      <p className="mt-2 text-3xl font-bold tracking-tight text-white">{card.value}</p>
+      {badge ? <div className="mt-3">{badge}</div> : <p className="mt-2 text-xs text-slate-400">{card.subtitle}</p>}
     </button>
   );
 }
@@ -772,11 +772,11 @@ export default function AdminDashboardPage({
 
       <section className="grid gap-4 xl:grid-cols-12">
         <div className="xl:col-span-12">
-          <section className="rounded-[30px] border border-slate-200 bg-white p-6 shadow-sm">
-            <div className="flex flex-col gap-5 border-b border-slate-200 pb-6 lg:flex-row lg:items-start lg:justify-between">
+          <section className="rounded-[30px] border border-white/10 bg-[#121722] p-6 shadow-sm">
+            <div className="flex flex-col gap-5 border-b border-white/10 pb-6 lg:flex-row lg:items-start lg:justify-between">
               <div>
-                <p className="text-4xl font-bold tracking-tight text-[#282828]">{headingTitle || "Super Admin"}</p>
-                <p className="mt-2 text-base text-slate-500">
+                <p className="text-4xl font-bold tracking-tight text-white">{headingTitle || "Super Admin"}</p>
+                <p className="mt-2 text-base text-slate-300">
                   {headingSubtitle || (selectedBranchName && selectedBranchName !== "All Branches" ? `${selectedBranchName} overview` : "All branches overview")}{generatedDateLabel ? ` - ${generatedDateLabel}` : ""}
                 </p>
               </div>
@@ -824,10 +824,10 @@ export default function AdminDashboardPage({
         </div>
       </section>
 
-      <section className="grid gap-4 lg:grid-cols-12">
-        <div className="lg:col-span-8">
+      <section className="grid gap-4 xl:grid-cols-12">
+        <div className="xl:col-span-8">
           <SurfaceCard title="CRM">
-            <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,1.45fr)_minmax(320px,0.95fr)]">
+            <div className="grid items-stretch gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,1fr)]">
               <div className="space-y-4">
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                   <SnapshotStat label="Total Enquiries" value={formatCount(inquiryTotal)} subtitle="CRM pipeline volume" tone="blue" />
@@ -858,7 +858,7 @@ export default function AdminDashboardPage({
                   </div>
                 </div>
               </div>
-              <div className="h-full">
+              <div className="h-full min-h-[420px]">
                 <DonutLegendChart
                   title="Top Sources"
                   slices={
@@ -878,7 +878,7 @@ export default function AdminDashboardPage({
           </SurfaceCard>
         </div>
 
-        <div className="lg:col-span-4">
+        <div className="xl:col-span-4">
           <SurfaceCard title="Revenue">
             <div className="grid gap-3 sm:grid-cols-2">
               {revenueCards.map((card) => (

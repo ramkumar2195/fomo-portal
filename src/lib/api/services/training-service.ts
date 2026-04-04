@@ -47,6 +47,11 @@ export interface ClientAssignmentRequest {
   trainingType: "GENERAL" | "PERSONAL_TRAINING";
   startDate: string;
   endDate?: string;
+  productVariantId?: number;
+  packageName?: string;
+  totalSessions?: number;
+  rescheduleLimit?: number;
+  slotDurationMinutes?: number;
 }
 
 function toRecord(payload: unknown): JsonRecord {
@@ -486,10 +491,9 @@ export const trainingService = {
   async cancelPtSession(token: string, sessionId: string | number): Promise<unknown> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "training",
-      path: `/api/training/pt/cancel/${sessionId}`,
+      path: `/api/training/pt-sessions/${sessionId}/cancel`,
       token,
-      method: "POST",
-      body: {},
+      method: "PATCH",
     });
 
     return unwrapData<unknown>(response);
@@ -801,7 +805,7 @@ export const trainingService = {
 
   async generateSessionsFromSlots(
     token: string,
-    payload: { assignmentId: number; fromDate: string; toDate: string },
+    payload: { assignmentId: number; fromDate: string; toDate: string; maxSessions?: number },
   ): Promise<unknown[]> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "training",

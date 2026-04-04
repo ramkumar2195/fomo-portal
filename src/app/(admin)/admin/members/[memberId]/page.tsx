@@ -27,7 +27,7 @@ import { subscriptionService } from "@/lib/api/services/subscription-service";
 import { trainingService } from "@/lib/api/services/training-service";
 import { usersService } from "@/lib/api/services/users-service";
 import { formatMemberCode } from "@/lib/inquiry-code";
-import { UserDirectoryItem, FreezeHistoryEntry, InvoiceSummary } from "@/types/models";
+import { UserDirectoryItem, FreezeHistoryEntry, InvoiceSummary, BillingReceiptSummary } from "@/types/models";
 import { InquiryRecord } from "@/types/inquiry";
 import {
   MemberAccessStateResponse,
@@ -41,7 +41,6 @@ import {
 } from "@/types/member-profile";
 import { BranchResponse } from "@/types/admin";
 import { BillingSettings, CatalogProduct, CatalogVariant, MembershipPolicySettings } from "@/lib/api/services/subscription-service";
-import { ClientAssignmentRequest } from "@/lib/api/services/training-service";
 
 type TabPayloadMap = {
   overview: MemberProfileShellResponse;
@@ -51,7 +50,10 @@ type TabPayloadMap = {
     history: unknown[];
     programEnrollments?: unknown[];
   };
-  billing: InvoiceSummary[];
+  billing: {
+    invoices: InvoiceSummary[];
+    receipts: BillingReceiptSummary[];
+  };
   attendance: {
     records: unknown[];
     biometricDevices: unknown[];
@@ -63,7 +65,7 @@ type TabPayloadMap = {
     ledger: Record<string, unknown>;
   };
   "recovery-services": MemberAccessStateResponse;
-  "personal-training": { assignments: unknown[]; sessions: unknown[] };
+  "personal-training": { assignments: unknown[]; sessions: unknown[]; slots?: unknown[] };
   progress: {
     summary: Record<string, unknown>;
     measurements: unknown[];
@@ -90,7 +92,7 @@ const TAB_ORDER: Array<{ key: MemberProfileTabKey; label: string }> = [
   { key: "notes", label: "Follow-ups & Comments" },
   { key: "audit-trail", label: "Audit Trail" },
   { key: "fitness-assessment", label: "Fitness & Medical" },
-  { key: "progress", label: "Progress" },
+  { key: "progress", label: "Training" },
 ];
 
 type ActionModalKey =
@@ -99,6 +101,8 @@ type ActionModalKey =
   | "renew"
   | "renew-billing"
   | "upgrade"
+  | "upgrade-billing"
+  | "pt-billing"
   | "downgrade"
   | "transfer"
   | "pt"
@@ -177,7 +181,7 @@ interface CommercialBreakdown {
 }
 
 interface CompletedBillingState {
-  context: "renewal";
+  context: "renewal" | "upgrade" | "pt";
   title: string;
   message: string;
   invoiceId: number;
@@ -187,6 +191,24 @@ interface CompletedBillingState {
   paymentStatus: string;
   totalPaidAmount: number;
   balanceAmount: number;
+}
+
+type PtScheduleTemplate = "EVERYDAY" | "ALTERNATE_DAYS";
+
+const PT_SLOT_DURATION_MINUTES = 60;
+const PT_WEEKDAY_OPTIONS = [
+  { code: "MONDAY", label: "Mon" },
+  { code: "TUESDAY", label: "Tue" },
+  { code: "WEDNESDAY", label: "Wed" },
+  { code: "THURSDAY", label: "Thu" },
+  { code: "FRIDAY", label: "Fri" },
+  { code: "SATURDAY", label: "Sat" },
+] as const;
+const PT_EVERYDAY_DAY_CODES = PT_WEEKDAY_OPTIONS.map((day) => day.code);
+
+interface LifecycleBillingTabState {
+  invoices: InvoiceSummary[];
+  receipts: BillingReceiptSummary[];
 }
 
 function toRecord(payload: unknown): RecordLike {
@@ -211,6 +233,104 @@ function normalizeDisplayPlanName(value: string): string {
     .replace(/\s{2,}/g, " ")
     .replace(/\s+[-/]\s*$/g, "")
     .trim();
+}
+
+function formatVariantDisplayLabel(variant?: CatalogVariant | null, fallback?: string): string {
+  if (!variant) {
+    return fallback || "-";
+  }
+
+  const variantName = String(variant.variantName || "").replace(/\bTransform\b/gi, "Transformation").trim();
+  const durationLabel = formatPlanDuration(variant.durationMonths, variant.validityDays);
+  if (!variantName) {
+    return durationLabel;
+  }
+  if (variantName.toLowerCase().includes(durationLabel.toLowerCase())) {
+    return variantName;
+  }
+  return `${variantName} · ${durationLabel}`;
+}
+
+function sanitizeMembershipVariantTitle(value?: string): string {
+  const raw = String(value || "").replace(/\bTransform\b/gi, "Transformation").trim();
+  if (!raw) {
+    return "-";
+  }
+
+  return normalizeDisplayPlanName(
+    raw
+      .replace(/\b\d+\s*(M|L)\b/gi, "")
+      .replace(/\b\d+\s*months?\b/gi, "")
+      .replace(/\b\d+\s*days?\b/gi, "")
+      .replace(/[·,-]\s*$/g, "")
+      .replace(/\s{2,}/g, " ")
+      .trim(),
+  );
+}
+
+function formatPtProductName(value?: string): string {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "Personal Training";
+  }
+  return raw
+    .replace(/\bPT\b/gi, "Personal Training")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function derivePtRescheduleLimit(durationMonths: number): number {
+  return Math.max(0, durationMonths) * 2;
+}
+
+function addMinutesToTime(timeValue: string, minutesToAdd: number): string {
+  if (!timeValue) {
+    return "";
+  }
+  const [hours, minutes] = timeValue.split(":").map((part) => Number(part));
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return "";
+  }
+  const totalMinutes = hours * 60 + minutes + minutesToAdd;
+  const nextHours = Math.floor(totalMinutes / 60) % 24;
+  const nextMinutes = totalMinutes % 60;
+  return `${String(nextHours).padStart(2, "0")}:${String(nextMinutes).padStart(2, "0")}`;
+}
+
+function formatClockTime(timeValue?: string): string {
+  if (!timeValue) {
+    return "-";
+  }
+  const [hoursValue, minutesValue] = String(timeValue).split(":");
+  const hours = Number(hoursValue);
+  const minutes = Number(minutesValue);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return timeValue;
+  }
+  const normalizedHours = ((hours % 24) + 24) % 24;
+  const meridiem = normalizedHours >= 12 ? "PM" : "AM";
+  const displayHours = normalizedHours % 12 || 12;
+  return `${String(displayHours).padStart(2, "0")}:${String(minutes).padStart(2, "0")} ${meridiem}`;
+}
+
+function buildPtTimeSlotOptions(): string[] {
+  const windows = [
+    { start: 6 * 60, end: 10 * 60 },
+    { start: 17 * 60, end: 21 * 60 },
+  ];
+  const options: string[] = [];
+  windows.forEach((window) => {
+    for (let minute = window.start; minute + PT_SLOT_DURATION_MINUTES <= window.end; minute += PT_SLOT_DURATION_MINUTES) {
+      const hours = Math.floor(minute / 60);
+      const mins = minute % 60;
+      options.push(`${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`);
+    }
+  });
+  return options;
+}
+
+function formatPtDayLabel(dayCode: string): string {
+  return PT_WEEKDAY_OPTIONS.find((day) => day.code === dayCode)?.label || humanizeLabel(dayCode);
 }
 
 function buildSyntheticInternalEmail(seed?: string, domain = "members.fomotraining.internal"): string {
@@ -562,6 +682,23 @@ function formatDateOnly(value?: string): string {
     month: "short",
     year: "numeric",
   });
+}
+
+function toLocalIsoDate(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function addDaysToLocalIsoDate(value: string, days: number): string {
+  const [year, month, day] = value.split("-").map((part) => Number(part));
+  const parsed = new Date(year, (month || 1) - 1, day || 1);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  parsed.setDate(parsed.getDate() + days);
+  return toLocalIsoDate(parsed);
 }
 
 function formatTimeOnly(value?: string): string {
@@ -992,6 +1129,11 @@ function formatPlanDuration(durationMonths: number, validityDays: number): strin
   return "-";
 }
 
+function formatFlexDayLabel(count: number): string {
+  const normalized = Math.max(0, Number(count || 0));
+  return `${normalized} ${normalized === 1 ? "day" : "days"}`;
+}
+
 function roundAmount(value: number): number {
   return Math.round(Number.isFinite(value) ? value : 0);
 }
@@ -1196,14 +1338,33 @@ function extractMembershipPortfolioItem(payload: unknown): MembershipPortfolioIt
   };
 }
 
-function deriveUpgradeWindowDays(durationMonths: number, validityDays: number): number {
-  if (durationMonths >= 6 || validityDays >= 180) {
-    return 28;
+function pickPortfolioPrimaryMembership(
+  candidate: MembershipPortfolioItem | null,
+  items: MembershipPortfolioItem[],
+): MembershipPortfolioItem | null {
+  const current = items.filter((entry) => entry.family !== "CREDIT_PACK");
+  const preferredCurrent = current.filter((entry) => entry.family !== "PT");
+  if (candidate && candidate.family !== "CREDIT_PACK" && candidate.family !== "PT") {
+    return candidate;
   }
-  if (durationMonths >= 3 || validityDays >= 90) {
-    return 15;
+  return preferredCurrent[0] || current[0] || candidate || null;
+}
+
+function buildDisplayedMembershipCards(
+  items: MembershipPortfolioItem[],
+  primary: MembershipPortfolioItem | null,
+): MembershipPortfolioItem[] {
+  const current = items.filter((entry) => entry.family !== "CREDIT_PACK");
+  if (!current.length) {
+    return [];
   }
-  return 7;
+  if (!primary) {
+    return current;
+  }
+  return [
+    primary,
+    ...current.filter((entry) => entry.subscriptionId !== primary.subscriptionId),
+  ];
 }
 
 async function withTabTimeout<T>(promise: Promise<T>, label: string, timeoutMs = 12000): Promise<T> {
@@ -1238,6 +1399,7 @@ export default function MemberProfilePage() {
   const [tabData, setTabData] = useState<Partial<TabPayloadMap>>({});
   const [loadingTabs, setLoadingTabs] = useState<Partial<Record<MemberProfileTabKey, boolean>>>({});
   const [tabErrors, setTabErrors] = useState<Partial<Record<MemberProfileTabKey, string>>>({});
+  const [lifecycleAuditEntries, setLifecycleAuditEntries] = useState<MemberProfileAuditEntry[]>([]);
   // Refs mirror loadingTabs/tabData for use in effect guards without causing re-runs
   const loadingTabsRef = useRef(loadingTabs);
   loadingTabsRef.current = loadingTabs;
@@ -1315,6 +1477,17 @@ export default function MemberProfilePage() {
     coachId: "",
     startDate: "",
     endDate: "",
+    totalSessions: "",
+    sellingPrice: "",
+    discountPercent: "",
+    scheduleTemplate: "ALTERNATE_DAYS" as PtScheduleTemplate,
+    scheduleDays: ["MONDAY", "WEDNESDAY", "FRIDAY"] as string[],
+    slotStartTime: "06:00",
+  });
+  const [ptBillingForm, setPtBillingForm] = useState({
+    paymentMode: "UPI",
+    receivedAmount: "",
+    balanceDueDate: "",
   });
   const [visitForm, setVisitForm] = useState({
     paymentMode: "UPI",
@@ -1439,6 +1612,11 @@ export default function MemberProfilePage() {
   const visibleTabs = useMemo(() => {
     const serverKeys = new Set((shell?.tabs || []).map((tab) => tab.key));
     const hasServerTabs = serverKeys.size > 0;
+    const subscriptionDashboard = toRecord(tabData.subscriptions?.dashboard);
+    const subscriptionMemberships = toArray(subscriptionDashboard.memberships)
+      .map(extractMembershipPortfolioItem)
+      .filter((entry): entry is MembershipPortfolioItem => entry !== null);
+    const hasPtSubscription = subscriptionMemberships.some((entry) => entry.family === "PT");
 
     // Derive category from shell to filter PT tab (productCategoryCode lives in overview, not summary)
     const shellCategory = String(
@@ -1447,20 +1625,24 @@ export default function MemberProfilePage() {
       (shell?.summary as Record<string, unknown>)?.productCategoryCode ||
       (shell?.summary as Record<string, unknown>)?.categoryCode || ""
     ).toUpperCase();
-    const memberHasPt = hasPtAssignment || shellCategory === "PT" || shellCategory === "TRANSFORMATION";
+    const memberHasPt = hasPtAssignment || hasPtSubscription || shellCategory === "PT" || shellCategory === "TRANSFORMATION";
 
     return TAB_ORDER
       .filter((tab) => !hasServerTabs || serverKeys.has(tab.key))
       .filter((tab) => {
         // Show PT tab if member has PT subscription, active PT assignment, or Transformation package (PT bundled)
         if (tab.key === "personal-training") return memberHasPt;
+        if (tab.key === "progress" && memberHasPt) return false;
         return true;
       })
       .map((tab) => ({
         key: tab.key,
-        label: shell?.tabs?.find((item) => item.key === tab.key)?.label || tab.label,
+        label:
+          tab.key === "progress"
+            ? "Training"
+            : shell?.tabs?.find((item) => item.key === tab.key)?.label || tab.label,
       }));
-  }, [shell, hasPtAssignment]);
+  }, [hasPtAssignment, shell, tabData.subscriptions?.dashboard]);
 
   useEffect(() => {
     if (!token) {
@@ -1472,7 +1654,7 @@ export default function MemberProfilePage() {
     (async () => {
       setSupportLoading(true);
       try {
-        const [branchPage, coachRows, staffRows, memberRows, products, variants, billing, membershipPolicy, inquiryPage] = await Promise.all([
+        const [branchPage, coachRows, staffRows, memberRows, products, variants, billing, membershipPolicy, inquiryPage, lifecycleAudit] = await Promise.all([
           branchService.listBranches(token, { page: 0, size: 100 }),
           usersService.searchUsers(token, { role: "COACH", active: true }),
           usersService.searchUsers(token, { role: "STAFF", active: true }),
@@ -1482,6 +1664,7 @@ export default function MemberProfilePage() {
           subscriptionService.getBillingSettings(token),
           subscriptionService.getMembershipPolicySettings(token),
           subscriptionService.searchInquiriesPaged(token, {}, 0, 200),
+          subscriptionService.getMemberLifecycleAudit(token, memberId).catch(() => []),
         ]);
 
         if (!active) {
@@ -1496,6 +1679,7 @@ export default function MemberProfilePage() {
         setCatalogVariants(variants);
         setBillingSettings(billing);
         setMembershipPolicySettings(membershipPolicy);
+        setLifecycleAuditEntries(lifecycleAudit);
         setTransferInquiries(
           (inquiryPage.content || []).filter((item) => {
             const status = String(item.status || "").toUpperCase();
@@ -1509,10 +1693,6 @@ export default function MemberProfilePage() {
           const ptArr = Array.isArray(ptData) ? ptData : [];
           if (active) {
             setHasPtAssignment(ptArr.length > 0);
-            // Pre-populate PT tab data so it doesn't re-fetch
-            if (ptArr.length > 0) {
-              setTabData((current) => ({ ...current, "personal-training": { assignments: ptArr, sessions: [] } }));
-            }
           }
         } catch {
           // Training service may 404 — means no PT assignments
@@ -1578,9 +1758,12 @@ export default function MemberProfilePage() {
             break;
           case "billing":
             payload = (await withTabTimeout(
-              subscriptionService.getInvoicesByMember(token, memberId),
+              Promise.all([
+                subscriptionService.getMemberBillingInvoices(token, memberId),
+                subscriptionService.getMemberBillingReceipts(token, memberId),
+              ]).then(([invoices, receipts]) => ({ invoices, receipts })),
               "billing",
-            )) as InvoiceSummary[];
+            )) as LifecycleBillingTabState;
             break;
           case "attendance":
           {
@@ -1998,7 +2181,9 @@ export default function MemberProfilePage() {
       : "Assigned Trainer";
   const clientRepName = pickFromSourcesString(shellSources, ["clientRepName", "clientRepresentativeName", "clientRep"]) || "-";
   const interestedIn = pickFromSourcesString(shellSources, ["interestedIn"]) || "-";
-  const billingRepName = pickFromSourcesString(shellSources, ["billedByStaffName", "billingRepName", "billingRepresentativeName"]) || "-";
+  const billingRepName =
+    pickFromSourcesString(shellSources, ["billedByStaffName", "billingRepName", "billingRepresentativeName"]) ||
+    (clientRepName !== "-" ? clientRepName : "-");
   const sourceInquiryId = pickFromSourcesNumber(shellSources, ["sourceInquiryId", "inquiryId", "leadId"]);
   const memberCode =
     pickFromSourcesString(shellSources, ["memberCode", "code", "externalCode"]) ||
@@ -2015,11 +2200,17 @@ export default function MemberProfilePage() {
     shell?.fullName ||
     pickFromSourcesString(shellSources, ["fullName", "name"]) ||
     `Member ${memberCode}`;
-  const emergencyContact = pickFromSourcesString(shellSources, [
+  const emergencyContactName = pickFromSourcesString(shellSources, [
     "emergencyContactName",
     "emergencyName",
     "emergencyContact",
-  ]) || "-";
+  ]) || "";
+  const emergencyContactPhone = pickFromSourcesString(shellSources, [
+    "emergencyContactPhone",
+    "emergencyPhone",
+    "emergencyMobileNumber",
+  ]) || "";
+  const emergencyContact = [emergencyContactName, emergencyContactPhone].filter(Boolean).join(" · ") || "-";
   const referredBy = pickFromSourcesString(shellSources, ["referralSource", "source", "leadSource", "sourceName"]) || "-";
   const shellPaidAmount = pickFromSourcesNumber(shellSources, ["totalPaidAmount", "paidAmount"]);
   const shellBalanceAmount = pickFromSourcesNumber(shellSources, ["balanceAmount", "outstandingAmount"]);
@@ -2028,19 +2219,30 @@ export default function MemberProfilePage() {
   const attendancePayload = toRecord(tabData.attendance);
   const attendanceRecords = Array.isArray(attendancePayload.records) ? attendancePayload.records : [];
   const biometricDeviceRecords = toArray<RecordLike>(attendancePayload.biometricDevices).filter((device) => isRealBiometricDevice(device));
-  const availableBiometricDevices = biometricDeviceRecords.filter((device) => {
-    const deviceBranchCode = pickString(device, ["branchCode"]);
-    if (!branchCode || !deviceBranchCode) {
-      return true;
-    }
-    return deviceBranchCode === branchCode;
-  });
   const biometricLogRecords = toArray<RecordLike>(attendancePayload.biometricLogs).filter((entry) => {
     const logMemberId = pickString(entry, ["memberId"]);
     const logPin = pickString(entry, ["deviceUserId"]);
     return logMemberId === String(memberId) || (!!normalizedPhonePin && logPin === normalizedPhonePin);
   });
   const enrollmentRecords = toArray<RecordLike>(attendancePayload.enrollments);
+  const visibleBiometricSerials = new Set(
+    [
+      ...enrollmentRecords.map((entry) => pickString(entry, ["deviceSerialNumber"])),
+      ...biometricLogRecords.map((entry) => pickString(entry, ["deviceSerialNumber"])),
+    ].filter(Boolean),
+  );
+  const normalizedBranchCode = String(branchCode || "").trim().toUpperCase();
+  const availableBiometricDevices = biometricDeviceRecords.filter((device) => {
+    const serial = pickString(device, ["serialNumber"]);
+    if (serial && visibleBiometricSerials.has(serial)) {
+      return true;
+    }
+    const deviceBranchCode = String(pickString(device, ["branchCode"]) || "").trim().toUpperCase();
+    if (!normalizedBranchCode || !deviceBranchCode) {
+      return true;
+    }
+    return deviceBranchCode === normalizedBranchCode;
+  });
   const enrollmentByDeviceSerial = new Map(
     enrollmentRecords.map((entry) => [
       pickString(entry, ["deviceSerialNumber"]),
@@ -2086,7 +2288,7 @@ export default function MemberProfilePage() {
     });
   const checkInRows = attendanceLogRows.filter((entry) => entry.eventLabel.toUpperCase().includes("CHECK-IN"));
 
-  const overviewBilling = tabData.billing || [];
+  const overviewBilling = (tabData.billing as LifecycleBillingTabState | undefined)?.invoices || [];
   const invoiceStats = extractInvoiceStats(overviewBilling);
   const displayInvoiceStats = overviewBilling.length
     ? invoiceStats
@@ -2176,7 +2378,7 @@ export default function MemberProfilePage() {
   const portfolioMembershipItems = toArray(subscriptionsDashboardRecord.memberships)
     .map(extractMembershipPortfolioItem)
     .filter((entry): entry is MembershipPortfolioItem => entry !== null);
-  const todayIsoDate = new Date().toISOString().slice(0, 10);
+  const todayIsoDate = toLocalIsoDate(new Date());
   const isUpcomingMembershipRecord = (entry: MembershipPortfolioItem | null | undefined) => {
     if (!entry) {
       return false;
@@ -2186,36 +2388,22 @@ export default function MemberProfilePage() {
   };
   const currentPortfolioMembershipItems = portfolioMembershipItems.filter((entry) => !isUpcomingMembershipRecord(entry));
   const portfolioPrimaryCandidate = extractMembershipPortfolioItem(subscriptionsDashboardRecord.primaryMembership);
-  const portfolioPrimaryMembership = !isUpcomingMembershipRecord(portfolioPrimaryCandidate)
-    ? portfolioPrimaryCandidate || currentPortfolioMembershipItems[0] || null
-    : currentPortfolioMembershipItems[0] || null;
+  const portfolioPrimaryMembership = pickPortfolioPrimaryMembership(
+    !isUpcomingMembershipRecord(portfolioPrimaryCandidate) ? portfolioPrimaryCandidate : null,
+    currentPortfolioMembershipItems,
+  );
   const portfolioTransformationCandidate = extractMembershipPortfolioItem(subscriptionsDashboardRecord.transformationMembership);
   const portfolioTransformationMembership = !isUpcomingMembershipRecord(portfolioTransformationCandidate)
     ? portfolioTransformationCandidate
     : currentPortfolioMembershipItems.find((entry) => entry.family === "TRANSFORMATION") || null;
-  const portfolioSecondaryMemberships = toArray(subscriptionsDashboardRecord.secondaryMemberships)
-    .map(extractMembershipPortfolioItem)
-    .filter((entry): entry is MembershipPortfolioItem => entry !== null)
-    .filter((entry) => !isUpcomingMembershipRecord(entry));
   const hasActivePtMembership = portfolioMembershipItems.some((entry) => {
     const normalizedStatus = String(entry.status || "").toUpperCase();
     return entry.family === "PT" && !["EXPIRED", "LAPSED", "INACTIVE", "CANCELLED", "CANCELED"].includes(normalizedStatus);
   });
-  const overviewDisplayedMemberships = portfolioTransformationMembership
-    ? [
-        portfolioTransformationMembership,
-        ...portfolioSecondaryMemberships.filter(
-          (entry) =>
-            entry.subscriptionId !== portfolioTransformationMembership.subscriptionId &&
-            entry.family !== "PT",
-        ),
-      ]
-    : portfolioPrimaryMembership
-      ? [
-          portfolioPrimaryMembership,
-          ...portfolioSecondaryMemberships.filter((entry) => entry.subscriptionId !== portfolioPrimaryMembership.subscriptionId),
-        ]
-      : currentPortfolioMembershipItems;
+  const overviewDisplayedMemberships = buildDisplayedMembershipCards(
+    currentPortfolioMembershipItems,
+    portfolioTransformationMembership || portfolioPrimaryMembership,
+  );
   const fallbackOverviewMemberships: MembershipPortfolioItem[] = [
     ...(planName && planName !== "-" && planName !== "No active membership"
       ? [
@@ -2319,7 +2507,24 @@ export default function MemberProfilePage() {
       return portfolioPrimaryMembership.subscriptionId;
     });
   }, [currentPortfolioMembershipItems, portfolioPrimaryMembership]);
-  const entitlementFeatures = entitlementRecords.map((entry) => String(entry.feature || "").toUpperCase());
+  const visibleCurrentMembershipLabel = normalizeDisplayPlanName(
+    portfolioPrimaryMembership?.variantName || portfolioPrimaryMembership?.productName || planName,
+  );
+  const visibleCurrentMembershipDuration = formatPlanDuration(
+    portfolioPrimaryMembership?.durationMonths || durationMonths,
+    portfolioPrimaryMembership?.validityDays || validityDays,
+  );
+  const visibleCurrentMembershipStatus = humanizeLabel(
+    portfolioPrimaryMembership?.status || membershipStatus,
+  );
+  const selectedEntitlementRecords = normalizedEntitlementRecords.filter((entry) => {
+    const linkedSubscriptionId = extractSubscriptionIdFromEntitlementSource(entry.source);
+    if (!linkedSubscriptionId) {
+      return true;
+    }
+    return linkedSubscriptionId === selectedSubscriptionId;
+  });
+  const entitlementFeatures = selectedEntitlementRecords.map((entry) => String(entry.feature || "").toUpperCase());
   const hasFreezeEntitlement = entitlementFeatures.some((feature) =>
     feature === "PAUSE_BENEFIT" ||
     feature === "PAUSE_BENEFITS" ||
@@ -2338,24 +2543,117 @@ export default function MemberProfilePage() {
   const hasOverviewMembership =
     overviewMembershipCards.length > 0 &&
     !["EXPIRED", "LAPSED", "INACTIVE"].some((status) => membershipStatus.toUpperCase().includes(status));
+  const currentProductRank = productTierRank(membershipFamily, selectedProductCode);
+  const eligibleUpgradeVariants = useMemo(
+    () =>
+      catalogVariants.filter((variant) => {
+        if (variant.categoryCode === "CREDIT_PACK") {
+          return false;
+        }
+        if (variant.categoryCode === "PT" && !isPtPlan) {
+          return false;
+        }
+
+        const currentVariant = catalogVariants.find((item) => String(item.variantId) === String(selectedProductVariantId));
+        const currentDuration = currentVariant?.durationMonths || selectedDurationMonths;
+        const currentValidity = currentVariant?.validityDays || selectedValidityDays;
+        const currentRank = currentProductRank;
+        const candidateRank = productTierRank(membershipFamily, variant.productCode);
+        const sameProduct = variant.productCode === selectedProductCode;
+
+        if (isFlagshipPlan && variant.categoryCode !== "FLAGSHIP") {
+          return false;
+        }
+        if (isFlexPlan && !((variant.categoryCode === "FLEX" && variant.productCode === selectedProductCode) || variant.categoryCode === "FLAGSHIP")) {
+          return false;
+        }
+        if (isPtPlan && !(variant.categoryCode === "PT" && isSamePtTrack(selectedProductCode, variant.productCode))) {
+          return false;
+        }
+        if (isGroupClassPlan && variant.productCode !== selectedProductCode) {
+          return false;
+        }
+        if (isTransformationPlan && variant.categoryCode !== "TRANSFORMATION") {
+          return false;
+        }
+
+        if (sameProduct) {
+          if (currentDuration > 0 && variant.durationMonths > 0) {
+            return variant.durationMonths > currentDuration;
+          }
+          if (currentValidity > 0 && variant.validityDays > 0) {
+            return variant.validityDays > currentValidity;
+          }
+        }
+
+        if (candidateRank > currentRank) {
+          if (currentDuration > 0 && variant.durationMonths > 0) {
+            return variant.durationMonths >= currentDuration;
+          }
+          if (currentValidity > 0 && variant.validityDays > 0) {
+            return variant.validityDays >= currentValidity;
+          }
+          return true;
+        }
+
+        return false;
+      }),
+    [
+      catalogVariants,
+      currentProductRank,
+      isFlagshipPlan,
+      isFlexPlan,
+      isGroupClassPlan,
+      isPtPlan,
+      isTransformationPlan,
+      membershipFamily,
+      selectedDurationMonths,
+      selectedProductCode,
+      selectedProductVariantId,
+      selectedValidityDays,
+    ],
+  );
   const isAdminOperator = user?.role === "ADMIN";
   const isStaffOperator = user?.role === "STAFF";
   const canOperateMemberships = isAdminOperator || isStaffOperator;
   const canManageTransfers = isAdminOperator || (user?.role === "STAFF" && user?.designation === "GYM_MANAGER");
   const pauseBenefitDays = Math.max(
     currentCatalogVariant?.passBenefitDays || 0,
-    normalizedEntitlementRecords
+    selectedEntitlementRecords
       .filter((entry) => String(entry.feature || "").toUpperCase() === "PAUSE_BENEFIT")
       .reduce((max, entry) => Math.max(max, Number(entry.includedCount || 0)), 0),
   );
+  const currentUpgradeWindowDays =
+    selectedDurationMonths >= 6 || selectedValidityDays >= 180
+      ? membershipPolicySettings.upgradeWindowLongDays
+      : selectedDurationMonths >= 3 || selectedValidityDays >= 90
+        ? membershipPolicySettings.upgradeWindowMediumDays
+        : membershipPolicySettings.upgradeWindowShortDays;
+  const elapsedUpgradeDays = selectedStartDate
+    ? Math.max(0, Math.floor((Date.parse(todayIsoDate) - Date.parse(selectedStartDate)) / (24 * 60 * 60 * 1000)))
+    : 0;
+  const upgradeWindowExceeded = Boolean(selectedStartDate) && elapsedUpgradeDays > currentUpgradeWindowDays;
   const freezeMinDays = 5;
   const freezeMaxDays = pauseBenefitDays;
+  const freezeDaysInput = Number(freezeForm.freezeDays || 0);
+  const freezePreviewDays = Number.isFinite(freezeDaysInput) ? Math.max(0, freezeDaysInput) : 0;
+  const freezePreviewStartDate = todayIsoDate;
+  const freezePreviewEndDate = freezePreviewDays > 0
+    ? addDaysToLocalIsoDate(todayIsoDate, freezePreviewDays - 1)
+    : "";
+  const freezePreviewExpiryDate = selectedExpiryDate && freezePreviewDays > 0
+    ? addDaysToLocalIsoDate(selectedExpiryDate, freezePreviewDays)
+    : selectedExpiryDate;
+  const freezePreviewRemainingDays = Math.max(freezeMaxDays - freezePreviewDays, 0);
   const canShowFreezeAction = hasPrimaryMembership && canOperateMemberships && hasFreezeEntitlement && !isFlexPlan && !isGroupClassPlan && !isPtPlan;
   const canRenewMembership = hasPrimaryMembership;
-  const canUpgradeMembership =
+  const canShowUpgradeMembershipAction =
     hasPrimaryMembership &&
     (isFlagshipPlan || isGroupClassPlan || isFlexPlan || isTransformationPlan || isPtPlan) &&
-    canOperateMemberships;
+    canOperateMemberships &&
+    eligibleUpgradeVariants.length > 0 &&
+    !upgradeWindowExceeded;
+  const canUpgradeMembership = canShowUpgradeMembershipAction && !upgradeWindowExceeded;
   const canShowPtActions = Boolean(activePtAssignment) || isFlagshipPlan || isTransformationPlan || isPtPlan;
   const canTransferMembership =
     hasPrimaryMembership &&
@@ -2381,13 +2679,12 @@ export default function MemberProfilePage() {
     canOperateMemberships &&
     selectedCheckInsRemaining <= 0 &&
     selectedExtraVisitPrice > 0;
-  const currentProductRank = productTierRank(membershipFamily, selectedProductCode);
   const membershipActions: MembershipActionState[] = useMemo(() => {
     const actions: MembershipActionState[] = [];
     if (canRenewMembership) {
       actions.push({ key: "renew", label: "Renew", enabled: true });
     }
-    if (canUpgradeMembership) {
+    if (canShowUpgradeMembershipAction) {
       actions.push({ key: "upgrade", label: "Upgrade", enabled: true });
     }
     if (canShowFreezeAction) {
@@ -2424,7 +2721,7 @@ export default function MemberProfilePage() {
     canRenewMembership,
     canShowFreezeAction,
     canTransferMembership,
-    canUpgradeMembership,
+    canShowUpgradeMembershipAction,
     isAdminOperator,
   ]);
   const primaryMembershipDurationLimit = Math.max(
@@ -2450,22 +2747,31 @@ export default function MemberProfilePage() {
 
         if (actionModal === "upgrade") {
           if (isFlagshipPlan) {
-            return product.categoryCode === "FLAGSHIP" && candidateRank >= currentProductRank;
+            return product.categoryCode === "FLAGSHIP"
+              && candidateRank >= currentProductRank
+              && eligibleUpgradeVariants.some((variant) => variant.productCode === product.productCode);
           }
           if (isFlexPlan) {
-            return (product.categoryCode === "FLEX" && product.productCode === selectedProductCode)
-              || product.categoryCode === "FLAGSHIP";
+            return (
+              ((product.categoryCode === "FLEX" && product.productCode === selectedProductCode)
+                || product.categoryCode === "FLAGSHIP")
+              && eligibleUpgradeVariants.some((variant) => variant.productCode === product.productCode)
+            );
           }
           if (isPtPlan) {
             return product.categoryCode === "PT"
               && isSamePtTrack(selectedProductCode, product.productCode)
-              && candidateRank >= currentProductRank;
+              && candidateRank >= currentProductRank
+              && eligibleUpgradeVariants.some((variant) => variant.productCode === product.productCode);
           }
           if (isGroupClassPlan) {
-            return product.productCode === selectedProductCode;
+            return product.productCode === selectedProductCode
+              && eligibleUpgradeVariants.some((variant) => variant.productCode === product.productCode);
           }
           if (isTransformationPlan) {
-            return product.categoryCode === "TRANSFORMATION" && candidateRank >= currentProductRank;
+            return product.categoryCode === "TRANSFORMATION"
+              && candidateRank >= currentProductRank
+              && eligibleUpgradeVariants.some((variant) => variant.productCode === product.productCode);
           }
         }
 
@@ -2486,6 +2792,7 @@ export default function MemberProfilePage() {
       isGroupClassPlan,
       isPtPlan,
       isTransformationPlan,
+      eligibleUpgradeVariants,
       lifecycleForm.categoryCode,
       selectedProductCategoryCode,
     ],
@@ -2601,19 +2908,93 @@ export default function MemberProfilePage() {
     [actionModal, catalogProducts, isFlagshipPlan, isFlexPlan, isGroupClassPlan, isPtPlan, isTransformationPlan, selectedProductCategoryCode],
   );
   const ptProducts = useMemo(
-    () => catalogProducts.filter((product) => product.categoryCode === "PT"),
+    () =>
+      catalogProducts.filter(
+        (product) => product.categoryCode === "PT" && ["PT_LEVEL_1", "PT_LEVEL_2"].includes(product.productCode),
+      ),
     [catalogProducts],
   );
   const ptVariants = useMemo(
-    () => catalogVariants.filter((variant) => variant.categoryCode === "PT"),
+    () =>
+      catalogVariants.filter(
+        (variant) => variant.categoryCode === "PT" && ["PT_LEVEL_1", "PT_LEVEL_2"].includes(variant.productCode),
+      ),
     [catalogVariants],
   );
   const selectedLifecycleVariant = useMemo(
     () => catalogVariants.find((variant) => String(variant.variantId) === String(lifecycleForm.productVariantId)),
     [catalogVariants, lifecycleForm.productVariantId],
   );
+  const legacyUpgradeFallbackBySubscription = useMemo(() => {
+    const statusIsHistorical = (status: string) =>
+      ["CANCELLED", "CANCELED", "INACTIVE", "EXPIRED", "LAPSED"].includes(status.toUpperCase());
+
+    const lookup = new Map<
+      string,
+      { fromLabel: string; previousStartDate?: string; previousSubscriptionId: string; previousStatus: string }
+    >();
+
+    portfolioMembershipItems.forEach((entry) => {
+      const previous = portfolioMembershipItems.find((candidate) => {
+        if (candidate.subscriptionId === entry.subscriptionId) {
+          return false;
+        }
+        if (candidate.productCode !== entry.productCode || candidate.family !== entry.family) {
+          return false;
+        }
+        if (!statusIsHistorical(String(candidate.status || ""))) {
+          return false;
+        }
+        const candidateDuration = Number(candidate.durationMonths || 0);
+        const entryDuration = Number(entry.durationMonths || 0);
+        const candidateValidity = Number(candidate.validityDays || 0);
+        const entryValidity = Number(entry.validityDays || 0);
+        return (
+          (candidateDuration > 0 && entryDuration > 0 && candidateDuration < entryDuration) ||
+          (candidateValidity > 0 && entryValidity > 0 && candidateValidity < entryValidity)
+        );
+      });
+
+      if (!previous) {
+        return;
+      }
+
+      lookup.set(entry.subscriptionId, {
+        fromLabel: trimMembershipCardTitle(previous.variantName || previous.productName || previous.productCode),
+        previousStartDate: previous.startDate,
+        previousSubscriptionId: previous.subscriptionId,
+        previousStatus: previous.status,
+      });
+    });
+
+    return lookup;
+  }, [portfolioMembershipItems]);
+  const auditActorDirectory = useMemo(() => {
+    const entries = [...staffMembers, ...coaches, ...members];
+    const lookup = new Map<string, string>();
+    entries.forEach((entry) => {
+      if (entry.id && entry.name) {
+        lookup.set(String(entry.id), entry.name);
+      }
+    });
+    if (memberRecord?.id && memberRecord.name) {
+      lookup.set(String(memberRecord.id), memberRecord.name);
+    }
+    if (user?.id && user.name) {
+      lookup.set(String(user.id), user.name);
+    }
+    return lookup;
+  }, [coaches, memberRecord, members, staffMembers, user]);
+  const resolveAuditActorLabel = useCallback(
+    (entry: MemberProfileAuditEntry) => entry.actorName || (entry.actorId ? auditActorDirectory.get(String(entry.actorId)) : undefined) || entry.actorId || "-",
+    [auditActorDirectory],
+  );
   const isRenewLifecycleModal = actionModal === "renew";
   const isUpgradeLifecycleModal = actionModal === "upgrade";
+  const isRenewBillingModal = actionModal === "renew-billing";
+  const isUpgradeBillingModal = actionModal === "upgrade-billing";
+  const isPtBillingModal = actionModal === "pt-billing";
+  const isLifecycleBillingModal = isRenewBillingModal || isUpgradeBillingModal;
   const projectedRenewalEndDate = useMemo(
     () =>
       projectMembershipEndDate(
@@ -2645,23 +3026,86 @@ export default function MemberProfilePage() {
   const renewInvoiceTotal = renewTaxableAmount + renewTaxAmount;
   const renewReceivedAmount = Number(lifecycleBillingForm.receivedAmount || 0);
   const renewBalanceAmount = Math.max(renewInvoiceTotal - renewReceivedAmount, 0);
-  const renewPreviewStatus = renewReceivedAmount >= renewInvoiceTotal ? "Paid" : renewReceivedAmount > 0 ? "Partially Paid" : "Pending";
+  const renewPreviewStatus = "Pending";
   const currentPreviewDate = new Date().toLocaleDateString("en-IN");
-  const renewalFeatureList = useMemo(
+  const selectedLifecycleFeatureList = useMemo(
     () =>
       parseFeatureList(selectedLifecycleVariant?.includedFeatures)
         .filter((feature) => shouldShowPackageFeatureChip(feature))
         .filter((feature, index, array) => array.indexOf(feature) === index),
     [selectedLifecycleVariant?.includedFeatures],
   );
+  const selectedLifecycleVariantLabel = formatVariantDisplayLabel(selectedLifecycleVariant, planName);
+  const currentLifecycleVariantLabel = formatVariantDisplayLabel(currentCatalogVariant, planName);
+  const currentLifecycleVariantTitle = sanitizeMembershipVariantTitle(currentCatalogVariant?.variantName || currentLifecycleVariantLabel);
+  const selectedLifecycleVariantTitle = sanitizeMembershipVariantTitle(selectedLifecycleVariant?.variantName || selectedLifecycleVariantLabel);
+  const currentLifecycleDurationLabel = formatPlanDuration(currentCatalogVariant?.durationMonths || selectedDurationMonths, currentCatalogVariant?.validityDays || selectedValidityDays);
+  const selectedLifecycleDurationLabel = formatPlanDuration(selectedLifecycleVariant?.durationMonths || 0, selectedLifecycleVariant?.validityDays || 0);
   const upgradeBaseDifference = Math.max(targetLifecycleBasePrice - currentLifecycleBasePrice, 0);
-  const lifecycleTaxableAmount = actionModal === "upgrade" ? upgradeBaseDifference : targetLifecycleBasePrice;
-  const lifecycleHalfTaxAmount = roundAmount((lifecycleTaxableAmount * commercialTaxRate) / 200);
-  const lifecycleTaxAmount = lifecycleHalfTaxAmount * 2;
-  const lifecycleInvoiceTotal = roundAmount(lifecycleTaxableAmount) + lifecycleTaxAmount;
+  const upgradeCommercial = useMemo(
+    () =>
+      resolveCommercialBreakdown(
+        upgradeBaseDifference,
+        lifecycleForm.sellingPrice,
+        lifecycleForm.discountPercent,
+      ),
+    [lifecycleForm.discountPercent, lifecycleForm.sellingPrice, upgradeBaseDifference],
+  );
+  const upgradeTaxableAmount = roundAmount(upgradeCommercial.sellingPrice);
+  const upgradeHalfTaxAmount = roundAmount((upgradeTaxableAmount * commercialTaxRate) / 200);
+  const upgradeTaxAmount = upgradeHalfTaxAmount * 2;
+  const upgradeInvoiceTotal = upgradeTaxableAmount + upgradeTaxAmount;
+  const upgradeReceivedAmount = Number(lifecycleBillingForm.receivedAmount || 0);
+  const upgradeBalanceAmount = Math.max(upgradeInvoiceTotal - upgradeReceivedAmount, 0);
+  const upgradePreviewStatus = "Pending";
+  const lifecycleBillingBaseAmount = isUpgradeBillingModal ? upgradeCommercial.baseAmount : renewCommercial.baseAmount;
+  const lifecycleBillingSellingPrice = isUpgradeBillingModal ? upgradeCommercial.sellingPrice : renewCommercial.sellingPrice;
+  const lifecycleBillingDiscountAmount = isUpgradeBillingModal ? upgradeCommercial.discountAmount : renewCommercial.discountAmount;
+  const lifecycleBillingHalfTaxAmount = isUpgradeBillingModal ? upgradeHalfTaxAmount : renewHalfTaxAmount;
+  const lifecycleBillingInvoiceTotal = isUpgradeBillingModal ? upgradeInvoiceTotal : renewInvoiceTotal;
+  const lifecycleBillingReceivedAmount = isUpgradeBillingModal ? upgradeReceivedAmount : renewReceivedAmount;
+  const lifecycleBillingBalanceAmount = isUpgradeBillingModal ? upgradeBalanceAmount : renewBalanceAmount;
+  const lifecycleBillingPreviewStatus = isUpgradeBillingModal ? upgradePreviewStatus : renewPreviewStatus;
+  const singleUpgradeVariant = useMemo(
+    () => (isUpgradeLifecycleModal && filteredLifecycleVariants.length === 1 ? filteredLifecycleVariants[0] : null),
+    [filteredLifecycleVariants, isUpgradeLifecycleModal],
+  );
+  const latestUpgradeAuditBySubscription = useMemo(() => {
+    const lookup = new Map<string, MemberProfileAuditEntry>();
+    lifecycleAuditEntries
+      .filter((entry) => String(entry.action || "").toUpperCase() === "UPGRADE_MEMBERSHIP")
+      .forEach((entry) => {
+        const targetSubscriptionId = pickString(entry.raw, ["newSubscriptionId"]);
+        if (targetSubscriptionId && !lookup.has(targetSubscriptionId)) {
+          lookup.set(targetSubscriptionId, entry);
+        }
+      });
+    return lookup;
+  }, [lifecycleAuditEntries]);
+  const latestMembershipUpgradeEntry = useMemo(
+    () =>
+      lifecycleAuditEntries
+        .filter((entry) => String(entry.action || "").toUpperCase() === "UPGRADE_MEMBERSHIP")
+        .sort((left, right) => Date.parse(right.createdAt || "") - Date.parse(left.createdAt || ""))[0],
+    [lifecycleAuditEntries],
+  );
   const selectedPtVariant = useMemo(
     () => ptVariants.find((variant) => String(variant.variantId) === String(ptForm.productVariantId)),
     [ptForm.productVariantId, ptVariants],
+  );
+  const selectedPtProduct = useMemo(
+    () => ptProducts.find((product) => String(product.productCode) === String(ptForm.productCode || selectedPtVariant?.productCode || "")),
+    [ptForm.productCode, ptProducts, selectedPtVariant?.productCode],
+  );
+  const ptEligibleCoaches = useMemo(
+    () =>
+      coaches.filter((coach) => {
+        if (String(coach.designation || "").toUpperCase() !== "PT_COACH") {
+          return false;
+        }
+        return true;
+      }),
+    [coaches],
   );
   const selectablePtVariants = useMemo(
     () =>
@@ -2676,6 +3120,110 @@ export default function MemberProfilePage() {
       }),
     [primaryMembershipDurationLimit, ptForm.productCode, ptVariants],
   );
+  const ptTimeSlotOptions = useMemo(() => buildPtTimeSlotOptions(), []);
+  const selectedPtCoach = useMemo(
+    () =>
+      ptEligibleCoaches.find((coach) => String(coach.id) === String(ptForm.coachId))
+      || coaches.find((coach) => String(coach.id) === String(ptForm.coachId))
+      || null,
+    [coaches, ptEligibleCoaches, ptForm.coachId],
+  );
+  const selectedPtDays = useMemo(
+    () => (ptForm.scheduleTemplate === "EVERYDAY" ? PT_EVERYDAY_DAY_CODES : ptForm.scheduleDays),
+    [ptForm.scheduleDays, ptForm.scheduleTemplate],
+  );
+  const ptSlotEndTime = useMemo(
+    () => addMinutesToTime(ptForm.slotStartTime, PT_SLOT_DURATION_MINUTES),
+    [ptForm.slotStartTime],
+  );
+  const projectedPtEndDate = useMemo(
+    () =>
+      projectMembershipEndDate(
+        ptForm.startDate,
+        selectedPtVariant?.durationMonths || 0,
+        selectedPtVariant?.validityDays || 0,
+      ),
+    [ptForm.startDate, selectedPtVariant],
+  );
+  const selectedPtSessionCount = useMemo(() => {
+    const parsed = Number(ptForm.totalSessions || 0);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.trunc(parsed);
+    }
+    return Number(selectedPtVariant?.includedPtSessions || 0);
+  }, [ptForm.totalSessions, selectedPtVariant?.includedPtSessions]);
+  const ptCommercial = useMemo(
+    () =>
+      resolveCommercialBreakdown(
+        Number(selectedPtVariant?.basePrice || 0),
+        ptForm.sellingPrice,
+        ptForm.discountPercent,
+      ),
+    [ptForm.discountPercent, ptForm.sellingPrice, selectedPtVariant?.basePrice],
+  );
+  const ptTaxableAmount = roundAmount(ptCommercial.sellingPrice);
+  const ptHalfTaxAmount = roundAmount((ptTaxableAmount * commercialTaxRate) / 200);
+  const ptTaxAmount = ptHalfTaxAmount * 2;
+  const ptInvoiceTotal = ptTaxableAmount + ptTaxAmount;
+  const ptReceivedAmount = Number(ptBillingForm.receivedAmount || 0);
+  const ptBalanceAmount = Math.max(ptInvoiceTotal - ptReceivedAmount, 0);
+  const ptPreviewStatus = "Pending";
+
+  useEffect(() => {
+    if (!isUpgradeLifecycleModal || !singleUpgradeVariant) {
+      return;
+    }
+
+    const nextSellingPrice = String(roundAmount(Math.max(Number(singleUpgradeVariant.basePrice || 0) - currentLifecycleBasePrice, 0)));
+    setLifecycleForm((current) => {
+      if (
+        current.categoryCode === singleUpgradeVariant.categoryCode &&
+        current.productCode === singleUpgradeVariant.productCode &&
+        current.productVariantId === String(singleUpgradeVariant.variantId) &&
+        current.sellingPrice === nextSellingPrice &&
+        current.discountPercent === ""
+      ) {
+        return current;
+      }
+      return {
+        ...current,
+        categoryCode: singleUpgradeVariant.categoryCode,
+        productCode: singleUpgradeVariant.productCode,
+        productVariantId: String(singleUpgradeVariant.variantId),
+        sellingPrice: nextSellingPrice,
+        discountPercent: "",
+      };
+    });
+  }, [currentLifecycleBasePrice, isUpgradeLifecycleModal, singleUpgradeVariant]);
+
+  useEffect(() => {
+    if (!selectedPtVariant) {
+      return;
+    }
+
+    const nextSellingPrice = String(roundAmount(Number(selectedPtVariant.basePrice || 0)));
+    const nextEndDate = ptForm.startDate
+      ? projectMembershipEndDate(ptForm.startDate, selectedPtVariant.durationMonths, selectedPtVariant.validityDays)
+      : "";
+
+    setPtForm((current) => ({
+      ...current,
+      endDate: nextEndDate || current.endDate,
+      totalSessions: current.totalSessions || String(selectedPtVariant.includedPtSessions || 0),
+      sellingPrice: current.sellingPrice || nextSellingPrice,
+    }));
+  }, [ptForm.startDate, selectedPtVariant]);
+
+  useEffect(() => {
+    if (ptForm.scheduleTemplate !== "EVERYDAY") {
+      return;
+    }
+    setPtForm((current) =>
+      current.scheduleDays.join(",") === PT_EVERYDAY_DAY_CODES.join(",")
+        ? current
+        : { ...current, scheduleDays: [...PT_EVERYDAY_DAY_CODES] },
+    );
+  }, [ptForm.scheduleTemplate]);
 
   const alerts = useMemo(() => {
     const next: string[] = [];
@@ -2709,22 +3257,22 @@ export default function MemberProfilePage() {
   const openActionModal = (modal: ActionModalKey) => {
     resetActionFeedback();
     if (modal === "renew" || modal === "upgrade") {
-      const defaultVariantId = modal === "upgrade" && isFlexPlan ? "" : selectedProductVariantId || "";
+      const defaultVariantId = modal === "upgrade" ? "" : selectedProductVariantId || "";
       const defaultVariant =
         catalogVariants.find((variant) => String(variant.variantId) === String(defaultVariantId)) ||
         currentCatalogVariant;
       const defaultLifecycleCategory =
         modal === "upgrade" && isFlexPlan
-          ? "FLAGSHIP"
+          ? ""
           : selectedProductCategoryCode || "";
       setLifecycleForm({
         categoryCode: defaultLifecycleCategory,
-        productCode: modal === "upgrade" && isFlexPlan ? "" : selectedProductCode || "",
+        productCode: modal === "upgrade" ? "" : selectedProductCode || "",
         productVariantId: defaultVariantId,
         startDate:
           modal === "renew"
             ? (selectedExpiryDate ? new Date(new Date(selectedExpiryDate).getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10) : new Date().toISOString().slice(0, 10))
-            : new Date().toISOString().slice(0, 10),
+            : (selectedStartDate || new Date().toISOString().slice(0, 10)),
         sellingPrice:
           modal === "renew" && defaultVariant?.basePrice
             ? formatDecimalInput(Number(defaultVariant.basePrice))
@@ -2760,6 +3308,17 @@ export default function MemberProfilePage() {
         coachId: "",
         startDate: new Date().toISOString().slice(0, 10),
         endDate: "",
+        totalSessions: "",
+        sellingPrice: "",
+        discountPercent: "",
+        scheduleTemplate: "ALTERNATE_DAYS",
+        scheduleDays: ["MONDAY", "WEDNESDAY", "FRIDAY"],
+        slotStartTime: "06:00",
+      });
+      setPtBillingForm({
+        paymentMode: "UPI",
+        receivedAmount: "",
+        balanceDueDate: "",
       });
     }
     if (modal === "visit") {
@@ -2846,10 +3405,36 @@ export default function MemberProfilePage() {
     setActionError(null);
     setLifecycleBillingForm((current) => ({
       ...current,
-      receivedAmount: current.receivedAmount || String(roundAmount(renewInvoiceTotal)),
+      receivedAmount: current.receivedAmount || String(renewInvoiceTotal),
     }));
     setRenewCardSubtype("DEBIT_CARD");
     setActionModal("renew-billing");
+  };
+
+  const handleUpgradeBillingContinue = () => {
+    if (!token || !memberId || !lifecycleForm.productVariantId) {
+      setActionError("Choose the upgrade target before continuing.");
+      return;
+    }
+    if (!canUpgradeMembership) {
+      setActionError(
+        upgradeWindowExceeded
+          ? `Upgrade is allowed only within ${currentUpgradeWindowDays} days of subscription start.`
+          : "Upgrade is not available for this membership.",
+      );
+      return;
+    }
+    if (upgradeCommercial.sellingPrice <= 0) {
+      setActionError("Enter a valid upgrade selling price before continuing.");
+      return;
+    }
+    setActionError(null);
+    setLifecycleBillingForm((current) => ({
+      ...current,
+      receivedAmount: current.receivedAmount || String(upgradeInvoiceTotal),
+    }));
+    setRenewCardSubtype("DEBIT_CARD");
+    setActionModal("upgrade-billing");
   };
 
   const handleSubscriptionAction = async (action: "renew" | "upgrade") => {
@@ -2857,36 +3442,7 @@ export default function MemberProfilePage() {
       handleRenewBillingContinue();
       return;
     }
-    if (!token || !memberId || !lifecycleForm.productVariantId) {
-      setActionError("Choose a target variant before continuing.");
-      return;
-    }
-    if (!canUpgradeMembership) {
-      setActionError("Upgrade is not available for this membership.");
-      return;
-    }
-
-    setActionBusy(true);
-    setActionError(null);
-    try {
-      const response = await subscriptionService.upgradeSubscription(token, memberId, {
-        subscriptionId: selectedSubscriptionId ? Number(selectedSubscriptionId) : undefined,
-        productVariantId: Number(lifecycleForm.productVariantId),
-        startDate: lifecycleForm.startDate || undefined,
-        notes: lifecycleForm.notes || undefined,
-      });
-
-      await reloadShell();
-      setActiveTab("billing");
-      setActionSuccess(
-        `Invoice ${String((response as { invoiceNumber?: string } | undefined)?.invoiceNumber || "").trim() || "generated"} is ready in Billing. Complete payment to activate the upgrade.`,
-      );
-      setActionModal(null);
-    } catch (error) {
-      setActionError(error instanceof ApiError ? error.message : "Unable to upgrade membership.");
-    } finally {
-      setActionBusy(false);
-    }
+    handleUpgradeBillingContinue();
   };
 
   const handleRenewPayment = async () => {
@@ -2980,6 +3536,7 @@ export default function MemberProfilePage() {
       }
 
       await reloadShell();
+      setLifecycleAuditEntries(await subscriptionService.getMemberLifecycleAudit(token, memberId).catch(() => lifecycleAuditEntries));
       setTabData((current) => ({ ...current, billing: undefined, subscriptions: undefined }));
       if (paymentReceipt) {
         setCompletedBilling({
@@ -3005,6 +3562,129 @@ export default function MemberProfilePage() {
       setActionModal(null);
     } catch (error) {
       setActionError(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Unable to renew membership.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleUpgradePayment = async () => {
+    if (!token || !memberId || !selectedSubscriptionId || !lifecycleForm.productVariantId) {
+      setActionError("Upgrade details are incomplete.");
+      return;
+    }
+
+    const receivedAmount = roundAmount(Math.max(0, Number(lifecycleBillingForm.receivedAmount || 0)));
+    if (!Number.isFinite(receivedAmount)) {
+      setActionError("Enter a valid received amount.");
+      return;
+    }
+    if (receivedAmount > upgradeInvoiceTotal) {
+      setActionError("Received amount cannot exceed the invoice total.");
+      return;
+    }
+    if (receivedAmount < upgradeInvoiceTotal && !lifecycleBillingForm.balanceDueDate) {
+      setActionError("Choose the balance due date for partial payments.");
+      return;
+    }
+
+    const operatorId = Number((user as { id?: string | number } | null)?.id || 0);
+    const assignedToStaffId = Number(editForm.clientRepStaffId || 0) || undefined;
+
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      const response = (await subscriptionService.upgradeSubscription(token, memberId, {
+        subscriptionId: Number(selectedSubscriptionId),
+        productVariantId: Number(lifecycleForm.productVariantId),
+        startDate: lifecycleForm.startDate || undefined,
+        inquiryId: sourceInquiryId || undefined,
+        notes: lifecycleForm.notes || undefined,
+        discountAmount: upgradeCommercial.discountAmount > 0 ? roundAmount(upgradeCommercial.discountAmount) : undefined,
+        discountedByStaffId: operatorId > 0 ? operatorId : undefined,
+      })) as {
+        invoiceId?: number;
+        invoiceNumber?: string;
+        newSubscriptionId?: number;
+        variantName?: string;
+        startDate?: string;
+        endDate?: string;
+        invoiceTotal?: number;
+      };
+
+      const invoiceId = Number(response.invoiceId || 0);
+      const newSubscriptionId = Number(response.newSubscriptionId || 0);
+      const invoiceNumber = String(response.invoiceNumber || "").trim();
+      const invoiceTotal = roundAmount(Number(response.invoiceTotal || upgradeInvoiceTotal));
+
+      if (!Number.isFinite(invoiceId) || invoiceId <= 0 || !Number.isFinite(newSubscriptionId) || newSubscriptionId <= 0) {
+        throw new Error("Upgrade invoice was created without valid payment references.");
+      }
+
+      let paymentReceipt: Awaited<ReturnType<typeof subscriptionService.recordPayment>> | null = null;
+      let membershipActivated = false;
+      const payFullInvoice = !lifecycleBillingForm.balanceDueDate && receivedAmount > 0;
+      const paymentAmount = payFullInvoice ? invoiceTotal : receivedAmount;
+
+      if (receivedAmount > 0) {
+        paymentReceipt = await subscriptionService.recordPayment(token, invoiceId, {
+          memberId: Number(memberId),
+          amount: paymentAmount,
+          paymentMode: lifecycleBillingForm.paymentMode,
+          inquiryId: sourceInquiryId || undefined,
+        });
+
+        const activationThresholdMet = meetsActivationThreshold(
+          invoiceTotal,
+          paymentReceipt?.totalPaidAmount || paymentAmount,
+          membershipPolicySettings.minPartialPaymentPercent,
+        );
+        if (activationThresholdMet) {
+          await subscriptionService.activateMembership(token, newSubscriptionId);
+          membershipActivated = true;
+        }
+      }
+
+      const balanceAmount = Math.max(
+        0,
+        roundAmount(Number((paymentReceipt?.balanceAmount ?? invoiceTotal - paymentAmount) || 0)),
+      );
+
+      if (balanceAmount > 0 && lifecycleBillingForm.balanceDueDate && sourceInquiryId) {
+        await subscriptionService.createInquiryFollowUp(token, sourceInquiryId, {
+          dueAt: `${lifecycleBillingForm.balanceDueDate}T09:00:00`,
+          assignedToStaffId,
+          createdByStaffId: operatorId > 0 ? operatorId : undefined,
+          notes: `Collect the remaining upgrade balance of ${formatRoundedInr(balanceAmount)} for invoice ${invoiceNumber || invoiceId}.`,
+        });
+      }
+
+      await reloadShell();
+      setLifecycleAuditEntries(await subscriptionService.getMemberLifecycleAudit(token, memberId).catch(() => lifecycleAuditEntries));
+      setTabData((current) => ({ ...current, billing: undefined, subscriptions: undefined }));
+      if (paymentReceipt) {
+        setCompletedBilling({
+          context: "upgrade",
+          title: "Upgrade Payment Recorded",
+          message: invoiceNumber
+            ? `Invoice ${invoiceNumber} was created and the payment was recorded successfully.`
+            : "Upgrade invoice and payment were recorded successfully.",
+          invoiceId,
+          invoiceNumber: invoiceNumber || `invoice-${invoiceId}`,
+          receiptId: paymentReceipt.receiptId,
+          receiptNumber: paymentReceipt.receiptNumber || undefined,
+          paymentStatus: paymentReceipt.paymentStatus || (balanceAmount > 0 ? "PARTIALLY_PAID" : "PAID"),
+          totalPaidAmount: Number(paymentReceipt.totalPaidAmount || receivedAmount),
+          balanceAmount,
+        });
+      }
+      setActionSuccess(
+        membershipActivated
+          ? `Upgrade invoiced${invoiceNumber ? ` as ${invoiceNumber}` : ""} and activated.`
+          : `Upgrade invoiced${invoiceNumber ? ` as ${invoiceNumber}` : ""}. Activation will happen after ${membershipPolicySettings.minPartialPaymentPercent}% payment collection.`,
+      );
+      setActionModal(null);
+    } catch (error) {
+      setActionError(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Unable to upgrade membership.");
     } finally {
       setActionBusy(false);
     }
@@ -3103,44 +3783,221 @@ export default function MemberProfilePage() {
     }
   };
 
-  const handlePtAssignment = async () => {
-    if (!token || !memberId || !ptForm.coachId) {
-      setActionError("Choose a coach before continuing.");
-      return;
-    }
-    if (!canShowPtActions) {
-      setActionError("Personal training is not available for this membership.");
-      return;
+  const createPtOperationalSchedule = useCallback(async (subscriptionId: number) => {
+    if (!token || !memberId || !ptForm.coachId || !selectedPtVariant) {
+      throw new Error("PT assignment details are incomplete.");
     }
 
-    const coach = coaches.find((item) => item.id === ptForm.coachId);
+    const memberEmailForAssignment = email || buildSyntheticInternalEmail(phone || memberId, "members.fomotraining.internal");
+    const coachEmailForAssignment =
+      selectedPtCoach?.email || buildSyntheticInternalEmail(selectedPtCoach?.mobile || selectedPtCoach?.id || ptForm.coachId, "staff.fomotraining.internal");
+    const payload = {
+      memberEmail: memberEmailForAssignment,
+      coachId: Number(ptForm.coachId),
+      coachEmail: coachEmailForAssignment,
+      startDate: ptForm.startDate || new Date().toISOString().slice(0, 10),
+      endDate: projectedPtEndDate || undefined,
+      productVariantId: Number(selectedPtVariant.variantId),
+      packageName: `${formatPtProductName(selectedPtProduct?.productName || selectedPtVariant.productCode)} · ${formatPlanDuration(selectedPtVariant.durationMonths, selectedPtVariant.validityDays)}`,
+      totalSessions: selectedPtSessionCount,
+      rescheduleLimit: derivePtRescheduleLimit(Number(selectedPtVariant.durationMonths || 0)),
+      slotDurationMinutes: PT_SLOT_DURATION_MINUTES,
+      slots: selectedPtDays.map((dayCode) => ({
+        dayOfWeek: dayCode,
+        slotStartTime: `${ptForm.slotStartTime}:00`,
+        slotEndTime: `${ptSlotEndTime}:00`,
+      })),
+    };
+    await subscriptionService.provisionPtOperationalSetup(token, subscriptionId, payload);
+  }, [
+    email,
+    memberId,
+    phone,
+    projectedPtEndDate,
+    ptForm.coachId,
+    ptForm.slotStartTime,
+    ptForm.startDate,
+    ptSlotEndTime,
+    selectedPtCoach,
+    selectedPtDays,
+    selectedPtProduct?.productName,
+    selectedPtSessionCount,
+    selectedPtVariant,
+    token,
+  ]);
+
+  const handlePtBillingContinue = () => {
+    if (!token || !memberId) {
+      return;
+    }
+    if (!canAddPtMembershipAction) {
+      setActionError("PT add-on is not available for this membership.");
+      return;
+    }
+    if (!selectedPtVariant) {
+      setActionError("Select a PT package before continuing.");
+      return;
+    }
+    if (!ptForm.coachId) {
+      setActionError("Choose a PT coach before continuing.");
+      return;
+    }
+    if (!ptForm.startDate) {
+      setActionError("Choose the PT start date before continuing.");
+      return;
+    }
+    if (selectedPtDays.length === 0) {
+      setActionError("Select at least one PT day.");
+      return;
+    }
     if (selectedPtVariant && primaryMembershipDurationLimit > 0 && selectedPtVariant.durationMonths > primaryMembershipDurationLimit) {
       setActionError(`PT duration cannot be greater than the primary membership duration of ${primaryMembershipDurationLimit} month${primaryMembershipDurationLimit === 1 ? "" : "s"}.`);
       return;
     }
+    if (!Number.isFinite(selectedPtSessionCount) || selectedPtSessionCount <= 0) {
+      setActionError("Enter the total PT sessions before continuing.");
+      return;
+    }
+    if (ptCommercial.sellingPrice <= 0) {
+      setActionError("Enter a valid PT selling price before continuing.");
+      return;
+    }
+
+    setActionError(null);
+    setPtBillingForm((current) => ({
+      ...current,
+      receivedAmount: current.receivedAmount || String(ptInvoiceTotal),
+    }));
+    setRenewCardSubtype("DEBIT_CARD");
+    setActionModal("pt-billing");
+  };
+
+  const handlePtPayment = async () => {
+    if (!token || !memberId || !selectedSubscriptionId || !selectedPtVariant) {
+      setActionError("PT details are incomplete.");
+      return;
+    }
+
+    const receivedAmount = roundAmount(Math.max(0, Number(ptBillingForm.receivedAmount || 0)));
+    if (!Number.isFinite(receivedAmount)) {
+      setActionError("Enter a valid received amount.");
+      return;
+    }
+    if (receivedAmount > ptInvoiceTotal) {
+      setActionError("Received amount cannot exceed the invoice total.");
+      return;
+    }
+    if (receivedAmount < ptInvoiceTotal && !ptBillingForm.balanceDueDate) {
+      setActionError("Choose the balance due date for partial payments.");
+      return;
+    }
+
+    const operatorId = Number((user as { id?: string | number } | null)?.id || 0);
+    const assignedToStaffId = Number(editForm.clientRepStaffId || 0) || undefined;
 
     setActionBusy(true);
     setActionError(null);
     try {
-      const memberEmailForAssignment = email || buildSyntheticInternalEmail(phone || memberId, "members.fomotraining.internal");
-      const coachEmailForAssignment =
-        coach?.email || buildSyntheticInternalEmail(coach?.mobile || coach?.id || ptForm.coachId, "staff.fomotraining.internal");
-      const payload: ClientAssignmentRequest = {
-        memberId: Number(memberId),
-        memberEmail: memberEmailForAssignment,
-        coachId: Number(ptForm.coachId),
-        coachEmail: coachEmailForAssignment,
-        trainingType: "PERSONAL_TRAINING",
-        startDate: ptForm.startDate || new Date().toISOString().slice(0, 10),
-        endDate: ptForm.endDate || undefined,
-      };
-      await trainingService.createAssignment(token, payload);
+      const response = await subscriptionService.createMemberAddOnSubscription(token, String(memberId), {
+        baseSubscriptionId: Number(selectedSubscriptionId),
+        startDate: ptForm.startDate,
+        addOnVariantIds: [Number(selectedPtVariant.variantId)],
+        inquiryId: sourceInquiryId || undefined,
+        discountAmount: ptCommercial.discountAmount > 0 ? roundAmount(ptCommercial.discountAmount) : undefined,
+        discountedByStaffId: operatorId > 0 ? operatorId : undefined,
+        billedByStaffId: operatorId > 0 ? operatorId : undefined,
+      });
+
+      const invoiceId = Number(response.invoiceId || 0);
+      const invoiceNumber = String(response.invoiceNumber || "").trim();
+      const addOnSubscriptionId = Number(
+        response.createdSubscriptions.find((item) => item.addOn)?.memberSubscriptionId || response.memberSubscriptionId || 0,
+      );
+      if (!Number.isFinite(invoiceId) || invoiceId <= 0 || !Number.isFinite(addOnSubscriptionId) || addOnSubscriptionId <= 0) {
+        throw new Error("PT invoice was created without valid payment references.");
+      }
+
+      let paymentReceipt: Awaited<ReturnType<typeof subscriptionService.recordPayment>> | null = null;
+      let membershipActivated = false;
+      let ptSetupPendingReason: string | null = null;
+      const payFullInvoice = !ptBillingForm.balanceDueDate && receivedAmount > 0;
+      const paymentAmount = payFullInvoice ? ptInvoiceTotal : receivedAmount;
+
+      if (receivedAmount > 0) {
+        paymentReceipt = await subscriptionService.recordPayment(token, invoiceId, {
+          memberId: Number(memberId),
+          amount: paymentAmount,
+          paymentMode: ptBillingForm.paymentMode,
+          inquiryId: sourceInquiryId || undefined,
+        });
+
+        const activationThresholdMet = meetsActivationThreshold(
+          ptInvoiceTotal,
+          paymentReceipt?.totalPaidAmount || paymentAmount,
+          membershipPolicySettings.minPartialPaymentPercent,
+        );
+        if (activationThresholdMet) {
+          await subscriptionService.activateMembership(token, addOnSubscriptionId);
+          membershipActivated = true;
+          try {
+            await createPtOperationalSchedule(addOnSubscriptionId);
+          } catch (setupError) {
+            ptSetupPendingReason = setupError instanceof ApiError
+              ? setupError.message
+              : setupError instanceof Error
+                ? setupError.message
+                : "Operational PT setup could not be completed.";
+          }
+        }
+      }
+
+      const balanceAmount = Math.max(
+        0,
+        roundAmount(Number((paymentReceipt?.balanceAmount ?? ptInvoiceTotal - paymentAmount) || 0)),
+      );
+
+      if (balanceAmount > 0 && ptBillingForm.balanceDueDate && sourceInquiryId) {
+        await subscriptionService.createInquiryFollowUp(token, sourceInquiryId, {
+          dueAt: `${ptBillingForm.balanceDueDate}T09:00:00`,
+          assignedToStaffId,
+          createdByStaffId: operatorId > 0 ? operatorId : undefined,
+          notes: `Collect the remaining PT balance of ${formatRoundedInr(balanceAmount)} for invoice ${invoiceNumber || invoiceId}.`,
+        });
+      }
+
       await reloadShell();
-      setTabData((current) => ({ ...current, "personal-training": undefined }));
-      setActionSuccess(activePtAssignment ? "Personal training renewed." : "Personal training assigned.");
+      setTabData((current) => ({
+        ...current,
+        subscriptions: undefined,
+        billing: undefined,
+        "personal-training": undefined,
+      }));
+      if (paymentReceipt) {
+        setCompletedBilling({
+          context: "pt",
+          title: "PT Payment Recorded",
+          message: invoiceNumber
+            ? `Invoice ${invoiceNumber} was created and the PT payment was recorded successfully.`
+            : "PT invoice and payment were recorded successfully.",
+          invoiceId,
+          invoiceNumber: invoiceNumber || `invoice-${invoiceId}`,
+          receiptId: paymentReceipt.receiptId,
+          receiptNumber: paymentReceipt.receiptNumber || undefined,
+          paymentStatus: paymentReceipt.paymentStatus || (balanceAmount > 0 ? "PARTIALLY_PAID" : "PAID"),
+          totalPaidAmount: Number(paymentReceipt.totalPaidAmount || receivedAmount),
+          balanceAmount,
+        });
+      }
+      setActionSuccess(
+        membershipActivated
+          ? ptSetupPendingReason
+            ? `PT add-on invoiced and activated, but PT setup is pending. ${ptSetupPendingReason}`
+            : "PT add-on invoiced, activated, and scheduled."
+          : `PT add-on invoiced${invoiceNumber ? ` as ${invoiceNumber}` : ""}. PT scheduling will unlock after ${membershipPolicySettings.minPartialPaymentPercent}% payment collection.`,
+      );
       setActionModal(null);
     } catch (error) {
-      setActionError(error instanceof ApiError ? error.message : "Unable to assign personal training.");
+      setActionError(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Unable to add PT.");
     } finally {
       setActionBusy(false);
     }
@@ -3155,7 +4012,9 @@ export default function MemberProfilePage() {
       setActionError("Select a biometric device before continuing.");
       return;
     }
-    if (!normalizedPhonePin) {
+    const targetEnrollment = enrollmentByDeviceSerial.get(targetSerial);
+    const resolvedBiometricPin = pickString(targetEnrollment, ["pin"]) || normalizedPhonePin;
+    if (!resolvedBiometricPin) {
       setActionError("Member mobile number is required to sync with the biometric device.");
       return;
     }
@@ -3165,7 +4024,7 @@ export default function MemberProfilePage() {
     try {
       const biometricPayload = {
         serialNumber: targetSerial,
-        pin: normalizedPhonePin,
+        pin: resolvedBiometricPin,
         name: memberDisplayName,
         memberId: Number(memberId),
       };
@@ -3180,7 +4039,7 @@ export default function MemberProfilePage() {
       } else if (action === "DELETE_USER") {
         await engagementService.deleteBiometricUser(token, {
           serialNumber: targetSerial,
-          pin: normalizedPhonePin,
+          pin: resolvedBiometricPin,
           memberId: Number(memberId),
         });
       }
@@ -3222,26 +4081,32 @@ export default function MemberProfilePage() {
       <div className="grid items-start gap-6 xl:grid-cols-2">
         <div className="space-y-6">
           <ProfilePanel title="Personal Details" subtitle="Core member identity and contact information" accent="slate">
-            <dl className="divide-y divide-white/8 overflow-hidden rounded-[24px] border border-white/8 bg-white/[0.03]">
-              {[
+            {(() => {
+              const personalDetails = [
                 { label: "Mobile Number", value: phone || "-" },
                 { label: "Email Address", value: email || "-" },
                 { label: "Date Of Birth", value: formatDateOnly(dateOfBirth || undefined) },
                 { label: "Date Of Enquiry", value: formatDateTime(inquiryDate || undefined) },
                 { label: "Client Representative", value: clientRepName },
                 ...(!isFlexPlan ? [{ label: trainerLabel, value: assignedTrainer }] : []),
-                { label: "Interested In", value: interestedIn },
+                ...(interestedIn !== "-" ? [{ label: "Interested In", value: interestedIn }] : []),
                 { label: "Emergency Contact", value: emergencyContact },
-                { label: "Referral Source", value: referredBy },
+                ...(referredBy !== "-" ? [{ label: "Referral Source", value: referredBy }] : []),
                 { label: "Member Code", value: memberCode },
                 { label: "Home Branch", value: branchLabel },
-              ].map((entry) => (
+              ];
+
+              return (
+            <dl className="divide-y divide-white/8 overflow-hidden rounded-[24px] border border-white/8 bg-white/[0.03]">
+              {personalDetails.map((entry) => (
                 <div key={entry.label} className="grid gap-2 px-5 py-4 md:grid-cols-[220px_minmax(0,1fr)] md:items-center">
                   <dt className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">{entry.label}</dt>
                   <dd className="text-base font-medium text-white md:text-right">{entry.value}</dd>
                 </div>
               ))}
             </dl>
+              );
+            })()}
           </ProfilePanel>
 
         </div>
@@ -3251,6 +4116,11 @@ export default function MemberProfilePage() {
             <ProfilePanel title="Membership Summary" accent="lime">
               <div className="space-y-4">
                 {overviewMembershipCards.map((membership) => {
+                  const legacyUpgradeFallback = legacyUpgradeFallbackBySubscription.get(membership.subscriptionId);
+                  const effectiveMembershipStartDate =
+                    legacyUpgradeFallback?.previousStartDate && legacyUpgradeFallback.previousStartDate < (membership.startDate || "")
+                      ? legacyUpgradeFallback.previousStartDate
+                      : membership.startDate;
                   const overviewTrainerLabel =
                     membership.family === "GROUP_CLASS" ? "Group Class Trainer" : membership.family === "PT" ? "Coach" : trainerLabel;
                   const overviewTrainerValue =
@@ -3272,7 +4142,7 @@ export default function MemberProfilePage() {
                       <div className="mt-4 grid gap-3 sm:grid-cols-2">
                         <StatPill label="Membership Status" value={humanizeLabel(membership.status || membershipStatus)} />
                         <StatPill label="Duration" value={formatPlanDuration(membership.durationMonths, membership.validityDays)} />
-                        <StatPill label="Start Date" value={formatDateOnly(membership.startDate || undefined)} />
+                        <StatPill label="Start Date" value={formatDateOnly(effectiveMembershipStartDate || undefined)} />
                         <StatPill label="Expires In" value={formatExpiryWindow(daysUntil(membership.expiryDate))} />
                         {membership.family !== "FLEX" ? (
                           <StatPill label={overviewTrainerLabel} value={overviewTrainerValue} />
@@ -3307,7 +4177,9 @@ export default function MemberProfilePage() {
   );
 
   const renderBilling = () => {
-    const invoices = tabData.billing || [];
+    const billingData = tabData.billing as LifecycleBillingTabState | undefined;
+    const invoices = billingData?.invoices || [];
+    const receipts = billingData?.receipts || [];
     const stats = extractInvoiceStats(invoices);
     const normalizedStats = {
       total: roundAmount(stats.total),
@@ -3317,9 +4189,22 @@ export default function MemberProfilePage() {
       latestReceipt: stats.latestReceipt,
       latestIssuedAt: stats.latestIssuedAt,
     };
+    const refreshBillingRegister = () => {
+      setTabData((current) => ({ ...current, billing: undefined }));
+      setTabErrors((current) => ({ ...current, billing: undefined }));
+    };
 
     return (
       <div className="space-y-6">
+        <div className="flex items-center justify-end">
+          <button
+            type="button"
+            onClick={refreshBillingRegister}
+            className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
+          >
+            Refresh Billing
+          </button>
+        </div>
         <div className="grid gap-4 md:grid-cols-4">
           {[
             { label: "Total Invoiced", value: formatRoundedInr(normalizedStats.total), icon: <CreditCard className="h-5 w-5 text-cyan-300" /> },
@@ -3336,7 +4221,7 @@ export default function MemberProfilePage() {
           ))}
         </div>
 
-        <div className="grid gap-6 xl:grid-cols-2">
+        <div className="grid gap-6">
           <ProfilePanel title="Billing Contacts" subtitle="Commercial ownership and last issued references" accent="slate">
             <div className="grid gap-3 sm:grid-cols-2">
               <StatPill label="Billing Representative" value={billingRepName} />
@@ -3345,136 +4230,160 @@ export default function MemberProfilePage() {
               <StatPill label="Payment Status" value={humanizeLabel(paymentStatus)} />
             </div>
           </ProfilePanel>
-          <ProfilePanel title="Billing Rules" subtitle="Rounded values and payment status use the same commercial calculation everywhere on this profile." accent="cyan">
-            <div className="grid gap-3 sm:grid-cols-2">
-              <StatPill label="Rounded Total" value={formatRoundedInr(normalizedStats.total)} />
-              <StatPill label="Rounded Collected" value={formatRoundedInr(normalizedStats.paid)} />
-              <StatPill label="Rounded Outstanding" value={formatRoundedInr(normalizedStats.balance)} />
-              <StatPill label="Status Logic" value={humanizeLabel(paymentStatus)} />
-            </div>
-          </ProfilePanel>
         </div>
 
-        {invoices.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] px-4 py-6 text-sm text-slate-400">
-            No invoices available.
-          </div>
-        ) : (
-          <div className="overflow-x-auto rounded-[24px] border border-white/8 bg-[#15181f] shadow-[0_18px_40px_rgba(0,0,0,0.22)]">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="border-b border-white/8 bg-white/[0.03] text-left text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">
-                  <th className="px-4 py-3">Invoice</th>
-                  <th className="px-4 py-3">Total</th>
-                  <th className="px-4 py-3">Paid</th>
-                  <th className="px-4 py-3">Balance</th>
-                  <th className="px-4 py-3">Receipt</th>
-                  <th className="px-4 py-3">Status</th>
-                  <th className="px-4 py-3">Issued At</th>
-                  <th className="px-4 py-3">Actions</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/6">
-                {invoices.map((invoice) => {
-                  const invoiceView = {
-                    amount: roundAmount(invoice.amount),
-                    paidAmount: roundAmount(invoice.paidAmount || 0),
-                    balanceAmount: roundAmount(invoice.balanceAmount || 0),
-                    paymentStatus: normalizePaymentStatus(
-                      invoice.status,
-                      invoice.amount,
-                      invoice.paidAmount || 0,
-                      invoice.balanceAmount || 0,
-                    ),
-                  };
-                  return (
-                  <tr key={invoice.id} className="hover:bg-white/[0.02]">
-                    <td className="px-4 py-3 font-medium text-white">{invoice.invoiceNumber}</td>
-                    <td className="px-4 py-3 text-slate-200">{formatRoundedInr(invoiceView.amount)}</td>
-                    <td className="px-4 py-3 text-slate-200">{formatRoundedInr(invoiceView.paidAmount)}</td>
-                    <td className="px-4 py-3 text-slate-200">{formatRoundedInr(invoiceView.balanceAmount)}</td>
-                    <td className="px-4 py-3 text-slate-200">{invoice.receiptNumber || "-"}</td>
-                    <td className="px-4 py-3 text-slate-200">{humanizeLabel(invoiceView.paymentStatus)}</td>
-                    <td className="px-4 py-3 text-slate-200">{formatDateTime(invoice.issuedAt)}</td>
-                    <td className="px-4 py-3">
-                      <div className="flex flex-wrap gap-2">
-                        <button
-                          type="button"
-                          title={`Print invoice ${invoice.invoiceNumber}`}
-                          aria-label={`Print invoice ${invoice.invoiceNumber}`}
-                          onClick={() => void printDocumentPdf("invoice", invoice.id)}
-                          disabled={documentBusyKey === `invoice-print-${invoice.id}`}
-                          className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
-                        >
-                          <Printer className="h-4 w-4" />
-                        </button>
-                        <button
-                          type="button"
-                          title={`Download invoice ${invoice.invoiceNumber}`}
-                          aria-label={`Download invoice ${invoice.invoiceNumber}`}
-                          onClick={() => void downloadDocumentPdf("invoice", invoice.id, invoice.invoiceNumber)}
-                          disabled={documentBusyKey === `invoice-download-${invoice.id}`}
-                          className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
-                        >
-                          <Download className="h-4 w-4" />
-                        </button>
-                        <button
-                          type="button"
-                          title={`Share invoice ${invoice.invoiceNumber}`}
-                          aria-label={`Share invoice ${invoice.invoiceNumber}`}
-                          onClick={() => void shareDocumentPdf("invoice", invoice.id, invoice.invoiceNumber, `Invoice ${invoice.invoiceNumber}`)}
-                          disabled={documentBusyKey === `invoice-share-${invoice.id}`}
-                          className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
-                        >
-                          <Share2 className="h-4 w-4" />
-                        </button>
-                        {invoice.receiptNumber && invoice.receiptId ? (() => {
-                          const receiptId = invoice.receiptId;
-                          const receiptNumber = invoice.receiptNumber;
-                          return (
-                          <>
+        <ProfilePanel title="Invoice Register" subtitle="Latest invoices issued for this member" accent="slate">
+          {invoices.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] px-4 py-6 text-sm text-slate-400">
+              No invoices available.
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-[24px] border border-white/8 bg-[#15181f] shadow-[0_18px_40px_rgba(0,0,0,0.22)]">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b border-white/8 bg-white/[0.03] text-left text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+                    <th className="px-4 py-3">Invoice</th>
+                    <th className="px-4 py-3">Total</th>
+                    <th className="px-4 py-3">Paid</th>
+                    <th className="px-4 py-3">Balance</th>
+                    <th className="px-4 py-3">Receipt</th>
+                    <th className="px-4 py-3">Status</th>
+                    <th className="px-4 py-3">Issued At</th>
+                    <th className="px-4 py-3">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-white/6">
+                  {invoices.map((invoice) => {
+                    const invoiceView = {
+                      amount: roundAmount(invoice.amount),
+                      paidAmount: roundAmount(invoice.paidAmount || 0),
+                      balanceAmount: roundAmount(invoice.balanceAmount || 0),
+                      paymentStatus: normalizePaymentStatus(
+                        invoice.status,
+                        invoice.amount,
+                        invoice.paidAmount || 0,
+                        invoice.balanceAmount || 0,
+                      ),
+                    };
+                    return (
+                      <tr key={invoice.id} className="hover:bg-white/[0.02]">
+                        <td className="px-4 py-3 font-medium text-white">{invoice.invoiceNumber}</td>
+                        <td className="px-4 py-3 text-slate-200">{formatRoundedInr(invoiceView.amount)}</td>
+                        <td className="px-4 py-3 text-slate-200">{formatRoundedInr(invoiceView.paidAmount)}</td>
+                        <td className="px-4 py-3 text-slate-200">{formatRoundedInr(invoiceView.balanceAmount)}</td>
+                        <td className="px-4 py-3 text-slate-200">{invoice.receiptNumber || "-"}</td>
+                        <td className="px-4 py-3 text-slate-200">{humanizeLabel(invoiceView.paymentStatus)}</td>
+                        <td className="px-4 py-3 text-slate-200">{formatDateTime(invoice.issuedAt)}</td>
+                        <td className="px-4 py-3">
+                          <div className="flex flex-wrap gap-2">
                             <button
                               type="button"
-                              title={`Print receipt ${receiptNumber}`}
-                              aria-label={`Print receipt ${receiptNumber}`}
-                              onClick={() => void printDocumentPdf("receipt", receiptId)}
-                              disabled={documentBusyKey === `receipt-print-${receiptId}`}
+                              title={`Print invoice ${invoice.invoiceNumber}`}
+                              aria-label={`Print invoice ${invoice.invoiceNumber}`}
+                              onClick={() => void printDocumentPdf("invoice", invoice.id)}
+                              disabled={documentBusyKey === `invoice-print-${invoice.id}`}
                               className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
                             >
                               <Printer className="h-4 w-4" />
                             </button>
                             <button
                               type="button"
-                              title={`Download receipt ${receiptNumber}`}
-                              aria-label={`Download receipt ${receiptNumber}`}
-                              onClick={() => void downloadDocumentPdf("receipt", receiptId, receiptNumber)}
-                              disabled={documentBusyKey === `receipt-download-${receiptId}`}
+                              title={`Download invoice ${invoice.invoiceNumber}`}
+                              aria-label={`Download invoice ${invoice.invoiceNumber}`}
+                              onClick={() => void downloadDocumentPdf("invoice", invoice.id, invoice.invoiceNumber)}
+                              disabled={documentBusyKey === `invoice-download-${invoice.id}`}
                               className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
                             >
                               <Download className="h-4 w-4" />
                             </button>
                             <button
                               type="button"
-                              title={`Share receipt ${receiptNumber}`}
-                              aria-label={`Share receipt ${receiptNumber}`}
-                              onClick={() => void shareDocumentPdf("receipt", receiptId, receiptNumber, `Receipt ${receiptNumber}`)}
-                              disabled={documentBusyKey === `receipt-share-${receiptId}`}
+                              title={`Share invoice ${invoice.invoiceNumber}`}
+                              aria-label={`Share invoice ${invoice.invoiceNumber}`}
+                              onClick={() => void shareDocumentPdf("invoice", invoice.id, invoice.invoiceNumber, `Invoice ${invoice.invoiceNumber}`)}
+                              disabled={documentBusyKey === `invoice-share-${invoice.id}`}
                               className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
                             >
                               <Share2 className="h-4 w-4" />
                             </button>
-                          </>
-                          );
-                        })() : null}
-                      </div>
-                    </td>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  })}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </ProfilePanel>
+
+        <ProfilePanel title="Receipt Register" subtitle="Latest recorded collections for this member" accent="cyan">
+          {receipts.length === 0 ? (
+            <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] px-4 py-6 text-sm text-slate-400">
+              No receipts available.
+            </div>
+          ) : (
+            <div className="overflow-x-auto rounded-[24px] border border-white/8 bg-[#15181f] shadow-[0_18px_40px_rgba(0,0,0,0.22)]">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="border-b border-white/8 bg-white/[0.03] text-left text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+                    <th className="px-4 py-3">Receipt</th>
+                    <th className="px-4 py-3">Invoice</th>
+                    <th className="px-4 py-3">Amount</th>
+                    <th className="px-4 py-3">Mode</th>
+                    <th className="px-4 py-3">Paid At</th>
+                    <th className="px-4 py-3">Actions</th>
                   </tr>
-                  );
-                })}
-              </tbody>
-            </table>
-          </div>
-        )}
+                </thead>
+                <tbody className="divide-y divide-white/6">
+                  {receipts.map((receipt) => (
+                    <tr key={receipt.id} className="hover:bg-white/[0.02]">
+                      <td className="px-4 py-3 font-medium text-white">{receipt.receiptNumber}</td>
+                      <td className="px-4 py-3 text-slate-200">{receipt.invoiceId || "-"}</td>
+                      <td className="px-4 py-3 text-slate-200">{formatRoundedInr(receipt.amount)}</td>
+                      <td className="px-4 py-3 text-slate-200">{humanizeLabel(receipt.paymentMode || "-")}</td>
+                      <td className="px-4 py-3 text-slate-200">{formatDateTime(receipt.paidAt)}</td>
+                      <td className="px-4 py-3">
+                        <div className="flex flex-wrap gap-2">
+                          <button
+                            type="button"
+                            title={`Print receipt ${receipt.receiptNumber}`}
+                            aria-label={`Print receipt ${receipt.receiptNumber}`}
+                            onClick={() => void printDocumentPdf("receipt", receipt.id)}
+                            disabled={documentBusyKey === `receipt-print-${receipt.id}`}
+                            className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
+                          >
+                            <Printer className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            title={`Download receipt ${receipt.receiptNumber}`}
+                            aria-label={`Download receipt ${receipt.receiptNumber}`}
+                            onClick={() => void downloadDocumentPdf("receipt", receipt.id, receipt.receiptNumber)}
+                            disabled={documentBusyKey === `receipt-download-${receipt.id}`}
+                            className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
+                          >
+                            <Download className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            title={`Share receipt ${receipt.receiptNumber}`}
+                            aria-label={`Share receipt ${receipt.receiptNumber}`}
+                            onClick={() => void shareDocumentPdf("receipt", receipt.id, receipt.receiptNumber, `Receipt ${receipt.receiptNumber}`)}
+                            disabled={documentBusyKey === `receipt-share-${receipt.id}`}
+                            className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
+                          >
+                            <Share2 className="h-4 w-4" />
+                          </button>
+                        </div>
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </ProfilePanel>
       </div>
     );
   };
@@ -3597,31 +4506,17 @@ export default function MemberProfilePage() {
           return (Boolean(entry.startDate) && entry.startDate > todayIsoDate) || normalizedStatus === "PENDING" || normalizedStatus === "ISSUED";
         };
         const currentMembershipPortfolio = membershipPortfolio.filter((entry) => !isUpcomingMembershipRecord(entry));
-        const primaryMembershipRecord = !isUpcomingMembershipRecord(primaryMembershipCandidate)
-          ? primaryMembershipCandidate || currentMembershipPortfolio[0] || null
-          : currentMembershipPortfolio[0] || null;
+        const primaryMembershipRecord = pickPortfolioPrimaryMembership(
+          !isUpcomingMembershipRecord(primaryMembershipCandidate) ? primaryMembershipCandidate : null,
+          currentMembershipPortfolio,
+        );
         const transformationMembershipRecord = !isUpcomingMembershipRecord(transformationMembershipCandidate)
           ? transformationMembershipCandidate
           : currentMembershipPortfolio.find((entry) => entry.family === "TRANSFORMATION") || null;
-        const secondaryMembershipRecords = toArray(dashboardRecord.secondaryMemberships)
-          .map(extractMembershipPortfolioItem)
-          .filter((entry): entry is MembershipPortfolioItem => entry !== null)
-          .filter((entry) => !isUpcomingMembershipRecord(entry));
-        const displayedMemberships = (transformationMembershipRecord
-          ? [
-              transformationMembershipRecord,
-              ...secondaryMembershipRecords.filter(
-                (entry) =>
-                  entry.subscriptionId !== transformationMembershipRecord.subscriptionId &&
-                  entry.family !== "PT",
-              ),
-            ]
-          : primaryMembershipRecord
-            ? [
-                primaryMembershipRecord,
-                ...secondaryMembershipRecords.filter((entry) => entry.subscriptionId !== primaryMembershipRecord.subscriptionId),
-              ]
-            : currentMembershipPortfolio).filter((entry) => entry.family !== "CREDIT_PACK");
+        const displayedMemberships = buildDisplayedMembershipCards(
+          currentMembershipPortfolio,
+          transformationMembershipRecord || primaryMembershipRecord,
+        );
         const shouldShowEntitlementsBesideMembership = displayedMemberships.length <= 1;
         const upcomingMemberships = membershipPortfolio.filter((entry) => {
           if (entry.family === "CREDIT_PACK") {
@@ -3634,11 +4529,19 @@ export default function MemberProfilePage() {
         });
         const programEnrollmentRecords = toArray<RecordLike>(data.programEnrollments);
         const displayedEntitlementRecords = (() => {
-          const existingPauseBenefit = normalizedEntitlementRecords.some(
+          const visibleSubscriptionIds = new Set(displayedMemberships.map((membership) => membership.subscriptionId));
+          const relevantEntitlements = normalizedEntitlementRecords.filter((entry) => {
+            const linkedSubscriptionId = extractSubscriptionIdFromEntitlementSource(entry.source);
+            if (!linkedSubscriptionId) {
+              return true;
+            }
+            return visibleSubscriptionIds.has(linkedSubscriptionId);
+          });
+          const existingPauseBenefit = relevantEntitlements.some(
             (entry) => String(entry.feature || "").toUpperCase() === "PAUSE_BENEFIT",
           );
           if (existingPauseBenefit) {
-            return normalizedEntitlementRecords;
+            return relevantEntitlements;
           }
 
           const pauseBenefitVariant = displayedMemberships
@@ -3654,11 +4557,11 @@ export default function MemberProfilePage() {
             .find((variant) => Number(variant?.passBenefitDays || 0) > 0);
 
           if (!pauseBenefitVariant) {
-            return normalizedEntitlementRecords;
+            return relevantEntitlements;
           }
 
           return [
-            ...normalizedEntitlementRecords,
+            ...relevantEntitlements,
             {
               entitlementId: -1,
               feature: "PAUSE_BENEFIT",
@@ -3733,6 +4636,7 @@ export default function MemberProfilePage() {
                 const isPtCard = membership.family === "PT";
                 const isSelectedCard = selectedMembershipRecord?.subscriptionId === membership.subscriptionId;
                 const isMenuOpen = openMembershipMenuId === membership.subscriptionId;
+                const isFrozenCard = String(membership.status || "").toUpperCase() === "PAUSED";
                 const ptTotalSessions = membership.includedPtSessions || 0;
                 const ptUsedSessions = isPtCard ? ptConsumedSessions : 0;
                 const ptRemainingSessions = isPtCard ? Math.max(ptTotalSessions - ptUsedSessions, 0) : 0;
@@ -3746,9 +4650,9 @@ export default function MemberProfilePage() {
                 const membershipCatalogVariant =
                   catalogVariants.find((variant) => String(variant.variantId) === membershipVariantId) ||
                   catalogVariants.find((variant) => variant.productCode === membership.productCode && variant.variantName === membership.variantName);
-                const membershipPackageFeatures = parseFeatureList(membershipCatalogVariant?.includedFeatures)
+                const membershipPackageFeatures = toArray(membership.entitlements)
+                  .map((feature) => cleanEntitlementFeatureLabel(String(feature || "")))
                   .filter((feature) => shouldShowPackageFeatureChip(feature))
-                  .map((feature) => cleanEntitlementFeatureLabel(feature))
                   .filter((feature, index, array) => array.indexOf(feature) === index);
                 const linkedPrograms = membership.family === "GROUP_CLASS"
                   ? Array.from(
@@ -3759,6 +4663,15 @@ export default function MemberProfilePage() {
                       ),
                     )
                   : [];
+                const legacyUpgradeFallback = legacyUpgradeFallbackBySubscription.get(membership.subscriptionId);
+                const latestUpgradeEntry =
+                  latestUpgradeAuditBySubscription.get(membership.subscriptionId) ||
+                  (isPrimaryCard ? latestMembershipUpgradeEntry : undefined);
+                const effectiveMembershipStartDate =
+                  legacyUpgradeFallback?.previousStartDate && legacyUpgradeFallback.previousStartDate < (membership.startDate || "")
+                    ? legacyUpgradeFallback.previousStartDate
+                    : membership.startDate;
+                const shouldShowUpgradedState = Boolean(latestUpgradeEntry || legacyUpgradeFallback) && isPrimaryCard;
                 return (
                   <ProfilePanel
                     key={membership.subscriptionId}
@@ -3780,12 +4693,22 @@ export default function MemberProfilePage() {
                             Primary
                           </span>
                         ) : null}
+                        {isFrozenCard ? (
+                          <span className="rounded-full border border-sky-400/30 bg-sky-500/15 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-sky-100">
+                            Frozen
+                          </span>
+                        ) : null}
+                        {shouldShowUpgradedState ? (
+                          <span className="rounded-full border border-[#c42924]/30 bg-[#c42924]/15 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-[#ffd6d4]">
+                            Upgraded
+                          </span>
+                        ) : null}
                         {isTransformationCard ? (
                           <span className="rounded-full border border-amber-400/30 bg-amber-500/15 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-amber-200">
                             Gym + PT Bundle
                           </span>
                         ) : null}
-                        {isPtCard ? (
+                        {isPtCard && !isPrimaryCard ? (
                           <span className="rounded-full border border-rose-400/30 bg-rose-500/15 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-rose-200">
                             Secondary
                           </span>
@@ -3853,6 +4776,19 @@ export default function MemberProfilePage() {
                           ))}
                         </div>
                       ) : null}
+                      {shouldShowUpgradedState ? (
+                        <div className="rounded-xl border border-[#c42924]/20 bg-[#c42924]/10 px-3 py-3">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-[#ffb9b6]">Latest Upgrade</p>
+                          <p className="mt-2 text-sm font-medium text-white">
+                            {latestUpgradeEntry?.summary || (legacyUpgradeFallback ? `Upgraded from ${legacyUpgradeFallback.fromLabel} to ${cardTitle}` : `Upgraded to ${cardTitle}`)}
+                          </p>
+                          <p className="mt-1 text-xs text-[#ffd7d6]/80">
+                            {latestUpgradeEntry
+                              ? `${formatDateTime(latestUpgradeEntry.createdAt)} · ${resolveAuditActorLabel(latestUpgradeEntry)}`
+                              : `Derived from membership history · ${humanizeLabel(legacyUpgradeFallback?.previousStatus || "Completed")}`}
+                          </p>
+                        </div>
+                      ) : null}
                       {linkedPrograms.length > 0 ? (
                         <div className="rounded-xl border border-cyan-400/15 bg-cyan-500/8 px-3 py-3">
                           <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-cyan-200/70">
@@ -3869,7 +4805,7 @@ export default function MemberProfilePage() {
                       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
                         <StatPill label="Membership Status" value={humanizeLabel(membership.status || "-")} />
                         <StatPill label="Duration" value={formatPlanDuration(membership.durationMonths, membership.validityDays)} />
-                        <StatPill label="Start Date" value={formatDateOnly(membership.startDate || undefined)} />
+                        <StatPill label="Start Date" value={formatDateOnly(effectiveMembershipStartDate || undefined)} />
                         <StatPill label="Expiry Date" value={formatDateOnly(membership.expiryDate || undefined)} />
                         {membership.family === "PT" ? (
                           <>
@@ -3879,12 +4815,19 @@ export default function MemberProfilePage() {
                         ) : null}
                         {membership.family === "FLEX" ? (
                           <>
-                            <StatPill label="Check-In Limit" value={String(membership.includedCheckIns || 0)} />
-                            <StatPill label="Check-Ins Used" value={String(membership.usedCheckIns || 0)} />
-                            <StatPill label="Remaining Check-Ins" value={String(membership.checkInsRemaining || 0)} />
+                            <StatPill label="Days Included" value={formatFlexDayLabel(membership.includedCheckIns || 0)} />
+                            <StatPill label="Days Used" value={formatFlexDayLabel(membership.usedCheckIns || 0)} />
+                            <StatPill label="Days Remaining" value={formatFlexDayLabel(membership.checkInsRemaining || 0)} />
                           </>
                         ) : null}
                       </div>
+                      {membership.family === "FLEX" ? (
+                        <div className="rounded-xl border border-white/8 bg-white/[0.03] px-3 py-3">
+                          <p className="text-sm text-slate-300">
+                            Use on any <span className="font-semibold text-white">{formatFlexDayLabel(membership.includedCheckIns || 0)}</span> within the active flex cycle. Attendance automatically stops once the remaining days reach zero.
+                          </p>
+                        </div>
+                      ) : null}
                       {isPtCard && ptTotalSessions > 0 ? (
                         <div className="space-y-2">
                           <div className="flex items-center justify-between text-xs font-medium text-slate-300">
@@ -4132,15 +5075,35 @@ export default function MemberProfilePage() {
         }).length;
         const totalSessions = ptSessions.length;
         const ptMembershipRecord = portfolioMembershipItems.find((entry) => entry.family === "PT") || null;
-        const includedPtSessions = ptMembershipRecord?.includedPtSessions || 0;
+        const transformationMembershipRecord = portfolioMembershipItems.find((entry) => entry.family === "TRANSFORMATION") || null;
+        const commercialPtRecord = ptMembershipRecord || (isTransformationPlan ? transformationMembershipRecord : null);
+        const commercialPtCatalogVariant = commercialPtRecord
+          ? catalogVariants.find((variant) => String(variant.variantId) === String(commercialPtRecord.productVariantId))
+            || catalogVariants.find((variant) => variant.productCode === commercialPtRecord.productCode && variant.variantName === commercialPtRecord.variantName)
+          : null;
+        const activeAssignRec = activePtAssignment ? toRecord(activePtAssignment) : null;
+        const activeAssignId = activeAssignRec ? pickString(activeAssignRec, ["id", "assignmentId"]) : null;
+        const hasPtCommercialMembership = Boolean(commercialPtRecord || isTransformationPlan);
+        const ptPackageDurationLabel = commercialPtRecord
+          ? formatPlanDuration(commercialPtRecord.durationMonths, commercialPtRecord.validityDays)
+          : isTransformationPlan
+            ? formatPlanDuration(durationMonths, validityDays)
+            : "-";
+        const hasAssignedTrainer = Boolean(assignedTrainer && assignedTrainer !== "-");
+        const ptPackageName =
+          commercialPtRecord?.variantName
+          || commercialPtRecord?.productName
+          || (isTransformationPlan ? "Transformation PT Bundle" : "Personal Training");
+        const includedPtSessions =
+          commercialPtRecord?.includedPtSessions
+          || commercialPtCatalogVariant?.includedPtSessions
+          || pickNumber(activeAssignRec, ["sessionCount", "includedSessions", "totalSessions"])
+          || 0;
         const pendingSessions = scheduledSessions + inProgressSessions;
         const remainingPtSessions = includedPtSessions > 0 ? Math.max(includedPtSessions - (completedSessions + noShowSessions), 0) : 0;
         const trainerCountedSessions = completedSessions; // Only COMPLETED counts for trainer
         const memberConsumedSessions = completedSessions + noShowSessions; // COMPLETED + NO_SHOW for member
         const attendancePct = totalSessions > 0 ? Math.round((completedSessions / totalSessions) * 100) : 0;
-
-        const activeAssignRec = activePtAssignment ? toRecord(activePtAssignment) : null;
-        const activeAssignId = activeAssignRec ? pickString(activeAssignRec, ["id", "assignmentId"]) : null;
 
         // PT slot data from tabData
         const ptSlots = Array.isArray((tabData["personal-training"] as Record<string, unknown>)?.slots)
@@ -4211,7 +5174,7 @@ export default function MemberProfilePage() {
               <div className="rounded-2xl border border-amber-400/20 bg-amber-500/10 px-5 py-4">
                 <p className="text-sm font-semibold text-amber-200">Transformation Package — Gym + PT Bundle</p>
                 <p className="mt-1 text-xs text-amber-200/70">
-                  This member&apos;s membership includes {(durationMonths || 0) * 13} PT sessions per month. Personal training is bundled with gym access.
+                  This member&apos;s membership includes {includedPtSessions > 0 ? includedPtSessions : (durationMonths || 0) * 13} PT sessions in total. Personal training is bundled with gym access.
                 </p>
               </div>
             ) : null}
@@ -4225,6 +5188,25 @@ export default function MemberProfilePage() {
                   <StatPill label="Start Date" value={formatDateOnly(pickString(activeAssignRec!, ["startDate"]))} />
                   <StatPill label="End Date" value={formatDateOnly(pickString(activeAssignRec!, ["endDate"])) || "Ongoing"} />
                   <StatPill label="Status" value={pickBoolean(activeAssignRec!, ["active"]) ? "Active" : "Inactive"} />
+                </div>
+              ) : hasPtCommercialMembership ? (
+                <div className="space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <StatPill label="PT Package" value={trimMembershipCardTitle(ptPackageName)} />
+                    <StatPill label="Duration" value={ptPackageDurationLabel} />
+                    <StatPill label="Total Sessions" value={includedPtSessions > 0 ? String(includedPtSessions) : "-"} />
+                    <StatPill label="Assigned Trainer" value={assignedTrainer || "-"} />
+                  </div>
+                  <div className="rounded-xl border border-amber-400/20 bg-amber-500/10 px-4 py-3">
+                    <p className="text-sm font-medium text-amber-100">
+                      PT billing is attached, but the operational PT setup is not complete yet.
+                    </p>
+                    <p className="mt-1 text-xs text-amber-200/80">
+                      {hasAssignedTrainer
+                        ? "Complete the weekly slot schedule, workout plan, and diet plan before using the session register."
+                        : "Complete the trainer assignment, weekly slot schedule, workout plan, and diet plan before using the session register."}
+                    </p>
+                  </div>
                 </div>
               ) : (
                 <p className="text-sm text-slate-400">No active PT assignment. Assign a trainer to start tracking sessions.</p>
@@ -4367,16 +5349,22 @@ export default function MemberProfilePage() {
                 </div>
               </ProfilePanel>
               </div>
-            ) : activePtAssignment ? (
+            ) : activePtAssignment || hasPtCommercialMembership ? (
               <div ref={sessionRegisterRef}>
               <ProfilePanel title="Session Register" accent="slate">
-                <p className="text-sm text-slate-400">No sessions recorded yet. Configure slot schedule and generate sessions, or create sessions manually.</p>
+                <p className="text-sm text-slate-400">
+                  {activePtAssignment
+                    ? "No sessions recorded yet. Configure slot schedule and generate sessions, or create sessions manually."
+                    : hasAssignedTrainer
+                      ? "PT is billed and a trainer is already linked. Sessions will appear here after the weekly slot schedule is configured."
+                      : "PT is billed for this member, but sessions will appear here only after the trainer assignment and weekly slot schedule are configured."}
+                </p>
               </ProfilePanel>
               </div>
             ) : null}
 
             {/* Action buttons */}
-            {canShowPtActions ? (
+            {canShowPtActions && !hasPtCommercialMembership ? (
               <div className="flex flex-wrap gap-2">
                 <button
                   type="button"
@@ -4463,17 +5451,18 @@ export default function MemberProfilePage() {
         );
       }
       case "audit-trail": {
-        const auditEntries = tabData["audit-trail"] || [];
+        const auditEntries = [...(tabData["audit-trail"] || []), ...lifecycleAuditEntries]
+          .sort((left, right) => Date.parse(String(right.createdAt || "")) - Date.parse(String(left.createdAt || "")));
         return (
           <ProfilePanel title="Audit Trail" accent="slate">
             <GenericTable
               items={auditEntries.map((entry) => ({
                 createdAt: formatDateTime(entry.createdAt),
                 action: entry.action || "-",
-                actor: entry.actorName || entry.actorId || "-",
+                actor: resolveAuditActorLabel(entry),
                 summary: entry.summary || "-",
               }))}
-              emptyLabel="No profile audit entries available."
+              emptyLabel="No member audit entries available."
             />
           </ProfilePanel>
         );
@@ -4509,7 +5498,15 @@ export default function MemberProfilePage() {
           <div className="w-full max-w-3xl rounded-[28px] border border-white/10 bg-[#111821] p-6 shadow-[0_30px_120px_rgba(0,0,0,0.45)]">
             <div className="flex items-start justify-between gap-4">
               <div>
-                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-emerald-300">{completedBilling.context === "renewal" ? "Renewal Completed" : "Billing Completed"}</p>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-emerald-300">
+                  {completedBilling.context === "renewal"
+                    ? "Renewal Completed"
+                    : completedBilling.context === "upgrade"
+                      ? "Upgrade Completed"
+                      : completedBilling.context === "pt"
+                        ? "PT Added"
+                        : "Billing Completed"}
+                </p>
                 <h3 className="mt-2 text-2xl font-semibold text-white">{completedBilling.title}</h3>
                 <p className="mt-2 text-sm text-slate-300">{completedBilling.message}</p>
               </div>
@@ -4526,9 +5523,7 @@ export default function MemberProfilePage() {
               <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Billing Records</p>
                 <dl className="mt-3 space-y-2 text-sm text-slate-300">
-                  <div className="flex items-center justify-between gap-3"><dt>Invoice ID</dt><dd className="font-semibold text-white">{completedBilling.invoiceId}</dd></div>
                   <div className="flex items-center justify-between gap-3"><dt>Invoice Number</dt><dd className="font-semibold text-white">{completedBilling.invoiceNumber}</dd></div>
-                  <div className="flex items-center justify-between gap-3"><dt>Receipt ID</dt><dd className="font-semibold text-white">{completedBilling.receiptId || "-"}</dd></div>
                   <div className="flex items-center justify-between gap-3"><dt>Receipt Number</dt><dd className="font-semibold text-white">{completedBilling.receiptNumber || "-"}</dd></div>
                   <div className="flex items-center justify-between gap-3"><dt>Payment Status</dt><dd>{humanizeLabel(completedBilling.paymentStatus)}</dd></div>
                   <div className="flex items-center justify-between gap-3"><dt>Total Paid</dt><dd>{formatRoundedInr(completedBilling.totalPaidAmount)}</dd></div>
@@ -4671,8 +5666,15 @@ export default function MemberProfilePage() {
                         <Activity className="h-5 w-5 text-cyan-300" />
                         <div>
                           <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Current Membership</p>
-                          <p className="mt-1 text-base font-semibold text-white">{planName}</p>
-                          <p className="mt-1 text-sm text-slate-400">{planDuration}</p>
+                          <p className="mt-1 text-base font-semibold text-white">{visibleCurrentMembershipLabel}</p>
+                          <div className="mt-1 flex flex-wrap items-center gap-2">
+                            <p className="text-sm text-slate-400">{visibleCurrentMembershipDuration}</p>
+                            {visibleCurrentMembershipStatus === "Paused" || visibleCurrentMembershipStatus === "Frozen" ? (
+                              <span className="rounded-full border border-sky-400/30 bg-sky-500/15 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.18em] text-sky-100">
+                                Paused
+                              </span>
+                            ) : null}
+                          </div>
                         </div>
                       </div>
                     </div>
@@ -4852,30 +5854,100 @@ export default function MemberProfilePage() {
           <Modal
             open={actionModal === "freeze"}
             onClose={() => setActionModal(null)}
-            title="Freeze Membership"
+            title="Freeze membership"
             size="md"
             footer={
-              <>
-                <button type="button" onClick={() => setActionModal(null)} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Cancel</button>
-                <button type="button" onClick={() => void handleFreeze()} disabled={actionBusy} className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
-                  {actionBusy ? "Saving..." : "Activate Freeze"}
+              <div className="flex w-full gap-3">
+                <button type="button" onClick={() => setActionModal(null)} className="flex-1 rounded-xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-slate-200">Cancel</button>
+                <button type="button" onClick={() => void handleFreeze()} disabled={actionBusy} className="flex-[2] rounded-xl bg-[#c42924] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60">
+                  <span className="inline-flex items-center gap-2">
+                    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                      <path d="M12 3v18" />
+                      <path d="M6 7.5h12" />
+                      <path d="M7.5 16.5h9" />
+                      <path d="M9 12h6" />
+                    </svg>
+                    {actionBusy ? "Saving..." : "Activate Freeze"}
+                  </span>
                 </button>
-              </>
+              </div>
             }
           >
-            <div className="space-y-4">
+            <div className="space-y-5">
               {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
-              <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                Freeze is available only when this membership has a pause benefit entitlement. Minimum freeze is {freezeMinDays} days and the maximum is the package allowance of {freezeMaxDays} days.
+              <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm leading-6 text-amber-100">
+                Freeze uses the remaining pause benefit balance on this membership. Billing stays unchanged, access pauses immediately, and the membership expiry extends by the approved freeze days.
               </div>
-              <label className="space-y-2 text-sm">
-                <span className="font-medium text-slate-700">Freeze Days</span>
-                <input type="number" min={freezeMinDays} max={freezeMaxDays} value={freezeForm.freezeDays} onChange={(event) => setFreezeForm((current) => ({ ...current, freezeDays: event.target.value }))} className="w-full rounded-xl border border-slate-200 px-3 py-2" />
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Current Expiry</p>
+                  <p className="mt-1.5 text-base font-semibold text-white">{formatDateOnly(selectedExpiryDate) || "-"}</p>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Pause Benefit</p>
+                  <div className="mt-1.5 flex items-baseline gap-2">
+                    <p className="text-base font-semibold text-white">{freezeMaxDays} days</p>
+                    <span className="rounded-full bg-emerald-500/10 px-2 py-0.5 text-[11px] font-medium text-emerald-300">available</span>
+                  </div>
+                </div>
+              </div>
+              <div className="h-px bg-white/10" />
+              <label className="block space-y-2 text-sm">
+                <div className="flex items-center justify-between gap-4">
+                  <span className="font-medium text-slate-200">Freeze Days</span>
+                  <span className="text-xs text-slate-500">Min {freezeMinDays} · Max {freezeMaxDays}</span>
+                </div>
+                <div className="relative">
+                  <input
+                    type="number"
+                    min={freezeMinDays}
+                    max={freezeMaxDays}
+                    value={freezeForm.freezeDays}
+                    onChange={(event) => setFreezeForm((current) => ({ ...current, freezeDays: event.target.value }))}
+                    className="w-full rounded-xl border border-white/10 bg-transparent px-4 py-3 pr-16 text-sm font-semibold text-white"
+                  />
+                  <span className="pointer-events-none absolute right-4 top-1/2 -translate-y-1/2 text-sm text-slate-500">days</span>
+                </div>
+                <input
+                  type="range"
+                  min={freezeMinDays}
+                  max={Math.max(freezeMaxDays, freezeMinDays)}
+                  step={1}
+                  value={Math.min(Math.max(freezeDaysInput || freezeMinDays, freezeMinDays), Math.max(freezeMaxDays, freezeMinDays))}
+                  onChange={(event) => setFreezeForm((current) => ({ ...current, freezeDays: event.target.value }))}
+                  className="w-full accent-slate-400"
+                />
               </label>
-              <label className="space-y-2 text-sm">
-                <span className="font-medium text-slate-700">Reason</span>
-                <textarea value={freezeForm.reason} onChange={(event) => setFreezeForm((current) => ({ ...current, reason: event.target.value }))} className="min-h-[88px] w-full rounded-xl border border-slate-200 px-3 py-2" />
+              <label className="block space-y-2 text-sm">
+                <span className="font-medium text-slate-200">Reason <span className="font-normal text-slate-500">(optional)</span></span>
+                <textarea
+                  value={freezeForm.reason}
+                  onChange={(event) => setFreezeForm((current) => ({ ...current, reason: event.target.value }))}
+                  placeholder="E.g. travel, injury, personal..."
+                  className="min-h-[92px] w-full rounded-xl border border-white/10 bg-transparent px-4 py-3 text-sm text-white placeholder:text-slate-500"
+                />
               </label>
+              <div className="overflow-hidden rounded-2xl border border-white/10">
+                <div className="border-b border-white/10 bg-white/[0.03] px-4 py-2.5">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Freeze Preview</p>
+                </div>
+                <dl className="grid grid-cols-2">
+                  {[
+                    ["Freeze Start", formatDateOnly(freezePreviewStartDate) || "-"],
+                    ["Freeze End", formatDateOnly(freezePreviewEndDate) || "-"],
+                    ["New Expiry", formatDateOnly(freezePreviewExpiryDate) || "-"],
+                    ["Balance After Freeze", `${freezePreviewRemainingDays} days`],
+                  ].map(([label, value], index) => (
+                    <div
+                      key={label}
+                      className={`px-4 py-3 ${index % 2 === 0 ? "border-r border-white/10" : ""} ${index < 2 ? "border-b border-white/10" : ""}`}
+                    >
+                      <dt className="text-[11px] text-slate-500">{label}</dt>
+                      <dd className="mt-1 text-sm font-semibold text-white">{value}</dd>
+                    </div>
+                  ))}
+                </dl>
+              </div>
             </div>
           </Modal>
 
@@ -4902,7 +5974,7 @@ export default function MemberProfilePage() {
               {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
               {!isRenewLifecycleModal ? (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-                  Upgrade applies the selected higher package or duration. The invoice is generated only for the difference between the existing sold membership value and the selected target plan.
+                  Upgrade applies the selected higher package or duration. The invoice is generated only for the difference between the existing sold membership value and the selected target plan. This membership can be upgraded only within {currentUpgradeWindowDays} days of the current cycle start.
                 </div>
               ) : null}
               {isRenewLifecycleModal ? (
@@ -4915,9 +5987,9 @@ export default function MemberProfilePage() {
                         <p className="mt-3 text-3xl font-semibold tracking-tight text-white">
                           {selectedLifecycleVariant ? normalizeDisplayPlanName(selectedLifecycleVariant.variantName) : planName}
                         </p>
-                        {renewalFeatureList.length ? (
+                        {selectedLifecycleFeatureList.length ? (
                           <div className="mt-4 flex flex-wrap gap-2">
-                            {renewalFeatureList.map((feature) => (
+                            {selectedLifecycleFeatureList.map((feature) => (
                               <span
                                 key={feature}
                                 className="rounded-full border border-white/10 bg-white/[0.06] px-3 py-1 text-[11px] font-medium tracking-[0.08em] text-[#ffe1df]"
@@ -5038,134 +6110,324 @@ export default function MemberProfilePage() {
                   </div>
                 </div>
               ) : (
-                <div className="grid gap-4 md:grid-cols-2">
+                <div className="space-y-5 rounded-[28px] border border-white/8 bg-[#111827] p-5 text-sm text-slate-200">
+                  <div className="grid gap-4 xl:grid-cols-[320px_minmax(0,1fr)]">
+                    <div className="rounded-[24px] border border-white/8 bg-white/[0.03] p-4">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Current Membership</p>
+                      <p className="mt-3 text-2xl font-semibold text-white">{currentLifecycleVariantTitle}</p>
+                      <p className="mt-1 text-sm text-slate-300">{currentLifecycleDurationLabel || "Current active membership"}</p>
+                      <div className="mt-4 grid gap-2">
+                        <div className="rounded-xl border border-white/8 bg-black/10 px-3 py-3">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Current Validity</p>
+                          <p className="mt-1 text-sm font-medium text-white">
+                            {formatDateOnly(selectedStartDate)} - {formatDateOnly(selectedExpiryDate)}
+                          </p>
+                        </div>
+                        <div className="rounded-xl border border-white/8 bg-black/10 px-3 py-3">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Current Plan Price</p>
+                          <p className="mt-1 text-sm font-medium text-white">{formatRoundedInr(currentLifecycleBasePrice)}</p>
+                        </div>
+                        <div className="rounded-xl border border-white/8 bg-black/10 px-3 py-3">
+                          <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Upgrade Window</p>
+                          <p className="mt-1 text-sm font-medium text-white">
+                            {upgradeWindowExceeded ? "Closed" : `${currentUpgradeWindowDays} Days`}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="space-y-4">
+                      {singleUpgradeVariant ? (
+                        <div className="rounded-[24px] border border-[#c42924]/25 bg-[#c42924]/10 p-4">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#ffb9b6]">Upgraded Membership</p>
+                          <div className="mt-3 flex items-start justify-between gap-4">
+                            <div>
+                              <p className="text-2xl font-semibold text-white">{sanitizeMembershipVariantTitle(singleUpgradeVariant.variantName || formatVariantDisplayLabel(singleUpgradeVariant))}</p>
+                              <p className="mt-1 text-sm text-[#ffd7d6]">{formatPlanDuration(singleUpgradeVariant.durationMonths, singleUpgradeVariant.validityDays)}</p>
+                            </div>
+                            <p className="text-right text-lg font-semibold text-white">{formatRoundedInr(Number(singleUpgradeVariant.basePrice || 0))}</p>
+                          </div>
+                          <p className="mt-1 text-sm text-[#ffd7d6]">Only one valid upgrade path is available for this membership.</p>
+                          <div className="mt-4 grid gap-2 md:grid-cols-2">
+                            <div className="rounded-xl border border-white/8 bg-black/10 px-3 py-3">
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Target Category</p>
+                              <p className="mt-1 text-sm font-medium text-white">{humanizeLabel(singleUpgradeVariant.categoryCode)}</p>
+                            </div>
+                            <div className="rounded-xl border border-white/8 bg-black/10 px-3 py-3">
+                              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Target Validity</p>
+                              <p className="mt-1 text-sm font-medium text-white">{formatPlanDuration(singleUpgradeVariant.durationMonths, singleUpgradeVariant.validityDays)}</p>
+                            </div>
+                          </div>
+                        </div>
+                      ) : lifecycleCategoryOptions.length > 1 ? (
+                        <div className="space-y-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Target Category</p>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            {lifecycleCategoryOptions.map((category) => {
+                              const selected = lifecycleForm.categoryCode === category;
+                              return (
+                                <button
+                                  key={category}
+                                  type="button"
+                                  onClick={() =>
+                                    setLifecycleForm((current) => ({
+                                      ...current,
+                                      categoryCode: category,
+                                      productCode: "",
+                                      productVariantId: "",
+                                      sellingPrice: "",
+                                      discountPercent: "",
+                                    }))
+                                  }
+                                  className={`rounded-[22px] border px-4 py-4 text-left transition ${
+                                    selected
+                                      ? "border-[#c42924]/70 bg-[#c42924]/12 text-white"
+                                      : "border-white/8 bg-white/[0.03] text-slate-200 hover:border-white/15"
+                                  }`}
+                                >
+                                  <p className="text-base font-semibold">{humanizeLabel(category)}</p>
+                                  <p className="mt-1 text-xs text-slate-400">
+                                    {category === "FLAGSHIP"
+                                      ? "Move into a premium flagship membership."
+                                      : category === "FLEX"
+                                        ? "Continue within flex with a stronger duration."
+                                        : "Choose the target membership family."}
+                                  </p>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {!singleUpgradeVariant && filteredLifecycleProducts.length ? (
+                        <div className="space-y-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Target Product</p>
+                          <div className="grid gap-3 md:grid-cols-2">
+                            {filteredLifecycleProducts.map((product) => {
+                              const selected = lifecycleForm.productCode === product.productCode;
+                              return (
+                                <button
+                                  key={product.productId}
+                                  type="button"
+                                  onClick={() =>
+                                    setLifecycleForm((current) => ({
+                                      ...current,
+                                      productCode: product.productCode,
+                                      productVariantId: "",
+                                      sellingPrice: "",
+                                      discountPercent: "",
+                                    }))
+                                  }
+                                  className={`rounded-[22px] border px-4 py-4 text-left transition ${
+                                    selected
+                                      ? "border-[#c42924]/70 bg-[#c42924]/12 text-white"
+                                      : "border-white/8 bg-white/[0.03] text-slate-200 hover:border-white/15"
+                                  }`}
+                                >
+                                  <p className="text-base font-semibold text-white">{product.productName}</p>
+                                  <p className="mt-1 text-xs text-slate-400">{humanizeLabel(product.categoryCode)}</p>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ) : null}
+
+                      {!singleUpgradeVariant ? (
+                      <div className="space-y-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Target Variant</p>
+                        {filteredLifecycleVariants.length ? (
+                          <div className="grid gap-3">
+                            {filteredLifecycleVariants.map((variant) => {
+                              const selected = String(variant.variantId) === String(lifecycleForm.productVariantId);
+                              return (
+                                <button
+                                  key={variant.variantId}
+                                  type="button"
+                                  onClick={() =>
+                                    setLifecycleForm((current) => ({
+                                      ...current,
+                                      productVariantId: String(variant.variantId),
+                                      sellingPrice: String(roundAmount(Math.max(Number(variant.basePrice || 0) - currentLifecycleBasePrice, 0))),
+                                      discountPercent: "",
+                                    }))
+                                  }
+                                  className={`rounded-[24px] border px-4 py-4 text-left transition ${
+                                    selected
+                                      ? "border-[#c42924]/70 bg-[#c42924]/12 text-white"
+                                      : "border-white/8 bg-white/[0.03] text-slate-200 hover:border-white/15"
+                                  }`}
+                                >
+                                  <div className="flex items-start justify-between gap-4">
+                                    <div>
+                                      <p className="text-base font-semibold text-white">{sanitizeMembershipVariantTitle(variant.variantName || formatVariantDisplayLabel(variant))}</p>
+                                      <p className="mt-1 text-xs text-slate-400">{formatPlanDuration(variant.durationMonths, variant.validityDays)}</p>
+                                    </div>
+                                    <p className="text-right text-lg font-semibold text-white">{formatRoundedInr(Number(variant.basePrice || 0))}</p>
+                                  </div>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <div className="rounded-[22px] border border-dashed border-white/10 bg-white/[0.02] px-4 py-8 text-center text-sm text-slate-400">
+                            Select the upgrade path above to see eligible target variants.
+                          </div>
+                        )}
+                      </div>
+                      ) : null}
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 xl:grid-cols-[minmax(0,1.12fr)_340px]">
+                    <div className="rounded-[24px] border border-white/8 bg-black/10 p-5">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Updated Commercials</p>
+                      <p className="mt-2 text-lg font-semibold text-white">
+                        {selectedLifecycleVariant ? selectedLifecycleVariantTitle : "Select a target variant"}
+                      </p>
+                      {selectedLifecycleVariant ? (
+                        <p className="mt-1 text-sm text-slate-300">{selectedLifecycleDurationLabel}</p>
+                      ) : null}
+                      {selectedLifecycleFeatureList.length ? (
+                        <div className="mt-4 flex flex-wrap gap-2">
+                          {selectedLifecycleFeatureList.slice(0, 5).map((feature) => (
+                            <span key={feature} className="rounded-full border border-white/10 bg-white/[0.05] px-3 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-slate-200">
+                              {feature}
+                            </span>
+                          ))}
+                        </div>
+                      ) : null}
+                      <div className="mt-5 grid gap-4 md:grid-cols-2">
+                        <label className="space-y-2">
+                          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Start Date</span>
+                          <input
+                            type="date"
+                            value={lifecycleForm.startDate}
+                            onChange={(event) => setLifecycleForm((current) => ({ ...current, startDate: event.target.value }))}
+                            className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                          />
+                        </label>
+                        <div className="rounded-xl border border-white/8 bg-white/[0.03] px-3 py-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Projected End Date</p>
+                          <p className="mt-2 text-sm font-semibold text-white">{formatDateOnly(projectedRenewalEndDate)}</p>
+                        </div>
+                        <div className="rounded-xl border border-white/8 bg-white/[0.03] px-3 py-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Target Plan Price</p>
+                          <p className="mt-2 text-sm font-semibold text-white">{formatRoundedInr(targetLifecycleBasePrice)}</p>
+                        </div>
+                        <div className="rounded-xl border border-white/8 bg-white/[0.03] px-3 py-3">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Reference Upgrade Difference</p>
+                          <p className="mt-2 text-sm font-semibold text-white">{formatRoundedInr(upgradeBaseDifference)}</p>
+                        </div>
+                        <label className="space-y-2">
+                          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Selling Price</span>
+                          <input
+                            value={lifecycleForm.sellingPrice}
+                            onChange={(event) => {
+                              const value = sanitizeIntegerString(event.target.value);
+                              const parsed = value ? Number(value) : undefined;
+                              const sellingPrice = parsed === undefined ? undefined : Math.min(Math.max(parsed, 0), upgradeBaseDifference || parsed);
+                              setLifecycleForm((current) => ({
+                                ...current,
+                                sellingPrice: sellingPrice === undefined ? value : String(roundAmount(sellingPrice)),
+                                discountPercent:
+                                  sellingPrice !== undefined && upgradeBaseDifference > 0
+                                    ? formatDecimalInput(((upgradeBaseDifference - sellingPrice) / upgradeBaseDifference) * 100)
+                                    : current.discountPercent,
+                              }));
+                            }}
+                            className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                            inputMode="numeric"
+                            placeholder="Enter selling price"
+                          />
+                        </label>
+                        <label className="space-y-2">
+                          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Discount %</span>
+                          <input
+                            value={lifecycleForm.discountPercent}
+                            onChange={(event) => {
+                              const value = sanitizeNumericString(event.target.value);
+                              const parsed = value ? Math.min(100, Math.max(0, Number(value))) : undefined;
+                              setLifecycleForm((current) => ({
+                                ...current,
+                                discountPercent: value,
+                                sellingPrice:
+                                  parsed === undefined
+                                    ? current.sellingPrice
+                                    : formatDecimalInput(upgradeBaseDifference * (1 - parsed / 100)),
+                              }));
+                            }}
+                            className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                            inputMode="decimal"
+                            placeholder="0"
+                          />
+                        </label>
+                      </div>
+                    </div>
+
+                    <div className="rounded-[24px] border border-white/8 bg-black/10 p-5">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Upgrade Summary</p>
+                      <div className="mt-4 space-y-3 text-sm">
+                        <div className="flex items-center justify-between gap-4">
+                          <span className="text-slate-400">Current Plan Price</span>
+                          <span className="font-semibold text-white">{formatRoundedInr(currentLifecycleBasePrice)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <span className="text-slate-400">Target Plan Price</span>
+                          <span className="font-semibold text-white">{formatRoundedInr(targetLifecycleBasePrice)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <span className="text-slate-400">Upgrade Difference</span>
+                          <span className="font-semibold text-white">{formatRoundedInr(upgradeCommercial.baseAmount)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <span className="text-slate-400">Selling Price</span>
+                          <span className="font-semibold text-white">{formatRoundedInr(upgradeCommercial.sellingPrice)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <span className="text-slate-400">Discount</span>
+                          <span className="font-semibold text-white">{formatRoundedInr(upgradeCommercial.discountAmount)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <span className="text-slate-400">CGST</span>
+                          <span className="font-semibold text-white">{formatRoundedInr(upgradeHalfTaxAmount)}</span>
+                        </div>
+                        <div className="flex items-center justify-between gap-4">
+                          <span className="text-slate-400">SGST</span>
+                          <span className="font-semibold text-white">{formatRoundedInr(upgradeHalfTaxAmount)}</span>
+                        </div>
+                        <div className="border-t border-white/10 pt-3">
+                          <div className="flex items-end justify-between gap-4">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Total Payable</p>
+                              <p className="mt-1 text-xs text-slate-500">Upgrade billing is collected on the difference only.</p>
+                            </div>
+                            <span className="text-3xl font-semibold text-white">{formatRoundedInr(upgradeInvoiceTotal)}</span>
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+
                   <label className="space-y-2 text-sm">
-                    <span className="font-medium text-slate-700">Category</span>
-                    <select
-                      value={lifecycleForm.categoryCode}
-                      onChange={(event) => setLifecycleForm((current) => ({ ...current, categoryCode: event.target.value, productCode: "", productVariantId: "" }))}
-                      className="w-full rounded-xl border border-slate-200 px-3 py-2"
-                    >
-                      <option value="">Select Category</option>
-                      {lifecycleCategoryOptions.map((category) => (
-                        <option key={category} value={category}>{humanizeLabel(category)}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="space-y-2 text-sm">
-                    <span className="font-medium text-slate-700">Product</span>
-                    <select
-                      value={lifecycleForm.productCode}
-                      onChange={(event) => setLifecycleForm((current) => ({ ...current, productCode: event.target.value, productVariantId: "" }))}
-                      className="w-full rounded-xl border border-slate-200 px-3 py-2"
-                    >
-                      <option value="">Select Product</option>
-                      {filteredLifecycleProducts.map((product) => (
-                        <option key={product.productId} value={product.productCode}>{product.productName}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="space-y-2 text-sm">
-                    <span className="font-medium text-slate-700">Variant</span>
-                    <select
-                      value={lifecycleForm.productVariantId}
-                      onChange={(event) => setLifecycleForm((current) => ({ ...current, productVariantId: event.target.value }))}
-                      className="w-full rounded-xl border border-slate-200 px-3 py-2"
-                    >
-                      <option value="">Select Variant</option>
-                      {filteredLifecycleVariants.map((variant) => (
-                        <option key={variant.variantId} value={variant.variantId}>
-                          {variant.variantName} · {variant.durationMonths > 0 ? `${variant.durationMonths} months` : `${variant.validityDays} days`}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="space-y-2 text-sm">
-                    <span className="font-medium text-slate-700">Start Date</span>
-                    <input type="date" value={lifecycleForm.startDate} onChange={(event) => setLifecycleForm((current) => ({ ...current, startDate: event.target.value }))} className="w-full rounded-xl border border-slate-200 px-3 py-2" />
-                  </label>
-                  <label className="space-y-2 text-sm md:col-span-2">
-                    <span className="font-medium text-slate-700">Notes</span>
-                    <textarea value={lifecycleForm.notes} onChange={(event) => setLifecycleForm((current) => ({ ...current, notes: event.target.value }))} className="min-h-[88px] w-full rounded-xl border border-slate-200 px-3 py-2" />
+                    <span className="font-medium text-slate-300">Notes</span>
+                    <textarea value={lifecycleForm.notes} onChange={(event) => setLifecycleForm((current) => ({ ...current, notes: event.target.value }))} className="min-h-[88px] w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-white" />
                   </label>
                 </div>
               )}
-              {isUpgradeLifecycleModal ? (
-              <div className="rounded-2xl border border-white/8 bg-slate-900 px-4 py-4 text-sm text-slate-200">
-                <div className="grid gap-3 md:grid-cols-2">
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Current Membership</p>
-                    <p className="mt-2 text-base font-semibold text-white">{planName}</p>
-                    <p className="mt-1 text-slate-300">{planDuration}</p>
-                  </div>
-                  <div>
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Target Membership</p>
-                    <p className="mt-2 text-base font-semibold text-white">
-                      {selectedLifecycleVariant ? normalizeDisplayPlanName(selectedLifecycleVariant.variantName) : "Choose a target variant"}
-                    </p>
-                    <p className="mt-1 text-slate-300">
-                      {selectedLifecycleVariant
-                        ? `${formatPlanDuration(selectedLifecycleVariant.durationMonths, selectedLifecycleVariant.validityDays)} · ${formatInr(selectedLifecycleVariant.basePrice)}`
-                        : "Invoice will be generated from the selected target variant once you continue."}
-                    </p>
-                    {isRenewLifecycleModal ? (
-                      <div className="mt-3 grid gap-2 sm:grid-cols-2">
-                        <div className="rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2">
-                          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">Start Date</p>
-                          <p className="mt-1 text-sm font-medium text-white">{formatDateOnly(lifecycleForm.startDate)}</p>
-                        </div>
-                        <div className="rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2">
-                          <p className="text-[10px] font-semibold uppercase tracking-[0.2em] text-slate-400">Expiry Date</p>
-                          <p className="mt-1 text-sm font-medium text-white">{formatDateOnly(projectedRenewalEndDate)}</p>
-                        </div>
-                      </div>
-                    ) : null}
-                  </div>
-                </div>
-                {selectedLifecycleVariant ? (
-                  <div className="mt-4 space-y-3">
-                    {isUpgradeLifecycleModal ? (
-                      <p className="text-xs text-slate-400">
-                        The portal is showing the catalog plan comparison below. Final upgrade billing is computed in the backend from the member&apos;s existing sold value and the selected target plan.
-                      </p>
-                    ) : null}
-                    <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                      {isRenewLifecycleModal ? (
-                        <>
-                          <StatPill label="Plan Price" value={formatRoundedInr(targetLifecycleBasePrice)} />
-                          <StatPill label="Selling Price" value={formatRoundedInr(renewCommercial.sellingPrice)} />
-                          <StatPill label="Discount" value={formatRoundedInr(renewCommercial.discountAmount)} />
-                          <StatPill label={`CGST (${commercialTaxRate / 2}%)`} value={formatRoundedInr(renewHalfTaxAmount)} />
-                          <StatPill label={`SGST (${commercialTaxRate / 2}%)`} value={formatRoundedInr(renewHalfTaxAmount)} />
-                          <StatPill label="Total Payable" value={formatRoundedInr(renewInvoiceTotal)} />
-                        </>
-                      ) : (
-                        <>
-                          <StatPill label="Current Plan Price" value={formatRoundedInr(currentLifecycleBasePrice)} />
-                          <StatPill label="Target Plan Price" value={formatRoundedInr(targetLifecycleBasePrice)} />
-                          <StatPill label="Reference Base Difference" value={formatRoundedInr(lifecycleTaxableAmount)} />
-                          <StatPill label={`CGST (${commercialTaxRate / 2}%)`} value={formatRoundedInr(lifecycleHalfTaxAmount)} />
-                          <StatPill label={`SGST (${commercialTaxRate / 2}%)`} value={formatRoundedInr(lifecycleHalfTaxAmount)} />
-                          <StatPill label="Estimated Invoice Total" value={formatRoundedInr(lifecycleInvoiceTotal)} />
-                        </>
-                      )}
-                    </div>
-                  </div>
-                ) : null}
-              </div>
-              ) : null}
             </div>
           </Modal>
 
           <Modal
-            open={actionModal === "renew-billing"}
+            open={isLifecycleBillingModal}
             onClose={() => setActionModal(null)}
-            title="Renewal Billing"
+            title={isUpgradeBillingModal ? "Upgrade Billing" : "Renewal Billing"}
             size="xl"
             footer={
               <>
-                <button type="button" onClick={() => setActionModal("renew")} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Back</button>
-                <button type="button" onClick={() => void handleRenewPayment()} disabled={actionBusy} className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                <button type="button" onClick={() => setActionModal(isUpgradeBillingModal ? "upgrade" : "renew")} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Back</button>
+                <button type="button" onClick={() => void (isUpgradeBillingModal ? handleUpgradePayment() : handleRenewPayment())} disabled={actionBusy} className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
                   {actionBusy ? "Saving..." : "Create Invoice & Record Payment"}
                 </button>
               </>
@@ -5185,11 +6447,18 @@ export default function MemberProfilePage() {
                     <dl className="grid gap-x-8 gap-y-3 text-sm text-slate-300 sm:grid-cols-2">
                       <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Number</dt><dd className="text-right font-semibold text-white">Generated on submit</dd></div>
                       <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Date</dt><dd className="text-right">{currentPreviewDate}</dd></div>
-                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Membership</dt><dd className="text-right font-medium text-white">{selectedLifecycleVariant ? normalizeDisplayPlanName(selectedLifecycleVariant.variantName) : planName}</dd></div>
-                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Status</dt><dd className="text-right font-medium text-white">{renewPreviewStatus}</dd></div>
+                      <div className="flex items-start justify-between gap-4">
+                        <dt className="text-slate-400">{isUpgradeBillingModal ? "Target Membership" : "Membership"}</dt>
+                        <dd className="text-right font-medium text-white">
+                          <div>{selectedLifecycleVariant ? selectedLifecycleVariantTitle : currentLifecycleVariantTitle}</div>
+                          <div className="mt-1 text-xs text-slate-400">{selectedLifecycleVariant ? selectedLifecycleDurationLabel : currentLifecycleDurationLabel}</div>
+                        </dd>
+                      </div>
+                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Status</dt><dd className="text-right font-medium text-white">{lifecycleBillingPreviewStatus}</dd></div>
                       <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Start Date</dt><dd className="text-right">{formatDateOnly(lifecycleForm.startDate)}</dd></div>
                       <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">End Date</dt><dd className="text-right">{formatDateOnly(projectedRenewalEndDate)}</dd></div>
-                      <div className="flex items-center justify-between gap-4 sm:col-span-2"><dt className="text-slate-400">Bill Rep</dt><dd className="text-right">{user?.name || "-"}</dd></div>
+                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Membership Duration</dt><dd className="text-right">{selectedLifecycleVariant ? selectedLifecycleDurationLabel : currentLifecycleDurationLabel}</dd></div>
+                      <div className="flex items-center justify-between gap-4 sm:col-span-2"><dt className="text-slate-400">Billing Representative</dt><dd className="font-medium text-white">{user?.name || "-"}</dd></div>
                     </dl>
                   </div>
                 </div>
@@ -5214,35 +6483,42 @@ export default function MemberProfilePage() {
                         </thead>
                         <tbody className="divide-y divide-white/10">
                           <tr className="bg-[#101722]">
-                            <td className="px-4 py-3 text-white">{selectedLifecycleVariant ? normalizeDisplayPlanName(selectedLifecycleVariant.variantName) : planName}</td>
-                            <td className="px-4 py-3 text-right">{formatRoundedInr(renewCommercial.baseAmount)}</td>
-                            <td className="px-4 py-3 text-right">{formatRoundedInr(renewCommercial.sellingPrice)}</td>
-                            <td className="px-4 py-3 text-right">{formatRoundedInr(renewCommercial.discountAmount)}</td>
+                            <td className="px-4 py-3 text-white">
+                              {isUpgradeBillingModal
+                                ? `Upgrade to ${selectedLifecycleVariant ? selectedLifecycleVariantTitle : currentLifecycleVariantTitle}`
+                                : selectedLifecycleVariant ? selectedLifecycleVariantTitle : currentLifecycleVariantTitle}
+                              <div className="mt-1 text-xs text-slate-400">
+                                {selectedLifecycleVariant ? selectedLifecycleDurationLabel : currentLifecycleDurationLabel}
+                              </div>
+                            </td>
+                            <td className="px-4 py-3 text-right">{formatRoundedInr(lifecycleBillingBaseAmount)}</td>
+                            <td className="px-4 py-3 text-right">{formatRoundedInr(lifecycleBillingSellingPrice)}</td>
+                            <td className="px-4 py-3 text-right">{formatRoundedInr(lifecycleBillingDiscountAmount)}</td>
                           </tr>
                         </tbody>
                         <tfoot className="divide-y divide-white/10 bg-black/10">
                           <tr>
-                            <td className="px-4 py-3 font-semibold text-white">Total Plan Price</td>
-                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(renewCommercial.baseAmount)}</td>
-                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(renewCommercial.sellingPrice)}</td>
-                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(renewCommercial.discountAmount)}</td>
+                            <td className="px-4 py-3 font-semibold text-white">{isUpgradeBillingModal ? "Total Upgrade Value" : "Total Plan Price"}</td>
+                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(lifecycleBillingBaseAmount)}</td>
+                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(lifecycleBillingSellingPrice)}</td>
+                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(lifecycleBillingDiscountAmount)}</td>
                           </tr>
                           <tr>
                             <td className="px-4 py-3">CGST @ {commercialTaxRate / 2}%</td>
                             <td className="px-4 py-3" />
-                            <td className="px-4 py-3 text-right">{formatRoundedInr(renewHalfTaxAmount)}</td>
+                            <td className="px-4 py-3 text-right">{formatRoundedInr(lifecycleBillingHalfTaxAmount)}</td>
                             <td className="px-4 py-3" />
                           </tr>
                           <tr>
                             <td className="px-4 py-3">SGST @ {commercialTaxRate / 2}%</td>
                             <td className="px-4 py-3" />
-                            <td className="px-4 py-3 text-right">{formatRoundedInr(renewHalfTaxAmount)}</td>
+                            <td className="px-4 py-3 text-right">{formatRoundedInr(lifecycleBillingHalfTaxAmount)}</td>
                             <td className="px-4 py-3" />
                           </tr>
                           <tr className="text-base">
                             <td className="px-4 py-3 font-semibold text-white">Total Payable</td>
                             <td className="px-4 py-3" />
-                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(renewInvoiceTotal)}</td>
+                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(lifecycleBillingInvoiceTotal)}</td>
                             <td className="px-4 py-3" />
                           </tr>
                         </tfoot>
@@ -5320,7 +6596,7 @@ export default function MemberProfilePage() {
                       ) : null}
                     </div>
 
-                    {Number(lifecycleBillingForm.receivedAmount || 0) < renewInvoiceTotal ? (
+                    {Number(lifecycleBillingForm.receivedAmount || 0) < lifecycleBillingInvoiceTotal ? (
                       <label className="space-y-2">
                         <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Balance Due Date</span>
                         <input
@@ -5338,9 +6614,9 @@ export default function MemberProfilePage() {
                         <div className="flex items-center justify-between gap-3"><dt>Receipt Number</dt><dd>Generated after payment</dd></div>
                         <div className="flex items-center justify-between gap-3"><dt>Receipt Date</dt><dd>{currentPreviewDate}</dd></div>
                         <div className="flex items-center justify-between gap-3"><dt>Payment Method</dt><dd>{lifecycleBillingForm.paymentMode === "CARD" ? (renewCardSubtype === "DEBIT_CARD" ? "Debit Card" : "Credit Card") : lifecycleBillingForm.paymentMode || "-"}</dd></div>
-                        <div className="flex items-center justify-between gap-3"><dt>Payment Status</dt><dd>{renewPreviewStatus}</dd></div>
-                        <div className="flex items-center justify-between gap-3"><dt>Total Paid</dt><dd>{formatRoundedInr(renewReceivedAmount)}</dd></div>
-                        <div className="flex items-center justify-between gap-3 border-t border-white/10 pt-2 text-base font-semibold text-white"><dt>Balance Due</dt><dd>{formatRoundedInr(renewBalanceAmount)}</dd></div>
+                        <div className="flex items-center justify-between gap-3"><dt>Payment Status</dt><dd>{lifecycleBillingPreviewStatus}</dd></div>
+                        <div className="flex items-center justify-between gap-3"><dt>Total Paid</dt><dd>{formatRoundedInr(lifecycleBillingReceivedAmount)}</dd></div>
+                        <div className="flex items-center justify-between gap-3 border-t border-white/10 pt-2 text-base font-semibold text-white"><dt>Balance Due</dt><dd>{formatRoundedInr(lifecycleBillingBalanceAmount)}</dd></div>
                       </dl>
                     </div>
                   </div>
@@ -5402,86 +6678,449 @@ export default function MemberProfilePage() {
           <Modal
             open={actionModal === "pt"}
             onClose={() => setActionModal(null)}
-            title={activePtAssignment ? "Renew Personal Training" : "Assign Personal Training"}
-            size="md"
+            title="Add Personal Training"
+            size="xl"
             footer={
               <>
                 <button type="button" onClick={() => setActionModal(null)} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Cancel</button>
-                <button type="button" onClick={() => void handlePtAssignment()} disabled={actionBusy} className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
-                  {actionBusy ? "Saving..." : activePtAssignment ? "Renew PT" : "Assign PT"}
+                <button type="button" onClick={() => handlePtBillingContinue()} disabled={actionBusy} className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                  Continue to Billing
+                </button>
+              </>
+            }
+          >
+            <div className="space-y-5">
+              {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
+              <div className="grid gap-4 xl:grid-cols-[minmax(0,1.2fr)_340px]">
+                <div className="space-y-4">
+                  <div className="rounded-[24px] border border-white/8 bg-[#111827] p-5">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Package</p>
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <label className="space-y-2">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Product</span>
+                        <select
+                          value={ptForm.productCode}
+                          onChange={(event) => setPtForm((current) => ({ ...current, productCode: event.target.value, productVariantId: "", totalSessions: "", sellingPrice: "", discountPercent: "" }))}
+                          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                        >
+                          <option value="">Select Product</option>
+                          {ptProducts.map((product) => (
+                            <option key={product.productId} value={product.productCode}>{formatPtProductName(product.productName)}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Variant</span>
+                        <select
+                          value={ptForm.productVariantId}
+                          onChange={(event) => {
+                            const nextVariant = selectablePtVariants.find((variant) => String(variant.variantId) === String(event.target.value));
+                            setPtForm((current) => ({
+                              ...current,
+                              productVariantId: event.target.value,
+                              totalSessions: nextVariant ? String(nextVariant.includedPtSessions || 0) : "",
+                              sellingPrice: "",
+                              discountPercent: "",
+                            }));
+                          }}
+                          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                        >
+                          <option value="">Select Variant</option>
+                          {selectablePtVariants.map((variant) => (
+                            <option key={variant.variantId} value={variant.variantId}>
+                              {sanitizeMembershipVariantTitle(variant.variantName)} · {formatPlanDuration(variant.durationMonths, variant.validityDays)}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Coach</span>
+                        <select
+                          value={ptForm.coachId}
+                          onChange={(event) => setPtForm((current) => ({ ...current, coachId: event.target.value }))}
+                          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                        >
+                          <option value="">Select Coach</option>
+                          {ptEligibleCoaches.map((coach) => (
+                            <option key={coach.id} value={coach.id}>{coach.name}</option>
+                          ))}
+                        </select>
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Start Date</span>
+                        <input
+                          type="date"
+                          value={ptForm.startDate}
+                          onChange={(event) => setPtForm((current) => ({ ...current, startDate: event.target.value }))}
+                          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                        />
+                      </label>
+                    </div>
+                    <div className="mt-4 grid gap-3 sm:grid-cols-3">
+                      <label className="rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Total Sessions</span>
+                        <input
+                          value={ptForm.totalSessions}
+                          onChange={(event) => setPtForm((current) => ({ ...current, totalSessions: sanitizeIntegerString(event.target.value) }))}
+                          className="mt-2 w-full bg-transparent text-lg font-semibold text-white outline-none"
+                          inputMode="numeric"
+                          placeholder="0"
+                        />
+                      </label>
+                      <StatPill label="Reschedules" value={selectedPtVariant ? String(derivePtRescheduleLimit(selectedPtVariant.durationMonths)) : "-"} />
+                      <StatPill label="Projected End" value={formatDateOnly(projectedPtEndDate) || "-"} />
+                    </div>
+                  </div>
+
+                  <div className="rounded-[24px] border border-white/8 bg-[#111827] p-5">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Schedule</p>
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <div className="space-y-2">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Template</span>
+                        <div className="grid grid-cols-2 gap-2">
+                          {[
+                            { value: "EVERYDAY", label: "Everyday" },
+                            { value: "ALTERNATE_DAYS", label: "Alternate Days" },
+                          ].map((option) => {
+                            const selected = ptForm.scheduleTemplate === option.value;
+                            return (
+                              <button
+                                key={option.value}
+                                type="button"
+                                onClick={() => setPtForm((current) => ({ ...current, scheduleTemplate: option.value as PtScheduleTemplate }))}
+                                className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                                  selected
+                                    ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
+                                    : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20"
+                                }`}
+                              >
+                                {option.label}
+                              </button>
+                            );
+                          })}
+                        </div>
+                      </div>
+                      <label className="space-y-2">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Slot</span>
+                        <select
+                          value={ptForm.slotStartTime}
+                          onChange={(event) => setPtForm((current) => ({ ...current, slotStartTime: event.target.value }))}
+                          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                        >
+                          {ptTimeSlotOptions.map((slot) => (
+                            <option key={slot} value={slot}>{formatClockTime(slot)} - {formatClockTime(addMinutesToTime(slot, PT_SLOT_DURATION_MINUTES))}</option>
+                          ))}
+                        </select>
+                        <p className="text-xs text-slate-500">Session duration is fixed at 1 hour.</p>
+                      </label>
+                    </div>
+                    <div className="mt-4 space-y-2">
+                      <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Weekdays</span>
+                      <div className="flex flex-wrap gap-2">
+                        {PT_WEEKDAY_OPTIONS.map((day) => {
+                          const locked = ptForm.scheduleTemplate === "EVERYDAY";
+                          const selected = selectedPtDays.includes(day.code);
+                          return (
+                            <button
+                              key={day.code}
+                              type="button"
+                              disabled={locked}
+                              onClick={() =>
+                                setPtForm((current) => {
+                                  const exists = current.scheduleDays.includes(day.code);
+                                  const nextDays = exists
+                                    ? current.scheduleDays.filter((code) => code !== day.code)
+                                    : [...current.scheduleDays, day.code];
+                                  return { ...current, scheduleDays: nextDays };
+                                })
+                              }
+                              className={`rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] transition ${
+                                selected
+                                  ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
+                                  : "border-white/10 bg-[#0f141d] text-slate-400 hover:border-white/20"
+                              } ${locked ? "cursor-default opacity-80" : ""}`}
+                            >
+                              {day.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                      <p className="text-xs text-slate-500">
+                        {ptForm.scheduleTemplate === "EVERYDAY"
+                          ? "Everyday PT uses Monday to Saturday."
+                          : "Choose the recurring PT days for this member."}
+                      </p>
+                    </div>
+                    <div className="mt-4 rounded-xl border border-white/8 bg-[#0f141d] px-4 py-3 text-sm text-slate-300">
+                      Session window: <span className="font-semibold text-white">{formatClockTime(ptForm.slotStartTime)}</span> to <span className="font-semibold text-white">{formatClockTime(ptSlotEndTime)}</span>
+                      <span className="mx-2 text-slate-500">•</span>
+                      Days: <span className="font-semibold text-white">{selectedPtDays.map((day) => formatPtDayLabel(day)).join(", ") || "-"}</span>
+                    </div>
+                  </div>
+
+                  <div className="rounded-[24px] border border-white/8 bg-[#111827] p-5">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Commercials</p>
+                    <div className="mt-4 grid gap-4 md:grid-cols-2">
+                      <div className="rounded-xl border border-white/8 bg-[#0f141d] px-4 py-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Base Price</p>
+                        <p className="mt-2 text-lg font-semibold text-white">{formatRoundedInr(Number(selectedPtVariant?.basePrice || 0))}</p>
+                      </div>
+                      <label className="space-y-2">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Selling Price</span>
+                        <input
+                          value={ptForm.sellingPrice}
+                          onChange={(event) => {
+                            const value = sanitizeIntegerString(event.target.value);
+                            const parsed = value ? Number(value) : undefined;
+                            const basePrice = Number(selectedPtVariant?.basePrice || 0);
+                            const sellingPrice = parsed === undefined ? undefined : Math.min(Math.max(parsed, 0), basePrice || parsed);
+                            setPtForm((current) => ({
+                              ...current,
+                              sellingPrice: sellingPrice === undefined ? value : String(roundAmount(sellingPrice)),
+                              discountPercent:
+                                sellingPrice !== undefined && basePrice > 0
+                                  ? formatDecimalInput(((basePrice - sellingPrice) / basePrice) * 100)
+                                  : current.discountPercent,
+                            }));
+                          }}
+                          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                          inputMode="numeric"
+                          placeholder="Enter PT selling price"
+                        />
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Discount %</span>
+                        <input
+                          value={ptForm.discountPercent}
+                          onChange={(event) => {
+                            const value = sanitizeNumericString(event.target.value);
+                            const parsed = value ? Math.min(100, Math.max(0, Number(value))) : undefined;
+                            const basePrice = Number(selectedPtVariant?.basePrice || 0);
+                            setPtForm((current) => ({
+                              ...current,
+                              discountPercent: value,
+                              sellingPrice:
+                                parsed === undefined
+                                  ? current.sellingPrice
+                                  : String(roundAmount(basePrice * (1 - parsed / 100))),
+                            }));
+                          }}
+                          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                          inputMode="decimal"
+                          placeholder="0"
+                        />
+                      </label>
+                      <div className="rounded-xl border border-white/8 bg-[#0f141d] px-4 py-3">
+                        <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">GST (Included)</p>
+                        <p className="mt-2 text-lg font-semibold text-white">{formatRoundedInr(ptTaxAmount)}</p>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="rounded-[24px] border border-white/8 bg-black/10 p-5">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Summary</p>
+                  <p className="mt-2 text-lg font-semibold text-white">
+                    {selectedPtVariant ? formatPtProductName(selectedPtProduct?.productName || selectedPtVariant.productCode) : "Select a package"}
+                  </p>
+                  {selectedPtVariant ? (
+                    <p className="mt-1 text-sm text-slate-300">{formatPlanDuration(selectedPtVariant.durationMonths, selectedPtVariant.validityDays)}</p>
+                  ) : null}
+                  <div className="mt-5 space-y-3 text-sm">
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-slate-400">Coach</span>
+                      <span className="font-semibold text-white">{selectedPtCoach?.name || "-"}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-slate-400">Sessions</span>
+                      <span className="font-semibold text-white">{selectedPtSessionCount > 0 ? String(selectedPtSessionCount) : "-"}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-slate-400">Reschedule Limit</span>
+                      <span className="font-semibold text-white">{selectedPtVariant ? String(derivePtRescheduleLimit(selectedPtVariant.durationMonths)) : "-"}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-slate-400">Schedule</span>
+                      <span className="font-semibold text-white">{ptForm.scheduleTemplate === "EVERYDAY" ? "Everyday" : "Alternate Days"}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-slate-400">Window</span>
+                      <span className="font-semibold text-white">{formatClockTime(ptForm.slotStartTime)} - {formatClockTime(ptSlotEndTime)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-slate-400">Selling Price</span>
+                      <span className="font-semibold text-white">{formatRoundedInr(ptCommercial.sellingPrice)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-slate-400">Discount</span>
+                      <span className="font-semibold text-white">{formatRoundedInr(ptCommercial.discountAmount)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-slate-400">CGST</span>
+                      <span className="font-semibold text-white">{formatRoundedInr(ptHalfTaxAmount)}</span>
+                    </div>
+                    <div className="flex items-center justify-between gap-4">
+                      <span className="text-slate-400">SGST</span>
+                      <span className="font-semibold text-white">{formatRoundedInr(ptHalfTaxAmount)}</span>
+                    </div>
+                    <div className="border-t border-white/10 pt-3">
+                      <div className="flex items-end justify-between gap-4">
+                        <div>
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Total Payable</p>
+                          <p className="mt-1 text-xs text-slate-500">PT is billed as an add-on to the current gym membership.</p>
+                        </div>
+                        <span className="text-3xl font-semibold text-white">{formatRoundedInr(ptInvoiceTotal)}</span>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Modal>
+
+          <Modal
+            open={isPtBillingModal}
+            onClose={() => setActionModal(null)}
+            title="PT Billing"
+            size="xl"
+            footer={
+              <>
+                <button type="button" onClick={() => setActionModal("pt")} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Back</button>
+                <button type="button" onClick={() => void handlePtPayment()} disabled={actionBusy} className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                  {actionBusy ? "Saving..." : "Create Invoice & Record Payment"}
                 </button>
               </>
             }
           >
             <div className="space-y-4">
               {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
-              <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
-                This currently creates the operational PT assignment only. PT commercial billing still needs a dedicated billing-first flow from the member profile.
-              </div>
-              {ptVariants.length > 0 ? (
-                <>
-                  {primaryMembershipDurationLimit > 0 ? (
-                    <div className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-900">
-                      PT duration cannot exceed the primary membership duration of {primaryMembershipDurationLimit} month{primaryMembershipDurationLimit === 1 ? "" : "s"}.
+              <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
+                <div className="space-y-5">
+                  <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
+                    <div className="mb-4 flex items-center gap-3">
+                      <CreditCard className="h-5 w-5 text-[#ffb4b1]" />
+                      <div>
+                        <h4 className="text-sm font-semibold text-white">Invoice Summary</h4>
+                      </div>
                     </div>
+                    <div className="rounded-2xl border border-white/10 bg-[#0f141d] p-4">
+                      <dl className="grid gap-x-8 gap-y-3 text-sm text-slate-300 sm:grid-cols-2">
+                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Number</dt><dd className="text-right font-semibold text-white">Generated on submit</dd></div>
+                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Date</dt><dd className="text-right">{currentPreviewDate}</dd></div>
+                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Status</dt><dd className="text-right">{ptPreviewStatus}</dd></div>
+                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">PT Package</dt><dd className="text-right font-semibold text-white">{formatPtProductName(selectedPtProduct?.productName || selectedPtVariant?.productCode)}</dd></div>
+                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Membership Duration</dt><dd className="text-right">{formatPlanDuration(selectedPtVariant?.durationMonths || 0, selectedPtVariant?.validityDays || 0)}</dd></div>
+                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Coach</dt><dd className="text-right">{selectedPtCoach?.name || "-"}</dd></div>
+                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Total Sessions</dt><dd className="text-right">{selectedPtSessionCount > 0 ? selectedPtSessionCount : "-"}</dd></div>
+                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Schedule</dt><dd className="text-right">{selectedPtDays.map((day) => formatPtDayLabel(day)).join(", ")}</dd></div>
+                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Slot</dt><dd className="text-right">{formatClockTime(ptForm.slotStartTime)} - {formatClockTime(ptSlotEndTime)}</dd></div>
+                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Billing Representative</dt><dd className="text-right">{billingRepName || clientRepName}</dd></div>
+                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Base Amount</dt><dd className="text-right">{formatRoundedInr(ptCommercial.baseAmount)}</dd></div>
+                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Selling Price</dt><dd className="text-right">{formatRoundedInr(ptCommercial.sellingPrice)}</dd></div>
+                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Discount</dt><dd className="text-right">{formatRoundedInr(ptCommercial.discountAmount)}</dd></div>
+                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">CGST</dt><dd className="text-right">{formatRoundedInr(ptHalfTaxAmount)}</dd></div>
+                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">SGST</dt><dd className="text-right">{formatRoundedInr(ptHalfTaxAmount)}</dd></div>
+                        <div className="col-span-full border-t border-white/10 pt-3">
+                          <div className="flex items-end justify-between gap-4">
+                            <div>
+                              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Total Payable</p>
+                              <p className="mt-1 text-xs text-slate-500">PT add-on invoice total including GST.</p>
+                            </div>
+                            <span className="text-3xl font-semibold text-white">{formatRoundedInr(ptInvoiceTotal)}</span>
+                          </div>
+                        </div>
+                      </dl>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="space-y-4 rounded-[24px] border border-white/8 bg-[#161d28] p-5">
+                  <label className="space-y-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Amount Received</span>
+                    <input
+                      value={ptBillingForm.receivedAmount}
+                      onChange={(event) => setPtBillingForm((current) => ({ ...current, receivedAmount: sanitizeIntegerString(event.target.value) }))}
+                      className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                      placeholder="0"
+                      inputMode="numeric"
+                    />
+                  </label>
+
+                  <div className="space-y-2">
+                    <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Payment Mode</span>
+                    <div className="grid grid-cols-3 gap-2">
+                      {String(billingSettings?.paymentModesEnabled || "UPI,CARD,CASH")
+                        .split(",")
+                        .map((mode) => mode.trim())
+                        .filter((mode) => ["UPI", "CARD", "CASH"].includes(mode.toUpperCase()))
+                        .map((mode) => {
+                          const selected = ptBillingForm.paymentMode === mode;
+                          return (
+                            <button
+                              key={mode}
+                              type="button"
+                              onClick={() => setPtBillingForm((current) => ({ ...current, paymentMode: mode }))}
+                              className={`rounded-2xl border px-4 py-4 text-sm font-semibold uppercase tracking-[0.18em] transition ${
+                                selected
+                                  ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
+                                  : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20"
+                              }`}
+                            >
+                              {humanizeLabel(mode)}
+                            </button>
+                          );
+                        })}
+                    </div>
+                    {ptBillingForm.paymentMode === "CARD" ? (
+                      <div className="grid grid-cols-2 gap-2">
+                        {[
+                          { value: "DEBIT_CARD", label: "Debit Card" },
+                          { value: "CREDIT_CARD", label: "Credit Card" },
+                        ].map((option) => {
+                          const selected = renewCardSubtype === option.value;
+                          return (
+                            <button
+                              key={option.value}
+                              type="button"
+                              onClick={() => setRenewCardSubtype(option.value as "DEBIT_CARD" | "CREDIT_CARD")}
+                              className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                                selected
+                                  ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
+                                  : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20"
+                              }`}
+                            >
+                              {option.label}
+                            </button>
+                          );
+                        })}
+                      </div>
+                    ) : null}
+                  </div>
+
+                  {Number(ptBillingForm.receivedAmount || 0) < ptInvoiceTotal ? (
+                    <label className="space-y-2">
+                      <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Balance Due Date</span>
+                      <input
+                        type="date"
+                        className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                        value={ptBillingForm.balanceDueDate}
+                        onChange={(event) => setPtBillingForm((current) => ({ ...current, balanceDueDate: event.target.value }))}
+                      />
+                    </label>
                   ) : null}
-                  <label className="space-y-2 text-sm">
-                    <span className="font-medium text-slate-700">PT Product</span>
-                    <select
-                      value={ptForm.productCode}
-                      onChange={(event) => setPtForm((current) => ({ ...current, productCode: event.target.value, productVariantId: "" }))}
-                      className="w-full rounded-xl border border-slate-200 px-3 py-2"
-                    >
-                      <option value="">Select PT Product</option>
-                      {ptProducts.map((product) => (
-                        <option key={product.productId} value={product.productCode}>{product.productName}</option>
-                      ))}
-                    </select>
-                  </label>
-                  <label className="space-y-2 text-sm">
-                    <span className="font-medium text-slate-700">PT Variant</span>
-                    <select
-                      value={ptForm.productVariantId}
-                      onChange={(event) => setPtForm((current) => ({ ...current, productVariantId: event.target.value }))}
-                      className="w-full rounded-xl border border-slate-200 px-3 py-2"
-                    >
-                      <option value="">Select PT Variant</option>
-                      {selectablePtVariants.map((variant) => (
-                          <option key={variant.variantId} value={variant.variantId}>
-                            {variant.variantName} · {formatPlanDuration(variant.durationMonths, variant.validityDays)}
-                          </option>
-                        ))}
-                    </select>
-                  </label>
-                </>
-              ) : null}
-              <label className="space-y-2 text-sm">
-                <span className="font-medium text-slate-700">Assigned Coach</span>
-                <select value={ptForm.coachId} onChange={(event) => setPtForm((current) => ({ ...current, coachId: event.target.value }))} className="w-full rounded-xl border border-slate-200 px-3 py-2">
-                  <option value="">Select Coach</option>
-                  {coaches.map((coach) => (
-                    <option key={coach.id} value={coach.id}>{coach.name}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="space-y-2 text-sm">
-                <span className="font-medium text-slate-700">Start Date</span>
-                <input type="date" value={ptForm.startDate} onChange={(event) => setPtForm((current) => ({ ...current, startDate: event.target.value }))} className="w-full rounded-xl border border-slate-200 px-3 py-2" />
-              </label>
-              <label className="space-y-2 text-sm">
-                <span className="font-medium text-slate-700">End Date</span>
-                <input type="date" value={ptForm.endDate} onChange={(event) => setPtForm((current) => ({ ...current, endDate: event.target.value }))} className="w-full rounded-xl border border-slate-200 px-3 py-2" />
-              </label>
-              <div className="rounded-2xl border border-white/8 bg-slate-900 px-4 py-4 text-sm text-slate-200">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Preview</p>
-                <p className="mt-2 text-base font-semibold text-white">
-                  {selectedPtVariant ? normalizeDisplayPlanName(selectedPtVariant.variantName) : "Choose a PT plan if you want to tag the assignment to a PT variant"}
-                </p>
-                <p className="mt-1 text-slate-300">
-                  {selectedPtVariant
-                    ? `${formatPlanDuration(selectedPtVariant.durationMonths, selectedPtVariant.validityDays)} · ${formatInr(selectedPtVariant.basePrice)}`
-                    : "Operational PT assignment can still be created even if PT billing is handled separately."}
-                </p>
+
+                  <div className="rounded-2xl border border-white/10 bg-[#0f141d] p-4">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Receipt Preview</p>
+                    <dl className="mt-3 space-y-2 text-sm text-slate-300">
+                      <div className="flex items-center justify-between gap-3"><dt>Receipt Number</dt><dd>Generated after payment</dd></div>
+                      <div className="flex items-center justify-between gap-3"><dt>Receipt Date</dt><dd>{currentPreviewDate}</dd></div>
+                      <div className="flex items-center justify-between gap-3"><dt>Payment Method</dt><dd>{ptBillingForm.paymentMode === "CARD" ? (renewCardSubtype === "DEBIT_CARD" ? "Debit Card" : "Credit Card") : ptBillingForm.paymentMode || "-"}</dd></div>
+                      <div className="flex items-center justify-between gap-3"><dt>Payment Status</dt><dd>{ptPreviewStatus}</dd></div>
+                      <div className="flex items-center justify-between gap-3"><dt>Total Paid</dt><dd>{formatRoundedInr(ptReceivedAmount)}</dd></div>
+                      <div className="flex items-center justify-between gap-3 border-t border-white/10 pt-2 text-base font-semibold text-white"><dt>Balance Due</dt><dd>{formatRoundedInr(ptBalanceAmount)}</dd></div>
+                    </dl>
+                  </div>
+                </div>
               </div>
             </div>
           </Modal>

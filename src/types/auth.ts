@@ -11,6 +11,7 @@ export type UserDesignation =
   | "FITNESS_MANAGER"
   | "HEAD_COACH"
   | "PT_COACH"
+  | "GENERAL_TRAINER"
   | "YOGA_INSTRUCTOR"
   | "ZUMBA_INSTRUCTOR"
   | "BOXING_INSTRUCTOR"

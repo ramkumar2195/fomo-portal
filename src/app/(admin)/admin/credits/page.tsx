@@ -183,8 +183,8 @@ export default function CreditsPage() {
 
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Credits & Wallet</h1>
-          <p className="text-gray-500">Manage credit rules, award, adjust, and view member credits.</p>
+          <h1 className="text-2xl font-bold text-white">Credits & Wallet</h1>
+          <p className="text-slate-400">Manage credit rules, award, adjust, and view member credits.</p>
         </div>
         <div className="flex gap-2">
           <button
@@ -204,7 +204,7 @@ export default function CreditsPage() {
           <button
             type="button"
             onClick={() => void handleBootstrap()}
-            className="rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-gray-700 hover:bg-gray-50"
+            className="rounded-xl border border-white/10 bg-[#121722] px-4 py-2.5 text-sm font-semibold text-slate-200 hover:bg-white/5"
           >
             Bootstrap Defaults
           </button>
@@ -257,13 +257,13 @@ export default function CreditsPage() {
       <SectionCard title="Member Wallet Lookup" subtitle="Look up a member's credit balance and transaction history">
         <div className="flex items-end gap-3">
           <div className="flex-1">
-            <label className="mb-1 block text-sm font-medium text-gray-700">Member ID</label>
+            <label className="mb-1 block text-sm font-medium text-slate-200">Member ID</label>
             <input
               type="number"
               value={lookupMemberId}
               onChange={(e) => setLookupMemberId(e.target.value)}
               placeholder="Enter member ID"
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
+              className="w-full rounded-lg border border-white/10 bg-[#121722] px-3 py-2 text-sm text-white"
             />
           </div>
           <button
@@ -278,20 +278,20 @@ export default function CreditsPage() {
 
         {walletData && (
           <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
-            <div className="rounded-xl border border-gray-100 bg-gray-50 p-4">
-              <p className="text-xs font-medium text-gray-500 uppercase">Balance</p>
-              <p className="mt-1 text-xl font-bold text-gray-900">{num(walletData, "balance", "totalCredits", "availableCredits")}</p>
+            <div className="rounded-xl border border-white/10 bg-[#171d29] p-4">
+              <p className="text-xs font-medium text-slate-400 uppercase">Balance</p>
+              <p className="mt-1 text-xl font-bold text-white">{num(walletData, "balance", "totalCredits", "availableCredits")}</p>
             </div>
-            <div className="rounded-xl border border-gray-100 bg-gray-50 p-4">
-              <p className="text-xs font-medium text-gray-500 uppercase">Earned</p>
+            <div className="rounded-xl border border-white/10 bg-[#171d29] p-4">
+              <p className="text-xs font-medium text-slate-400 uppercase">Earned</p>
               <p className="mt-1 text-xl font-bold text-green-700">{num(walletData, "totalEarned", "earned")}</p>
             </div>
-            <div className="rounded-xl border border-gray-100 bg-gray-50 p-4">
-              <p className="text-xs font-medium text-gray-500 uppercase">Spent</p>
+            <div className="rounded-xl border border-white/10 bg-[#171d29] p-4">
+              <p className="text-xs font-medium text-slate-400 uppercase">Spent</p>
               <p className="mt-1 text-xl font-bold text-rose-700">{num(walletData, "totalSpent", "spent", "redeemed")}</p>
             </div>
-            <div className="rounded-xl border border-gray-100 bg-gray-50 p-4">
-              <p className="text-xs font-medium text-gray-500 uppercase">Expired</p>
+            <div className="rounded-xl border border-white/10 bg-[#171d29] p-4">
+              <p className="text-xs font-medium text-slate-400 uppercase">Expired</p>
               <p className="mt-1 text-xl font-bold text-gray-500">{num(walletData, "totalExpired", "expired")}</p>
             </div>
           </div>
@@ -302,7 +302,7 @@ export default function CreditsPage() {
       {walletData && (
         <SectionCard title="Credit Ledger" subtitle={`Transaction history for member #${lookupMemberId}`}>
           {ledgerLoading ? (
-            <p className="text-sm text-gray-500">Loading ledger...</p>
+            <p className="text-sm text-slate-400">Loading ledger...</p>
           ) : (
             <>
               <DataTable<Row>
@@ -333,7 +333,7 @@ export default function CreditsPage() {
                   >
                     Previous
                   </button>
-                  <span className="text-sm text-gray-500">Page {ledgerPage + 1} of {ledgerTotal}</span>
+                  <span className="text-sm text-slate-400">Page {ledgerPage + 1} of {ledgerTotal}</span>
                   <button
                     type="button"
                     disabled={ledgerPage >= ledgerTotal - 1}
@@ -358,7 +358,7 @@ export default function CreditsPage() {
               value={awardForm.memberId}
               onChange={(e) => setAwardForm((f) => ({ ...f, memberId: e.target.value }))}
               placeholder="Enter member ID"
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
+              className="w-full rounded-lg border border-white/10 bg-[#121722] px-3 py-2 text-sm text-white"
             />
           </FormField>
           <FormField label="Credits Amount" required>
@@ -367,7 +367,7 @@ export default function CreditsPage() {
               value={awardForm.amount}
               onChange={(e) => setAwardForm((f) => ({ ...f, amount: e.target.value }))}
               placeholder="Number of credits"
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
+              className="w-full rounded-lg border border-white/10 bg-[#121722] px-3 py-2 text-sm text-white"
             />
           </FormField>
           <FormField label="Reason">
@@ -376,12 +376,12 @@ export default function CreditsPage() {
               value={awardForm.reason}
               onChange={(e) => setAwardForm((f) => ({ ...f, reason: e.target.value }))}
               placeholder="Reason for awarding"
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
+              className="w-full rounded-lg border border-white/10 bg-[#121722] px-3 py-2 text-sm text-white"
             />
           </FormField>
         </div>
         <div className="mt-6 flex justify-end gap-2">
-          <button type="button" onClick={() => setShowAward(false)} className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600">Cancel</button>
+          <button type="button" onClick={() => setShowAward(false)} className="rounded-lg border border-white/10 px-4 py-2 text-sm font-medium text-slate-300">Cancel</button>
           <button
             type="button"
             onClick={() => void handleAward()}
@@ -402,14 +402,14 @@ export default function CreditsPage() {
               value={adjustForm.memberId}
               onChange={(e) => setAdjustForm((f) => ({ ...f, memberId: e.target.value }))}
               placeholder="Enter member ID"
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
+              className="w-full rounded-lg border border-white/10 bg-[#121722] px-3 py-2 text-sm text-white"
             />
           </FormField>
           <FormField label="Adjustment Type" required>
             <select
               value={adjustForm.type}
               onChange={(e) => setAdjustForm((f) => ({ ...f, type: e.target.value }))}
-              className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
+              className="w-full rounded-lg border border-white/10 bg-[#121722] px-3 py-2 text-sm text-white"
             >
               <option value="CREDIT">Credit (Add)</option>
               <option value="DEBIT">Debit (Remove)</option>
@@ -435,7 +435,7 @@ export default function CreditsPage() {
           </FormField>
         </div>
         <div className="mt-6 flex justify-end gap-2">
-          <button type="button" onClick={() => setShowAdjust(false)} className="rounded-lg border border-gray-200 px-4 py-2 text-sm font-medium text-gray-600">Cancel</button>
+          <button type="button" onClick={() => setShowAdjust(false)} className="rounded-lg border border-white/10 px-4 py-2 text-sm font-medium text-slate-300">Cancel</button>
           <button
             type="button"
             onClick={() => void handleAdjust()}

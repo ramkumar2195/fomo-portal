@@ -21,7 +21,8 @@ import {
   PreferredContactChannel,
   UpdateInquiryRequest,
 } from "@/types/inquiry";
-import { InvoiceSummary } from "@/types/models";
+import { BillingReceiptSummary, InvoiceSummary } from "@/types/models";
+import { MemberProfileAuditEntry } from "@/types/member-profile";
 import { SpringPage } from "@/types/pagination";
 
 interface JsonRecord {
@@ -397,6 +398,44 @@ function mapInvoices(payload: unknown): InvoiceSummary[] {
       balanceAmount: toOptionalNumber(record, ["balanceAmount", "outstandingAmount"]) || undefined,
       receiptId: toString(record, ["receiptId"]) || undefined,
       receiptNumber: toString(record, ["receiptNumber"]) || undefined,
+    }));
+}
+
+function mapReceipts(payload: unknown): BillingReceiptSummary[] {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+
+  return payload
+    .map((item) => toRecord(item))
+    .map((record, index) => ({
+      id: toString(record, ["receiptId", "id"]) || `receipt-${index}`,
+      receiptNumber: toString(record, ["receiptNumber", "number"]) || "-",
+      invoiceId: toString(record, ["invoiceId"]) || undefined,
+      memberId: toString(record, ["memberId"]) || undefined,
+      amount: toNumber(record, ["amount", "paidAmount"]),
+      paymentMode: toString(record, ["paymentMode"]) || undefined,
+      paidAt: toString(record, ["paidAt", "createdAt"]) || undefined,
+    }));
+}
+
+function mapLifecycleAudit(payload: unknown): MemberProfileAuditEntry[] {
+  if (!Array.isArray(payload)) {
+    return [];
+  }
+
+  return payload
+    .map((item) => toRecord(item))
+    .map((record, index) => ({
+      auditId: toString(record, ["auditId", "id"]) || `lifecycle-audit-${index}`,
+      memberId: toString(record, ["memberId"]) || undefined,
+      actorId: toString(record, ["actorId"]) || undefined,
+      actorName: toString(record, ["actorName"]) || undefined,
+      action: toString(record, ["action"]) || undefined,
+      summary: toString(record, ["summary"]) || undefined,
+      changesJson: toString(record, ["details"]) || undefined,
+      createdAt: toString(record, ["createdAt"]) || undefined,
+      raw: record,
     }));
 }
 
@@ -989,6 +1028,36 @@ export const subscriptionService = {
     return mapInvoices(unwrapData<unknown>(response));
   },
 
+  async getMemberBillingInvoices(token: string, memberId: string): Promise<InvoiceSummary[]> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/members/${memberId}/billing/invoices`,
+      token,
+    });
+
+    return mapInvoices(unwrapData<unknown>(response));
+  },
+
+  async getMemberBillingReceipts(token: string, memberId: string): Promise<BillingReceiptSummary[]> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/members/${memberId}/billing/receipts`,
+      token,
+    });
+
+    return mapReceipts(unwrapData<unknown>(response));
+  },
+
+  async getMemberLifecycleAudit(token: string, memberId: string): Promise<MemberProfileAuditEntry[]> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/members/${memberId}/lifecycle-audit`,
+      token,
+    });
+
+    return mapLifecycleAudit(unwrapData<unknown>(response));
+  },
+
   async getRenewalsQueue(token: string, query: RenewalQueueQuery = {}): Promise<RenewalQueueItem[]> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "subscription",
@@ -1167,6 +1236,17 @@ export const subscriptionService = {
     return mapCreateMemberSubscriptionResult(unwrapData<unknown>(response));
   },
 
+  async createMemberAddOnSubscription(token: string, memberId: string, payload: Record<string, unknown>): Promise<CreateMemberSubscriptionResult> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/members/${memberId}/add-ons`,
+      token,
+      method: "POST",
+      body: payload,
+    });
+    return mapCreateMemberSubscriptionResult(unwrapData<unknown>(response));
+  },
+
   async renewSubscription(token: string, memberId: string, payload: Record<string, unknown>): Promise<unknown> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "subscription",
@@ -1288,6 +1368,21 @@ export const subscriptionService = {
       token,
       method: "POST",
       body: {},
+    });
+    return unwrapData<unknown>(response);
+  },
+
+  async provisionPtOperationalSetup(
+    token: string,
+    subscriptionId: number | string,
+    payload: Record<string, unknown>,
+  ): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/subscriptions/${subscriptionId}/pt-setup`,
+      token,
+      method: "POST",
+      body: payload,
     });
     return unwrapData<unknown>(response);
   },

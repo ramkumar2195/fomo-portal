@@ -136,10 +136,11 @@ export function DonutLegendChart({
   });
 
   return (
-    <div className="h-full rounded-2xl border border-white/8 bg-[#131925] p-4 shadow-[0_18px_45px_rgba(0,0,0,0.24)]">
+    <div className="flex h-full min-h-[420px] flex-col rounded-2xl border border-white/8 bg-[#131925] p-5 shadow-[0_18px_45px_rgba(0,0,0,0.24)]">
       <p className="text-sm font-semibold text-white">{title}</p>
-      <div className="mt-4 flex items-start gap-4">
-        <svg viewBox="0 0 120 120" className="h-28 w-28">
+      <div className="mt-5 flex flex-1 flex-col justify-between gap-6 lg:flex-row lg:items-center">
+        <div className="flex items-center justify-center lg:min-w-[176px]">
+          <svg viewBox="0 0 120 120" className="h-40 w-40 max-w-full">
           <circle cx="60" cy="60" r={radius} fill="none" stroke="rgba(255,255,255,0.08)" strokeWidth="14" />
           {slices.map((slice, index) => {
             const stroke = (slice.value / total) * circumference;
@@ -163,14 +164,21 @@ export function DonutLegendChart({
             {rawTotal}
           </text>
         </svg>
+        </div>
 
-        <div className="space-y-2">
+        <div className="grid flex-1 content-start gap-3 sm:grid-cols-2">
           {slices.map((slice, index) => (
-            <div key={`${slice.label}-${index}`} className="flex items-center gap-2 text-xs text-slate-300">
-              <span className="h-2.5 w-2.5 rounded-full" style={{ backgroundColor: slice.color }} />
-              <span>
-                {slice.label}: {slice.value}
-              </span>
+            <div
+              key={`${slice.label}-${index}`}
+              className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3 text-xs text-slate-300"
+            >
+              <div className="flex items-start gap-2">
+                <span className="mt-0.5 h-2.5 w-2.5 shrink-0 rounded-full" style={{ backgroundColor: slice.color }} />
+                <div className="min-w-0">
+                  <p className="truncate font-semibold text-white">{slice.label}</p>
+                  <p className="mt-1 text-slate-400">{slice.value}</p>
+                </div>
+              </div>
             </div>
           ))}
         </div>

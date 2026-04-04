@@ -526,26 +526,26 @@ export default function CatalogPage() {
         {error ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div> : null}
 
         <div className="grid gap-3 md:grid-cols-3">
-          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Categories</p>
-            <p className="mt-2 text-2xl font-bold text-slate-900">{catalogStats.categories}</p>
-            <p className="mt-1 text-sm text-slate-500">Active package families available in the system.</p>
+          <div className="rounded-2xl border border-white/10 bg-[#121722] px-4 py-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Categories</p>
+            <p className="mt-2 text-2xl font-bold text-white">{catalogStats.categories}</p>
+            <p className="mt-1 text-sm text-slate-400">Active package families available in the system.</p>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Products</p>
-            <p className="mt-2 text-2xl font-bold text-slate-900">{catalogStats.products}</p>
-            <p className="mt-1 text-sm text-slate-500">Sellable package lines across flagship, PT, flex, and classes.</p>
+          <div className="rounded-2xl border border-white/10 bg-[#121722] px-4 py-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Products</p>
+            <p className="mt-2 text-2xl font-bold text-white">{catalogStats.products}</p>
+            <p className="mt-1 text-sm text-slate-400">Sellable package lines across flagship, PT, flex, and classes.</p>
           </div>
-          <div className="rounded-2xl border border-slate-200 bg-white px-4 py-4">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">Variants</p>
-            <p className="mt-2 text-2xl font-bold text-slate-900">{catalogStats.variants}</p>
-            <p className="mt-1 text-sm text-slate-500">Duration- and entitlement-specific plans ready for billing.</p>
+          <div className="rounded-2xl border border-white/10 bg-[#121722] px-4 py-4">
+            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">Variants</p>
+            <p className="mt-2 text-2xl font-bold text-white">{catalogStats.variants}</p>
+            <p className="mt-1 text-sm text-slate-400">Duration- and entitlement-specific plans ready for billing.</p>
           </div>
         </div>
 
         <SurfaceCard title="Product Families">
           <div className="space-y-4">
-            <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-600">
+            <div className="rounded-2xl border border-white/10 bg-[#171d29] px-4 py-3 text-sm text-slate-300">
               Save the client&apos;s actual choice as the variant itself. Example: create `Core Rhythm Yoga - 3M` and `Core Rhythm Zumba - 3M` as separate sellable plans instead of one shared `Yoga or Zumba` variant.
             </div>
 
@@ -565,9 +565,9 @@ export default function CatalogPage() {
 
             <div className="space-y-3">
               {productFamilyGroups.map((group) => (
-                <div key={group.categoryCode} className="rounded-2xl border border-slate-200 bg-white p-4">
+                <div key={group.categoryCode} className="rounded-2xl border border-white/10 bg-[#121722] p-4">
                   <div className="mb-3 flex items-center justify-between gap-3">
-                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+                    <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
                       {titleFromCode(group.categoryCode)}
                     </p>
                     <Badge variant="neutral" size="sm">
@@ -585,12 +585,12 @@ export default function CatalogPage() {
                         }}
                         className={`rounded-xl border px-3 py-2 text-left text-sm transition ${
                           productFilter === product.productCode
-                            ? "border-[#C42429] bg-rose-50 text-[#8f1b1f]"
-                            : "border-slate-200 bg-white text-slate-700 hover:border-slate-300"
+                            ? "border-[#C42429] bg-[rgba(196,41,36,0.15)] text-white"
+                            : "border-white/10 bg-[#171d29] text-slate-200 hover:border-white/20"
                         }`}
                       >
                         <span className="font-semibold">{product.productName}</span>
-                        <span className="ml-2 text-xs text-slate-500">{product.variantCount} variants</span>
+                        <span className="ml-2 text-xs text-slate-400">{product.variantCount} variants</span>
                       </button>
                     ))}
                   </div>
@@ -610,9 +610,9 @@ export default function CatalogPage() {
           ) : null}
 
           {!loading && filteredVariants.length > 0 ? (
-            <div className="overflow-x-auto rounded-2xl border border-slate-200">
-              <table className="min-w-full divide-y divide-slate-200 text-sm">
-                <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">
+            <div className="overflow-x-auto rounded-2xl border border-white/10 bg-[#121722]">
+              <table className="min-w-full divide-y divide-white/10 text-sm">
+                <thead className="bg-[#171d29] text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">
                   <tr>
                     <th className="px-4 py-3 text-left">Variant</th>
                     <th className="px-4 py-3 text-left">Family</th>
@@ -621,7 +621,7 @@ export default function CatalogPage() {
                     <th className="px-4 py-3 text-right">Actions</th>
                   </tr>
                 </thead>
-                <tbody className="divide-y divide-slate-200 bg-white">
+                <tbody className="divide-y divide-white/10 bg-[#121722]">
                   {filteredVariants
                     .sort((left, right) => left.productCode.localeCompare(right.productCode) || left.durationMonths - right.durationMonths || left.variantName.localeCompare(right.variantName))
                     .map((variant) => {
@@ -629,8 +629,8 @@ export default function CatalogPage() {
                       return (
                         <tr key={variant.variantId} className="align-top">
                           <td className="px-4 py-4">
-                            <div className="font-semibold text-slate-800">{variant.variantName}</div>
-                            <div className="mt-1 text-xs text-slate-500">{variant.variantCode}</div>
+                            <div className="font-semibold text-white">{variant.variantName}</div>
+                            <div className="mt-1 text-xs text-slate-400">{variant.variantCode}</div>
                             <div className="mt-2 flex flex-wrap gap-1.5">
                               <Badge variant={variant.creditBased ? "info" : "neutral"} size="sm">
                                 {variant.durationMonths}M / {variant.validityDays} days
@@ -643,13 +643,13 @@ export default function CatalogPage() {
                             </div>
                           </td>
                           <td className="px-4 py-4">
-                            <div className="font-medium text-slate-700">{product?.productName || variant.productCode}</div>
-                            <div className="mt-1 text-xs uppercase tracking-[0.16em] text-slate-500">{titleFromCode(variant.categoryCode)}</div>
+                            <div className="font-medium text-slate-200">{product?.productName || variant.productCode}</div>
+                            <div className="mt-1 text-xs uppercase tracking-[0.16em] text-slate-400">{titleFromCode(variant.categoryCode)}</div>
                           </td>
                           <td className="px-4 py-4 text-right">
-                            <div className="font-semibold text-slate-800">{formatCurrency(variant.basePrice)}</div>
+                            <div className="font-semibold text-white">{formatCurrency(variant.basePrice)}</div>
                             {variant.extraVisitPrice > 0 ? (
-                              <div className="mt-1 text-xs text-slate-500">Extra visit {formatCurrency(variant.extraVisitPrice)}</div>
+                              <div className="mt-1 text-xs text-slate-400">Extra visit {formatCurrency(variant.extraVisitPrice)}</div>
                             ) : null}
                           </td>
                           <td className="px-4 py-4">
@@ -667,19 +667,19 @@ export default function CatalogPage() {
                               </div>
                               <div className="flex flex-wrap gap-2 text-xs text-slate-600">
                                 {variant.includedPtSessions > 0 ? (
-                                  <span className="rounded-full bg-slate-100 px-2.5 py-1">PT {variant.includedPtSessions}</span>
+                                  <span className="rounded-full bg-[#1b2230] px-2.5 py-1">PT {variant.includedPtSessions}</span>
                                 ) : null}
                                 {variant.passBenefitDays > 0 ? (
-                                  <span className="rounded-full bg-slate-100 px-2.5 py-1">PAUSE benefit {variant.passBenefitDays} days</span>
+                                  <span className="rounded-full bg-[#1b2230] px-2.5 py-1">PAUSE benefit {variant.passBenefitDays} days</span>
                                 ) : null}
                                 {variant.includedCredits > 0 ? (
-                                  <span className="rounded-full bg-slate-100 px-2.5 py-1">Credits {variant.includedCredits}</span>
+                                  <span className="rounded-full bg-[#1b2230] px-2.5 py-1">Credits {variant.includedCredits}</span>
                                 ) : null}
                                 {variant.checkInLimit > 0 ? (
-                                  <span className="rounded-full bg-slate-100 px-2.5 py-1">Check-ins {variant.checkInLimit}</span>
+                                  <span className="rounded-full bg-[#1b2230] px-2.5 py-1">Check-ins {variant.checkInLimit}</span>
                                 ) : null}
                                 {variant.bonusCreditsOnFullUsage > 0 ? (
-                                  <span className="rounded-full bg-slate-100 px-2.5 py-1">Bonus {variant.bonusCreditsOnFullUsage}</span>
+                                  <span className="rounded-full bg-[#1b2230] px-2.5 py-1">Bonus {variant.bonusCreditsOnFullUsage}</span>
                                 ) : null}
                                 {variant.includedPtSessions === 0 &&
                                 variant.passBenefitDays === 0 &&
@@ -696,7 +696,7 @@ export default function CatalogPage() {
                               <button
                                 type="button"
                                 onClick={() => openEdit(variant)}
-                                className="inline-flex items-center gap-1 rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                                className="inline-flex items-center gap-1 rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-white/5"
                               >
                                 <Pencil className="h-3.5 w-3.5" />
                                 Edit

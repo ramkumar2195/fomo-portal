@@ -15,7 +15,10 @@ import {
 } from "lucide-react";
 import { useAuth } from "@/contexts/auth-context";
 import { usersService } from "@/lib/api/services/users-service";
+import { engagementService } from "@/lib/api/services/engagement-service";
+import type { BiometricAttendanceLogRecord, BiometricDeviceRecord, MemberBiometricEnrollmentRecord } from "@/lib/api/services/engagement-service";
 import { ToastBanner } from "@/components/common/toast-banner";
+import { AttendanceAccessSection } from "@/components/portal/attendance-access-section";
 
 /* ── helpers ─────────────────────────────────────────────────── */
 
@@ -44,13 +47,19 @@ function humanize(s: string): string {
   return s.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
 }
 
+function normalizePin(value: string): string {
+  const digits = value.replace(/\D/g, "");
+  if (digits.length === 12 && digits.startsWith("91")) return digits.slice(2);
+  return digits;
+}
+
 /* ── types ───────────────────────────────────────────────────── */
 
 type TabKey = "overview" | "attendance" | "leave";
 
 const TABS: { key: TabKey; label: string }[] = [
   { key: "overview", label: "Overview" },
-  { key: "attendance", label: "Attendance" },
+  { key: "attendance", label: "Attendance & Access" },
   { key: "leave", label: "Leave History" },
 ];
 
@@ -68,8 +77,14 @@ export default function StaffProfilePage() {
 
   // Tab data
   const [attendanceData, setAttendanceData] = useState<unknown[]>([]);
+  const [biometricDevices, setBiometricDevices] = useState<BiometricDeviceRecord[]>([]);
+  const [biometricLogs, setBiometricLogs] = useState<BiometricAttendanceLogRecord[]>([]);
+  const [enrollments, setEnrollments] = useState<MemberBiometricEnrollmentRecord[]>([]);
   const [leaveData, setLeaveData] = useState<unknown[]>([]);
   const [tabLoading, setTabLoading] = useState<Record<string, boolean>>({});
+  const [toast, setToast] = useState<{ kind: "success" | "error"; message: string } | null>(null);
+  const [accessActionError, setAccessActionError] = useState<string | null>(null);
+  const [accessBusy, setAccessBusy] = useState(false);
 
   // Load staff profile
   useEffect(() => {
@@ -103,11 +118,28 @@ export default function StaffProfilePage() {
       switch (tab) {
         case "attendance": {
           try {
-            const report = await usersService.getTrainerAttendanceReport(token, { trainerId: Number(staffId) });
+            const staffPin = normalizePin(str(toRec(staff), "mobile", "mobileNumber", "phoneNumber"));
+            const [report, devices, allLogs, enrollmentRows] = await Promise.all([
+              usersService.getTrainerAttendanceReport(token, { trainerId: Number(staffId) }),
+              engagementService.listBiometricDevices(token).catch(() => []),
+              engagementService.getBiometricLogs(token).catch(() => []),
+              engagementService.getMemberBiometricEnrollments(token, staffId).catch(() => []),
+            ]);
             const entries = Array.isArray(report) ? report : (Array.isArray((report as Rec).entries) ? (report as Rec).entries as unknown[] : []);
             setAttendanceData(entries);
+            setBiometricDevices(Array.isArray(devices) ? devices : []);
+            setBiometricLogs(
+              Array.isArray(allLogs)
+                ? allLogs.filter((entry) => str(toRec(entry), "deviceUserId") === staffPin)
+                : [],
+            );
+            setEnrollments(Array.isArray(enrollmentRows) ? enrollmentRows : []);
+            setAccessActionError(null);
           } catch {
             setAttendanceData([]);
+            setBiometricDevices([]);
+            setBiometricLogs([]);
+            setEnrollments([]);
           }
           break;
         }
@@ -126,7 +158,7 @@ export default function StaffProfilePage() {
     } finally {
       setTabLoading((prev) => ({ ...prev, [tab]: false }));
     }
-  }, [token, staffId, tabLoading]);
+  }, [token, staffId, tabLoading, staff]);
 
   useEffect(() => {
     if (activeTab !== "overview") {
@@ -150,7 +182,50 @@ export default function StaffProfilePage() {
   const emergencyContact = str(s, "emergencyContactName", "emergencyContact");
   const emergencyPhone = str(s, "emergencyContactNumber", "emergencyPhone");
   const address = str(s, "address", "fullAddress");
+  const normalizedPin = normalizePin(mobile !== "-" ? mobile : "");
   const initials = name.split(" ").map((w) => w[0]).join("").substring(0, 2).toUpperCase();
+
+  const handleAccessAction = async (action: "ADD_USER" | "RE_ADD_USER" | "BLOCK_USER" | "UNBLOCK_USER" | "DELETE_USER", serial: string) => {
+    if (!token || !staffId || !serial) return;
+    if (!normalizedPin) {
+      setAccessActionError("Staff mobile number is required to sync with the biometric device.");
+      return;
+    }
+
+    setAccessBusy(true);
+    setAccessActionError(null);
+    try {
+      const payload = {
+        serialNumber: serial,
+        pin: normalizedPin,
+        name,
+        memberId: Number(staffId),
+      };
+      if (action === "ADD_USER") {
+        await engagementService.enrollBiometricUser(token, payload);
+      } else if (action === "RE_ADD_USER") {
+        await engagementService.reAddBiometricUser(token, payload);
+      } else if (action === "BLOCK_USER") {
+        await engagementService.blockBiometricUser(token, payload);
+      } else if (action === "UNBLOCK_USER") {
+        await engagementService.unblockBiometricUser(token, payload);
+      } else {
+        await engagementService.deleteBiometricUser(token, {
+          serialNumber: serial,
+          pin: normalizedPin,
+          memberId: Number(staffId),
+        });
+      }
+      setToast({ kind: "success", message: "Biometric device action queued." });
+      await loadTab("attendance");
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unable to update biometric access.";
+      setAccessActionError(message);
+      setToast({ kind: "error", message });
+    } finally {
+      setAccessBusy(false);
+    }
+  };
 
   if (loading) {
     return (
@@ -173,6 +248,8 @@ export default function StaffProfilePage() {
 
   return (
     <div className="mx-auto max-w-6xl space-y-6 px-4 py-6">
+      {toast && <ToastBanner kind={toast.kind} message={toast.message} onClose={() => setToast(null)} />}
+
       {/* Back link */}
       <Link href="/portal/staff" className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-4 py-2 text-sm font-medium text-slate-300 hover:bg-white/10">
         <ArrowLeft className="h-4 w-4" /> Back To Staff
@@ -282,50 +359,62 @@ export default function StaffProfilePage() {
                 <div className="h-6 w-6 animate-spin rounded-full border-2 border-[#c42924] border-t-transparent" />
               </div>
             ) : (
-              <Panel title="Attendance Log" subtitle="Check-in and check-out records">
-                {attendanceData.length === 0 ? (
-                  <p className="py-4 text-center text-sm text-slate-500">No attendance records found.</p>
-                ) : (
-                  <div className="overflow-x-auto">
-                    <table className="w-full text-sm">
-                      <thead>
-                        <tr className="border-b border-white/10 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">
-                          <th className="px-4 py-3">Date</th>
-                          <th className="px-4 py-3">Check In</th>
-                          <th className="px-4 py-3">Check Out</th>
-                          <th className="px-4 py-3">Hours</th>
-                          <th className="px-4 py-3">Status</th>
-                        </tr>
-                      </thead>
-                      <tbody className="divide-y divide-white/5">
-                        {attendanceData.map((entry, i) => {
-                          const r = toRec(entry);
-                          const date = str(r, "date", "attendanceDate", "checkInAt");
-                          const checkIn = str(r, "checkInAt", "checkIn", "entryTime", "firstPunch");
-                          const checkOut = str(r, "checkOutAt", "checkOut", "exitTime", "lastPunch");
-                          const hours = str(r, "totalHours", "hoursWorked", "duration");
-                          const status = str(r, "status", "attendanceStatus");
-                          return (
-                            <tr key={i} className="text-slate-300 hover:bg-white/5">
-                              <td className="px-4 py-3">{formatDate(date !== "-" ? date : undefined)}</td>
-                              <td className="px-4 py-3">{checkIn}</td>
-                              <td className="px-4 py-3">{checkOut}</td>
-                              <td className="px-4 py-3">{hours}</td>
-                              <td className="px-4 py-3">
-                                <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
-                                  status.toUpperCase() === "PRESENT" ? "bg-emerald-500/10 text-emerald-400" :
-                                  status.toUpperCase() === "ABSENT" ? "bg-rose-500/10 text-rose-400" :
-                                  "bg-amber-500/10 text-amber-400"
-                                }`}>{status !== "-" ? humanize(status) : "-"}</span>
-                              </td>
-                            </tr>
-                          );
-                        })}
-                      </tbody>
-                    </table>
-                  </div>
-                )}
-              </Panel>
+              <>
+                <AttendanceAccessSection
+                  pin={normalizedPin}
+                  devices={biometricDevices}
+                  enrollments={enrollments}
+                  logs={biometricLogs}
+                  actionBusy={accessBusy}
+                  actionError={accessActionError}
+                  onAction={handleAccessAction}
+                />
+
+                <Panel title="Daily Attendance Register" subtitle="Check-in and check-out summary records">
+                  {attendanceData.length === 0 ? (
+                    <p className="py-4 text-center text-sm text-slate-500">No attendance records found.</p>
+                  ) : (
+                    <div className="overflow-x-auto">
+                      <table className="w-full text-sm">
+                        <thead>
+                          <tr className="border-b border-white/10 text-left text-xs font-semibold uppercase tracking-wider text-slate-400">
+                            <th className="px-4 py-3">Date</th>
+                            <th className="px-4 py-3">Check In</th>
+                            <th className="px-4 py-3">Check Out</th>
+                            <th className="px-4 py-3">Hours</th>
+                            <th className="px-4 py-3">Status</th>
+                          </tr>
+                        </thead>
+                        <tbody className="divide-y divide-white/5">
+                          {attendanceData.map((entry, i) => {
+                            const r = toRec(entry);
+                            const date = str(r, "date", "attendanceDate", "checkInAt");
+                            const checkIn = str(r, "checkInAt", "checkIn", "entryTime", "firstPunch");
+                            const checkOut = str(r, "checkOutAt", "checkOut", "exitTime", "lastPunch");
+                            const hours = str(r, "totalHours", "hoursWorked", "duration");
+                            const status = str(r, "status", "attendanceStatus");
+                            return (
+                              <tr key={i} className="text-slate-300 hover:bg-white/5">
+                                <td className="px-4 py-3">{formatDate(date !== "-" ? date : undefined)}</td>
+                                <td className="px-4 py-3">{checkIn}</td>
+                                <td className="px-4 py-3">{checkOut}</td>
+                                <td className="px-4 py-3">{hours}</td>
+                                <td className="px-4 py-3">
+                                  <span className={`rounded-full px-2 py-0.5 text-xs font-semibold ${
+                                    status.toUpperCase() === "PRESENT" ? "bg-emerald-500/10 text-emerald-400" :
+                                    status.toUpperCase() === "ABSENT" ? "bg-rose-500/10 text-rose-400" :
+                                    "bg-amber-500/10 text-amber-400"
+                                  }`}>{status !== "-" ? humanize(status) : "-"}</span>
+                                </td>
+                              </tr>
+                            );
+                          })}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </Panel>
+              </>
             )}
           </div>
         )}

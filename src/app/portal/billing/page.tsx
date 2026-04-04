@@ -145,8 +145,8 @@ export default function BillingPage() {
     <div className="space-y-8 pb-12">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Finance Dashboard</h1>
-          <p className="text-gray-500">Revenue, collections, and financial registers.</p>
+          <h1 className="text-2xl font-bold text-white">Finance Dashboard</h1>
+          <p className="text-slate-400">Revenue, collections, and financial registers.</p>
         </div>
         <button
           type="button"
@@ -164,27 +164,27 @@ export default function BillingPage() {
       {/* Date Range Filter */}
       <div className="flex flex-wrap items-end gap-3">
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-500">From</label>
+          <label className="mb-1 block text-xs font-medium text-slate-400">From</label>
           <input
             type="date"
             value={dateRange.from}
             onChange={(e) => setDateRange((prev) => ({ ...prev, from: e.target.value }))}
-            className="rounded-lg border border-gray-200 px-3 py-2 text-sm"
+            className="rounded-lg border border-white/10 bg-[#121722] px-3 py-2 text-sm text-white"
           />
         </div>
         <div>
-          <label className="mb-1 block text-xs font-medium text-gray-500">To</label>
+          <label className="mb-1 block text-xs font-medium text-slate-400">To</label>
           <input
             type="date"
             value={dateRange.to}
             onChange={(e) => setDateRange((prev) => ({ ...prev, to: e.target.value }))}
-            className="rounded-lg border border-gray-200 px-3 py-2 text-sm"
+            className="rounded-lg border border-white/10 bg-[#121722] px-3 py-2 text-sm text-white"
           />
         </div>
         <button
           type="button"
           onClick={() => void loadFinance()}
-          className="rounded-lg bg-gray-100 px-4 py-2 text-sm font-medium text-gray-700 hover:bg-gray-200"
+          className="rounded-lg border border-white/10 bg-[#121722] px-4 py-2 text-sm font-medium text-slate-200 hover:bg-white/5"
         >
           Apply
         </button>
@@ -204,7 +204,7 @@ export default function BillingPage() {
 
       {/* Tabbed Registers */}
       <SectionCard title="Financial Registers">
-        <div className="mb-4 flex flex-wrap gap-2 border-b border-gray-100 pb-3">
+        <div className="mb-4 flex flex-wrap gap-2 border-b border-white/10 pb-3">
           {TABS.map((tab) => (
             <button
               key={tab.key}
@@ -212,8 +212,8 @@ export default function BillingPage() {
               onClick={() => handleTabChange(tab.key)}
               className={`rounded-lg px-3 py-1.5 text-sm font-medium transition ${
                 activeTab === tab.key
-                  ? "bg-black text-white"
-                  : "bg-gray-100 text-gray-600 hover:bg-gray-200"
+                  ? "bg-[#1b2230] text-white"
+                  : "bg-[#171d29] text-slate-300 hover:bg-white/5"
               }`}
             >
               {tab.label}

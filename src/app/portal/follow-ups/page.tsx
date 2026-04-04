@@ -321,8 +321,8 @@ export default function FollowUpsPage() {
   return (
     <div className="space-y-8">
       <div>
-        <h1 className="text-2xl font-bold text-gray-900">Follow-up Management</h1>
-        <p className="text-gray-500">Track and manage communications with leads and members.</p>
+        <h1 className="text-2xl font-bold text-white">Follow-up Management</h1>
+        <p className="text-slate-400">Track and manage communications with leads and members.</p>
       </div>
 
       {error ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}

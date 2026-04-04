@@ -349,6 +349,16 @@ export interface InvoiceSummary {
   receiptNumber?: string;
 }
 
+export interface BillingReceiptSummary {
+  id: string;
+  receiptNumber: string;
+  invoiceId?: string;
+  memberId?: string;
+  amount: number;
+  paymentMode?: string;
+  paidAt?: string;
+}
+
 export interface Member {
   id: string;
   name: string;

@@ -194,6 +194,40 @@ function formatInvoiceLifecycleStatus(invoiceStatus?: string, completed = false)
   return normalized.replace(/_/g, " ") || "-";
 }
 
+function formatPlanDurationLabel(durationMonths = 0, validityDays = 0): string {
+  if (durationMonths > 0) {
+    return `${durationMonths} Month${durationMonths === 1 ? "" : "s"}`;
+  }
+  if (validityDays > 0) {
+    return `${validityDays} Day${validityDays === 1 ? "" : "s"}`;
+  }
+  return "-";
+}
+
+function formatFlexUsageLabel(checkInLimit = 0, validityDays = 0): string {
+  const normalizedCheckInLimit = Math.max(0, Number(checkInLimit || 0));
+  if (normalizedCheckInLimit <= 0) {
+    return validityDays > 0 ? `${validityDays} days validity` : "-";
+  }
+  const validityLabel = validityDays > 0 ? ` within ${validityDays} days` : "";
+  return `Use on any ${normalizedCheckInLimit} days${validityLabel}`;
+}
+
+function sanitizeMembershipLabel(value?: string): string {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "-";
+  }
+
+  return raw
+    .replace(/\b\d+\s*(M|L)\b/gi, "")
+    .replace(/\b\d+\s*months?\b/gi, "")
+    .replace(/\b\d+\s*days?\b/gi, "")
+    .replace(/[·,-]\s*$/g, "")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
 function resolveMemberId(createdUser: UserDirectoryItem): number | null {
   const directId = Number(String(createdUser.id || "").trim());
   if (!Number.isNaN(directId) && Number.isFinite(directId)) {
@@ -573,6 +607,16 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     const timeout = window.setTimeout(() => setToast(null), 3500);
     return () => window.clearTimeout(timeout);
   }, [toast]);
+
+  useEffect(() => {
+    if (!completedOnboarding) {
+      return;
+    }
+
+    window.scrollTo({ top: 0, behavior: "auto" });
+    void router.prefetch("/portal/members");
+    void router.prefetch(`/admin/members/${completedOnboarding.memberId}`);
+  }, [completedOnboarding, router]);
 
   useEffect(() => {
     if (!token) {
@@ -1642,6 +1686,8 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   const generatedInvoiceNumber = completedOnboarding?.invoiceNumber || "Generated on completion";
   const generatedReceiptNumber =
     completedOnboarding?.receiptNumber || (completedOnboarding ? "No receipt generated" : "Generated after payment");
+  const selectedPrimaryMembershipLabel = sanitizeMembershipLabel(selectedPrimaryVariant?.variantName || selectedPrimaryProduct?.productName || "Primary Membership");
+  const selectedPrimaryMembershipDuration = formatPlanDurationLabel(selectedPrimaryVariant?.durationMonths || 0, selectedPrimaryVariant?.validityDays || 0);
   const enquiryCodeLabel = inquiry
     ? formatInquiryCode(inquiry.inquiryId, { branchCode: inquiry.branchCode, createdAt: inquiry.createdAt || inquiry.inquiryAt })
     : "Pending";
@@ -2081,7 +2127,11 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                 </p>
                                 <p className="mt-1 text-xs text-slate-400">
                                   {selectedPrimaryVariant
-                                    ? `${normalizeDisplayVariantName(selectedPrimaryVariant.variantName)} · ${selectedPrimaryVariant.validityDays} days validity`
+                                    ? `${normalizeDisplayVariantName(selectedPrimaryVariant.variantName)} · ${
+                                        selectedPrimaryVariant.categoryCode === "FLEX"
+                                          ? formatFlexUsageLabel(selectedPrimaryVariant.checkInLimit, selectedPrimaryVariant.validityDays)
+                                          : `${selectedPrimaryVariant.validityDays} days validity`
+                                      }`
                                     : "Pick a variant below to load pricing and benefits."}
                                 </p>
                               </div>
@@ -2127,16 +2177,20 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                       {active ? "Selected" : `${variant.durationMonths} months`}
                                     </span>
                                   </div>
-                                  <div className="mt-5 flex items-end justify-between gap-3">
-                                    <div>
-                                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Base Price</p>
-                                      <p className="mt-1 text-lg font-semibold text-white">{formatCurrency(variant.basePrice)}</p>
-                                    </div>
-                                    <div className="text-right text-xs text-slate-400">
-                                      <p>{variant.validityDays} days validity</p>
+                                    <div className="mt-5 flex items-end justify-between gap-3">
+                                      <div>
+                                        <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Base Price</p>
+                                        <p className="mt-1 text-lg font-semibold text-white">{formatCurrency(variant.basePrice)}</p>
+                                      </div>
+                                      <div className="text-right text-xs text-slate-400">
+                                      <p>
+                                        {variant.categoryCode === "FLEX"
+                                          ? formatFlexUsageLabel(variant.checkInLimit, variant.validityDays)
+                                          : `${variant.validityDays} days validity`}
+                                      </p>
 	                                      <p>{variant.passBenefitDays} pause benefit days</p>
+                                      </div>
                                     </div>
-                                  </div>
                                   <div className="mt-4 flex flex-wrap gap-2">
                                     {features.map((feature) => (
                                       <span key={feature} className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
@@ -2923,11 +2977,11 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
             <div className="mt-6 grid gap-4 md:grid-cols-2">
               <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
-                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Billing Records</p>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Membership</p>
                 <dl className="mt-3 space-y-2 text-sm text-slate-300">
-                  <div className="flex items-center justify-between gap-3"><dt>Invoice ID</dt><dd className="font-semibold text-white">{completedOnboarding.invoiceId}</dd></div>
+                  <div className="flex items-center justify-between gap-3"><dt>Plan</dt><dd className="font-semibold text-white">{selectedPrimaryMembershipLabel}</dd></div>
+                  <div className="flex items-center justify-between gap-3"><dt>Duration</dt><dd className="font-semibold text-white">{selectedPrimaryMembershipDuration}</dd></div>
                   <div className="flex items-center justify-between gap-3"><dt>Invoice Number</dt><dd className="font-semibold text-white">{completedOnboarding.invoiceNumber}</dd></div>
-                  <div className="flex items-center justify-between gap-3"><dt>Receipt ID</dt><dd className="font-semibold text-white">{completedOnboarding.receiptId || "-"}</dd></div>
                   <div className="flex items-center justify-between gap-3"><dt>Receipt Number</dt><dd className="font-semibold text-white">{completedOnboarding.receiptNumber || "-"}</dd></div>
                   <div className="flex items-center justify-between gap-3"><dt>Payment Status</dt><dd>{formatPaymentCollectionStatus(completedOnboarding.totalPaidAmount, completedOnboarding.balanceAmount)}</dd></div>
                 </dl>
@@ -2935,64 +2989,70 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
               <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Document Actions</p>
                 <div className="mt-3 space-y-3">
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                    <span className="text-sm font-semibold text-white">Invoice</span>
+                    <div className="flex flex-wrap gap-2">
                     <button
                       type="button"
                       onClick={() => void viewDocumentPdf("invoice", completedOnboarding.invoiceId)}
                       disabled={documentBusyKey === `invoice-view-${completedOnboarding.invoiceId}`}
-                      className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                      className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                      title="View Invoice"
                     >
                       <ExternalLink className="h-4 w-4" />
-                      View Invoice
                     </button>
                     <button
                       type="button"
                       onClick={() => void downloadDocumentPdf("invoice", completedOnboarding.invoiceId, completedOnboarding.invoiceNumber)}
                       disabled={documentBusyKey === `invoice-download-${completedOnboarding.invoiceId}`}
-                      className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                      className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                      title="Download Invoice"
                     >
                       <Download className="h-4 w-4" />
-                      Download Invoice
                     </button>
                     <button
                       type="button"
                       onClick={() => void shareDocumentPdf("invoice", completedOnboarding.invoiceId, completedOnboarding.invoiceNumber, "Invoice")}
                       disabled={documentBusyKey === `invoice-share-${completedOnboarding.invoiceId}`}
-                      className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                      className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                      title="Share Invoice"
                     >
                       <Share2 className="h-4 w-4" />
-                      Share Invoice
                     </button>
                   </div>
+                  </div>
                   {completedOnboarding.receiptId ? (
-                    <div className="flex flex-wrap gap-2">
+                    <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                      <span className="text-sm font-semibold text-white">Receipt</span>
+                      <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
                         onClick={() => void viewDocumentPdf("receipt", completedOnboarding.receiptId!)}
                         disabled={documentBusyKey === `receipt-view-${completedOnboarding.receiptId}`}
-                        className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                        className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                        title="View Receipt"
                       >
                         <ExternalLink className="h-4 w-4" />
-                        View Receipt
                       </button>
                       <button
                         type="button"
                         onClick={() => void downloadDocumentPdf("receipt", completedOnboarding.receiptId!, completedOnboarding.receiptNumber || `receipt-${completedOnboarding.receiptId}`)}
                         disabled={documentBusyKey === `receipt-download-${completedOnboarding.receiptId}`}
-                        className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                        className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                        title="Download Receipt"
                       >
                         <Download className="h-4 w-4" />
-                        Download Receipt
                       </button>
                       <button
                         type="button"
                         onClick={() => void shareDocumentPdf("receipt", completedOnboarding.receiptId!, completedOnboarding.receiptNumber || `receipt-${completedOnboarding.receiptId}`, "Receipt")}
                         disabled={documentBusyKey === `receipt-share-${completedOnboarding.receiptId}`}
-                        className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                        className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                        title="Share Receipt"
                       >
                         <Share2 className="h-4 w-4" />
-                        Share Receipt
                       </button>
+                    </div>
                     </div>
                   ) : (
                     <p className="text-sm text-slate-400">No receipt was generated because no payment was collected.</p>
@@ -3004,14 +3064,14 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
             <div className="mt-6 flex flex-wrap justify-end gap-3">
               <button
                 type="button"
-                onClick={() => router.push("/portal/members")}
+                onClick={() => router.replace("/portal/members")}
                 className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
               >
                 Back to Members
               </button>
               <button
                 type="button"
-                onClick={() => router.push(`/admin/members/${completedOnboarding.memberId}`)}
+                onClick={() => router.replace(`/admin/members/${completedOnboarding.memberId}`)}
                 className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-700"
               >
                 Open Member Profile

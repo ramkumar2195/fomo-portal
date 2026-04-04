@@ -149,11 +149,11 @@ export default function AccountsPage() {
     <div className="space-y-6">
       {error ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
 
-      <div className="flex flex-col gap-3 rounded-2xl border border-slate-200 bg-white p-4 shadow-sm lg:flex-row lg:items-end lg:justify-between">
-        <label className="block text-sm font-medium text-slate-700 lg:min-w-[360px]">
+      <div className="flex flex-col gap-3 rounded-2xl border border-white/10 bg-[#121722] p-4 shadow-sm lg:flex-row lg:items-end lg:justify-between">
+        <label className="block text-sm font-medium text-slate-200 lg:min-w-[360px]">
           Member
           <select
-            className="mt-1 w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            className="mt-1 w-full rounded-lg border border-white/10 bg-[#0f141d] px-3 py-2 text-sm text-white"
             value={selectedMemberId}
             onChange={(event) => setSelectedMemberId(event.target.value)}
           >

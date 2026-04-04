@@ -277,25 +277,25 @@ export default function BranchesPage() {
       {error ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div> : null}
 
       <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Branches</p>
-          <p className="mt-3 text-3xl font-bold tracking-tight text-[#282828]">{totalElements || branches.length}</p>
-          <p className="mt-2 text-sm text-slate-500">{branchSummary.activeBranches} active, {branchSummary.inactiveBranches} inactive</p>
+        <div className="rounded-2xl border border-white/10 bg-[#121722] p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Branches</p>
+          <p className="mt-3 text-3xl font-bold tracking-tight text-white">{totalElements || branches.length}</p>
+          <p className="mt-2 text-sm text-slate-300">{branchSummary.activeBranches} active, {branchSummary.inactiveBranches} inactive</p>
         </div>
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Active Members</p>
-          <p className="mt-3 text-3xl font-bold tracking-tight text-[#282828]">{branchSummary.totalActiveMembers}</p>
-          <p className="mt-2 text-sm text-slate-500">Live member count across listed branches</p>
+        <div className="rounded-2xl border border-white/10 bg-[#121722] p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Active Members</p>
+          <p className="mt-3 text-3xl font-bold tracking-tight text-white">{branchSummary.totalActiveMembers}</p>
+          <p className="mt-2 text-sm text-slate-300">Live member count across listed branches</p>
         </div>
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Utilization</p>
-          <p className="mt-3 text-3xl font-bold tracking-tight text-[#282828]">{branchSummary.averageUtilization}%</p>
-          <p className="mt-2 text-sm text-slate-500">Average usage against configured capacity</p>
+        <div className="rounded-2xl border border-white/10 bg-[#121722] p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Utilization</p>
+          <p className="mt-3 text-3xl font-bold tracking-tight text-white">{branchSummary.averageUtilization}%</p>
+          <p className="mt-2 text-sm text-slate-300">Average usage against configured capacity</p>
         </div>
-        <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
-          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Manager Gaps</p>
-          <p className="mt-3 text-3xl font-bold tracking-tight text-[#282828]">{branchSummary.unassignedManagers}</p>
-          <p className="mt-2 text-sm text-slate-500">Branches needing manager assignment</p>
+        <div className="rounded-2xl border border-white/10 bg-[#121722] p-5 shadow-sm">
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Manager Gaps</p>
+          <p className="mt-3 text-3xl font-bold tracking-tight text-white">{branchSummary.unassignedManagers}</p>
+          <p className="mt-2 text-sm text-slate-300">Branches needing manager assignment</p>
         </div>
       </section>
 
@@ -313,13 +313,13 @@ export default function BranchesPage() {
         {loading ? <div className="text-sm text-slate-500">Loading branches...</div> : null}
 
         {!loading && branches.length === 0 ? (
-          <div className="rounded-xl border border-slate-200 bg-white px-3 py-4 text-sm text-slate-600">No branches found.</div>
+          <div className="rounded-xl border border-white/10 bg-[#121722] px-3 py-4 text-sm text-slate-300">No branches found.</div>
         ) : null}
 
         {!loading && branches.length > 0 ? (
-          <div className="overflow-x-auto rounded-2xl border border-slate-200">
-            <table className="min-w-full divide-y divide-slate-200 text-sm">
-              <thead className="bg-slate-50 text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">
+          <div className="overflow-x-auto rounded-2xl border border-white/10 bg-[#121722]">
+            <table className="min-w-full divide-y divide-white/10 text-sm">
+              <thead className="bg-[#171d29] text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
                 <tr>
                   <th className="px-4 py-3 text-left">Branch</th>
                   <th className="px-4 py-3 text-left">Branch Code</th>
@@ -330,36 +330,36 @@ export default function BranchesPage() {
                   <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
               </thead>
-              <tbody className="divide-y divide-slate-200 bg-white">
+              <tbody className="divide-y divide-white/10 bg-[#121722]">
                 {branches.map((branch) => (
-                  <tr key={branch.id} className="align-top">
+                  <tr key={branch.id} className="align-top hover:bg-white/5">
                     <td className="px-4 py-4">
                       <div className="flex items-start gap-3">
                         <span className="rounded-xl bg-slate-100 p-2 text-[#C42429]">
                           <Building2 className="h-4 w-4" />
                         </span>
                         <div>
-                          <div className="font-semibold text-slate-800">{branch.name}</div>
-                          <div className="text-sm text-slate-500">{branch.city}</div>
+                          <div className="font-semibold text-white">{branch.name}</div>
+                          <div className="text-sm text-slate-300">{branch.city}</div>
                           <div className="text-xs text-slate-400">{branch.address}</div>
                         </div>
                       </div>
                     </td>
                     <td className="px-4 py-4">
-                      <div className="font-semibold text-slate-700">{branch.branchCode || "-"}</div>
-                      <div className="text-xs text-slate-500">Unique branch reference</div>
+                      <div className="font-semibold text-slate-200">{branch.branchCode || "-"}</div>
+                      <div className="text-xs text-slate-400">Unique branch reference</div>
                     </td>
                     <td className="px-4 py-4">
-                      <div className="font-semibold text-slate-700">{branch.managerName || "Unassigned"}</div>
-                      <div className="text-xs text-slate-500">{branch.managerName ? "Assigned branch manager" : "Needs mapping"}</div>
+                      <div className="font-semibold text-slate-200">{branch.managerName || "Unassigned"}</div>
+                      <div className="text-xs text-slate-400">{branch.managerName ? "Assigned branch manager" : "Needs mapping"}</div>
                     </td>
                     <td className="px-4 py-4 text-right">
-                      <div className="font-semibold text-slate-700">{branch.activeMembers}</div>
-                      <div className="text-xs text-slate-500">active members</div>
+                      <div className="font-semibold text-slate-200">{branch.activeMembers}</div>
+                      <div className="text-xs text-slate-400">active members</div>
                     </td>
                     <td className="px-4 py-4 text-right">
-                      <div className="font-semibold text-slate-700">{branch.capacity}</div>
-                      <div className="text-xs text-slate-500">{capacityUtilization(branch)} utilized</div>
+                      <div className="font-semibold text-slate-200">{branch.capacity}</div>
+                      <div className="text-xs text-slate-400">{capacityUtilization(branch)} utilized</div>
                     </td>
                     <td className="px-4 py-4">
                       <span
@@ -375,14 +375,14 @@ export default function BranchesPage() {
                         <button
                           type="button"
                           onClick={() => router.push(`/admin/branches/${branch.id}`)}
-                          className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                          className="rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-white/5"
                         >
                           Open
                         </button>
                         <button
                           type="button"
                           onClick={() => openEdit(branch)}
-                          className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                          className="rounded-lg border border-white/10 px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-white/5"
                         >
                           Edit Settings
                         </button>
@@ -396,7 +396,7 @@ export default function BranchesPage() {
         ) : null}
       </SurfaceCard>
 
-      <div className="flex items-center justify-between rounded-xl border border-slate-200 bg-white px-3 py-2 text-xs text-slate-500">
+      <div className="flex items-center justify-between rounded-xl border border-white/10 bg-[#121722] px-3 py-2 text-xs text-slate-400">
         <span>
           Page {pageIndex + 1} of {Math.max(totalPages, 1)} ({totalElements} total)
         </span>
@@ -405,7 +405,7 @@ export default function BranchesPage() {
             type="button"
             onClick={() => setPageIndex((current) => Math.max(0, current - 1))}
             disabled={isFirstPage}
-            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs font-semibold text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Previous
           </button>
@@ -413,7 +413,7 @@ export default function BranchesPage() {
             type="button"
             onClick={() => setPageIndex((current) => current + 1)}
             disabled={isLastPage}
-            className="rounded-lg border border-slate-300 px-3 py-1.5 text-xs font-semibold text-slate-700 disabled:cursor-not-allowed disabled:opacity-50"
+            className="rounded-lg border border-white/10 px-3 py-1.5 text-xs font-semibold text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
           >
             Next
           </button>
@@ -422,18 +422,18 @@ export default function BranchesPage() {
 
       {editorMode ? (
         <div className="fixed inset-0 z-50 flex justify-end bg-slate-900/30">
-          <div className="h-full w-full max-w-xl overflow-y-auto bg-white p-5 shadow-xl sm:p-6">
+          <div className="h-full w-full max-w-xl overflow-y-auto bg-[#121722] p-5 shadow-xl sm:p-6">
             <div className="mb-4 flex items-start justify-between gap-4">
               <div>
-                <h2 className="text-lg font-semibold text-slate-900">{editorMode === "create" ? "Add Branch" : "Edit Branch Settings"}</h2>
-                <p className="text-sm text-slate-500">
+                <h2 className="text-lg font-semibold text-white">{editorMode === "create" ? "Add Branch" : "Edit Branch Settings"}</h2>
+                <p className="text-sm text-slate-400">
                   {editorMode === "create" ? "Create a new branch and assign its operating basics." : "Update branch master details, manager mapping, capacity, and status."}
                 </p>
               </div>
               <button
                 type="button"
                 onClick={closeEdit}
-                className="rounded-lg border border-slate-300 p-2 text-slate-600 hover:bg-slate-100"
+                className="rounded-lg border border-white/10 p-2 text-slate-300 hover:bg-white/5"
                 aria-label="Close edit branch"
               >
                 <X className="h-4 w-4" />

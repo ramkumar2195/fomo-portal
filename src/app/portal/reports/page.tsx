@@ -93,8 +93,8 @@ export default function ReportsPage() {
     <div className="space-y-8 pb-12">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-bold text-gray-900">Reports & Analytics</h1>
-          <p className="text-gray-500">Comprehensive insights into gym performance.</p>
+          <h1 className="text-2xl font-bold text-white">Reports & Analytics</h1>
+          <p className="text-slate-400">Comprehensive insights into gym performance.</p>
         </div>
         <button
           type="button"
@@ -117,24 +117,24 @@ export default function ReportsPage() {
           { label: "Lead Conversion", value: formatPercent(state.metrics.conversionRate) },
           { label: "Follow-ups Due", value: String(state.metrics.followUpsDue) },
         ].map((item) => (
-          <article key={item.label} className="rounded-2xl border border-gray-100 bg-white p-6 shadow-sm">
-            <p className="text-sm font-medium text-gray-500">{item.label}</p>
-            <p className="mt-2 text-2xl font-bold text-gray-900">{item.value}</p>
+          <article key={item.label} className="rounded-2xl border border-white/10 bg-[#121722] p-6 shadow-sm">
+            <p className="text-sm font-medium text-slate-400">{item.label}</p>
+            <p className="mt-2 text-2xl font-bold text-white">{item.value}</p>
           </article>
         ))}
       </div>
 
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
         <SectionCard title="Revenue Growth">
-          <div className="flex h-64 items-end gap-4 rounded-2xl bg-gray-50 p-4">
+          <div className="flex h-64 items-end gap-4 rounded-2xl bg-[#171d29] p-4">
             {monthlySeries.map((point) => {
               const height = Math.max(12, Math.round((point.value / maxSeries) * 100));
               return (
                 <div key={point.month} className="flex flex-1 flex-col items-center justify-end gap-2">
-                  <div className="relative flex h-48 w-full items-end rounded-lg bg-white">
+                  <div className="relative flex h-48 w-full items-end rounded-lg bg-[#121722]">
                     <div className="w-full rounded-lg bg-red-600/90" style={{ height: `${height}%` }} />
                   </div>
-                  <p className="text-xs font-medium text-gray-500">{point.month}</p>
+                  <p className="text-xs font-medium text-slate-400">{point.month}</p>
                 </div>
               );
             })}
@@ -144,16 +144,16 @@ export default function ReportsPage() {
         <SectionCard title="Sales Performance">
           <div className="space-y-4">
             {state.leaderboard.slice(0, 6).map((entry, index) => (
-              <div key={entry.userId} className="flex items-center justify-between rounded-xl border border-gray-100 bg-gray-50 px-4 py-3">
+              <div key={entry.userId} className="flex items-center justify-between rounded-xl border border-white/10 bg-[#171d29] px-4 py-3">
                 <div>
-                  <p className="text-sm font-semibold text-gray-900">#{index + 1} {entry.userName}</p>
-                  <p className="text-xs text-gray-500">{entry.conversions} conversions</p>
+                  <p className="text-sm font-semibold text-white">#{index + 1} {entry.userName}</p>
+                  <p className="text-xs text-slate-400">{entry.conversions} conversions</p>
                 </div>
-                <p className="text-sm font-semibold text-gray-800">{formatCurrency(entry.revenue)}</p>
+                <p className="text-sm font-semibold text-slate-200">{formatCurrency(entry.revenue)}</p>
               </div>
             ))}
             {state.leaderboard.length === 0 && (
-              <p className="text-sm text-gray-500">No leaderboard data available.</p>
+              <p className="text-sm text-slate-400">No leaderboard data available.</p>
             )}
           </div>
         </SectionCard>
@@ -172,7 +172,7 @@ export default function ReportsPage() {
               header: "Utilization",
               render: (r) => (
                 <div className="flex items-center gap-2">
-                  <div className="h-2 w-20 rounded-full bg-gray-200">
+                  <div className="h-2 w-20 rounded-full bg-[#1b2230]">
                     <div
                       className="h-2 rounded-full bg-red-600"
                       style={{ width: `${Math.min(r.utilizationPercent, 100)}%` }}

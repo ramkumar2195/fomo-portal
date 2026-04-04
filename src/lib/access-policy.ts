@@ -58,6 +58,7 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
   ],
   HEAD_COACH: [],
   PT_COACH: [],
+  GENERAL_TRAINER: [],
   YOGA_INSTRUCTOR: [],
   ZUMBA_INSTRUCTOR: [],
   BOXING_INSTRUCTOR: [],

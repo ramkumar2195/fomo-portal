@@ -17,8 +17,8 @@ export default function AddTrainerPage() {
       subtitle="Create a COACH user via users-service register API"
       targetRole="COACH"
       designationOptions={[
-        { label: "HEAD_COACH", value: "HEAD_COACH" },
         { label: "PT_COACH", value: "PT_COACH" },
+        { label: "GENERAL_TRAINER", value: "GENERAL_TRAINER" },
         { label: "YOGA_INSTRUCTOR", value: "YOGA_INSTRUCTOR" },
         { label: "ZUMBA_INSTRUCTOR", value: "ZUMBA_INSTRUCTOR" },
         { label: "BOXING_INSTRUCTOR", value: "BOXING_INSTRUCTOR" },
