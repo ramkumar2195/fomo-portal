@@ -160,6 +160,16 @@ function resolveCheckInStatus(attendance: AttendanceSummary[]): string {
     return "Not Checked In";
   }
 
+  const today = new Date();
+  const latestCheckIn = new Date(latest.checkInAt);
+  if (
+    latestCheckIn.getFullYear() !== today.getFullYear()
+    || latestCheckIn.getMonth() !== today.getMonth()
+    || latestCheckIn.getDate() !== today.getDate()
+  ) {
+    return "Not Checked In";
+  }
+
   return latest.checkOutAt ? "Checked Out" : "Checked In";
 }
 
@@ -226,13 +236,14 @@ async function fetchMemberSummary(
       (Array.isArray(assignments) ? assignments : [])
         .map((item) => {
           const record = toRecord(item);
-          return (
+          const resolved = (
             getString(record, ["coachName", "trainerName", "assignedCoachName", "assignedTrainerName"]) ||
             getString(record, ["coachId", "trainerId"])
           );
+          return staffNameById[resolved] || resolved;
         })
         .filter(Boolean)
-        .map((value) => staffNameById[value] || value),
+        .filter((value) => /[A-Za-z]/.test(value)),
     ),
   );
   const fallbackTrainerName =
@@ -251,7 +262,7 @@ async function fetchMemberSummary(
     checkInStatus: resolveCheckInStatus(attendance),
     gender:
       inquiry && typeof inquiry.gender === "string" && inquiry.gender.trim().length > 0
-        ? inquiry.gender.trim()
+        ? formatDisplayLabel(inquiry.gender.trim())
         : "-",
     serviceTypes,
     membershipNames,
@@ -285,6 +296,14 @@ export default function MembersPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [openMenuMemberId, setOpenMenuMemberId] = useState<string | null>(null);
   const pageSize = 10;
+  const dateRangeError = useMemo(() => {
+    if (!fromDate || !toDate) {
+      return "";
+    }
+    return new Date(`${fromDate}T00:00:00`) > new Date(`${toDate}T23:59:59`)
+      ? "From date cannot be later than To date."
+      : "";
+  }, [fromDate, toDate]);
 
   const loadMembers = useCallback(
     async (query?: string) => {
@@ -381,16 +400,20 @@ export default function MembersPage() {
 
     void (async () => {
       try {
-        const [staff, admins] = await Promise.all([
+        const [staff, coaches, admins] = await Promise.all([
           usersService.searchUsers(token, {
             role: "STAFF",
+            ...(branchFilter ? { defaultBranchId: branchFilter } : {}),
+          }),
+          usersService.searchUsers(token, {
+            role: "COACH",
             ...(branchFilter ? { defaultBranchId: branchFilter } : {}),
           }),
           usersService.searchUsers(token, { role: "ADMIN" }),
         ]);
 
         const next: Record<string, string> = {};
-        [...staff, ...admins].forEach((entry) => {
+        [...staff, ...coaches, ...admins].forEach((entry) => {
           if (entry.id) {
             next[entry.id] = entry.name;
           }
@@ -451,7 +474,7 @@ export default function MembersPage() {
         new Set(
           Object.values(detailsByMemberId)
             .flatMap((details) => details.trainerNames)
-            .filter(Boolean),
+            .filter((value) => Boolean(value) && /[A-Za-z]/.test(value)),
         ),
       ).sort((left, right) => left.localeCompare(right)),
     [detailsByMemberId],
@@ -529,6 +552,9 @@ export default function MembersPage() {
         if (membershipFilter !== "ALL" && !details?.membershipNames.includes(membershipFilter)) {
           return false;
         }
+        if (dateRangeError) {
+          return false;
+        }
         if (fromDate) {
           const memberDate = details?.inquiryCreatedAt ? new Date(details.inquiryCreatedAt) : null;
           const filterStart = new Date(`${fromDate}T00:00:00`);
@@ -545,7 +571,7 @@ export default function MembersPage() {
         }
         return true;
       }),
-    [detailsByMemberId, fromDate, genderFilter, memberFilter, membershipFilter, members, searchTerm, serviceFilter, toDate, trainerFilter],
+    [dateRangeError, detailsByMemberId, fromDate, genderFilter, memberFilter, membershipFilter, members, searchTerm, serviceFilter, toDate, trainerFilter],
   );
 
   const totalPages = Math.max(1, Math.ceil(filteredMembers.length / pageSize));
@@ -584,6 +610,7 @@ export default function MembersPage() {
     () =>
       filteredMembers.map((member) => {
         const details = detailsByMemberId[member.id];
+        const membershipPortfolio = details?.membershipNames || [];
         return {
           memberName: member.name,
           mobile: member.mobile,
@@ -597,7 +624,7 @@ export default function MembersPage() {
           recordStatus: details?.recordStatus || "ACTIVE",
           trainers: details?.trainerNames.join(", ") || "-",
           services: details?.serviceTypes.join(", ") || "-",
-          memberships: details?.membershipNames.join(", ") || "-",
+          memberships: membershipPortfolio.join(", ") || "-",
           joinedAt: details?.inquiryCreatedAt || "-",
         };
       }),
@@ -864,6 +891,7 @@ export default function MembersPage() {
                 type="date"
                 value={fromDate}
                 onChange={(event) => setFromDate(event.target.value)}
+                max={toDate || undefined}
                 className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
               />
             </label>
@@ -873,6 +901,7 @@ export default function MembersPage() {
                 type="date"
                 value={toDate}
                 onChange={(event) => setToDate(event.target.value)}
+                min={fromDate || undefined}
                 className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
               />
             </label>
@@ -926,12 +955,16 @@ export default function MembersPage() {
 
         {error ? <p className="mt-3 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">{error}</p> : null}
 
+        {dateRangeError ? (
+          <p className="mt-4 rounded-2xl border border-amber-400/20 bg-amber-400/10 px-4 py-3 text-sm text-amber-100">{dateRangeError}</p>
+        ) : null}
+
         <div className="mt-4 rounded-[24px] border border-white/8 bg-[#111821]">
           <table className="min-w-full text-sm">
             <thead>
               <tr className="bg-white/[0.03] text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
                 <th className="px-4 py-3">Member</th>
-                <th className="px-4 py-3">Member Code</th>
+                <th className="px-4 py-3">Mobile Number</th>
                 <th className="px-4 py-3">Membership</th>
                 <th className="px-4 py-3">Gender</th>
                 <th className="px-4 py-3">Added By</th>
@@ -959,20 +992,25 @@ export default function MembersPage() {
                     >
                       <td className="px-4 py-3">
                         <p className="font-medium text-white">{member.name}</p>
-                        <p className="text-xs text-slate-400">{member.mobile}</p>
+                        <p className="text-xs text-slate-400">{details?.memberCode || resolveMemberCode(member, details)}</p>
                         <p className="text-xs text-slate-400">{member.email || "-"}</p>
                       </td>
-                      <td className="px-4 py-3 text-slate-200">{details?.memberCode || resolveMemberCode(member, details)}</td>
+                      <td className="px-4 py-3 text-slate-200">{member.mobile || "-"}</td>
                       <td className="px-4 py-3">
                         <div className="flex flex-col gap-1">
                           <span
                             className={`inline-flex w-fit rounded-full border px-2 py-0.5 text-xs font-semibold ${lifecycleClasses(lifecycle)}`}
                           >
-                            {lifecycle}
+                            {formatDisplayLabel(lifecycle)}
                           </span>
                           <span className="text-xs text-slate-400">
                             {details?.activePlan || (loadingSummaries ? "Loading..." : "-")}
                           </span>
+                          {details?.membershipNames && details.membershipNames.length > 1 ? (
+                            <span className="text-[11px] text-slate-500">
+                              Also: {details.membershipNames.filter((name) => name !== details.activePlan).join(", ")}
+                            </span>
+                          ) : null}
                         </div>
                       </td>
                       <td className="px-4 py-3 text-slate-300">{details?.gender || "-"}</td>

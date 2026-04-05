@@ -164,6 +164,9 @@ function mapFreezeHistory(payload: unknown): FreezeHistoryEntry[] {
       status: toString(entry, ["status"]) || undefined,
       reason: toString(entry, ["reason", "notes"]) || undefined,
       days: toNumber(entry, ["days", "freezeDays", "durationDays"]) || undefined,
+      resumedAt: toString(entry, ["resumedAt"]) || undefined,
+      completionReason: toString(entry, ["completionReason"]) || undefined,
+      restoredPauseDays: toNumber(entry, ["restoredPauseDays"]) || undefined,
       requestedAt: toString(entry, ["requestedAt", "createdAt"]) || undefined,
       approvedAt: toString(entry, ["approvedAt", "updatedAt"]) || undefined,
       createdAt: toString(entry, ["createdAt"]) || undefined,
@@ -638,6 +641,30 @@ export const engagementService = {
       token,
       method: "POST",
       body: payload,
+    });
+
+    const data = unwrapData<unknown>(response);
+    return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
+  },
+
+  async getActiveFreeze(token: string, memberId: string | number): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "engagement",
+      path: `/api/retention/member/${memberId}/freeze`,
+      token,
+    });
+
+    const data = unwrapData<unknown>(response);
+    return typeof data === "object" && data !== null ? (data as Record<string, unknown>) : {};
+  },
+
+  async unfreezeMembership(token: string, memberId: string | number): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "engagement",
+      path: `/api/retention/member/${memberId}/unfreeze`,
+      token,
+      method: "POST",
+      body: {},
     });
 
     const data = unwrapData<unknown>(response);

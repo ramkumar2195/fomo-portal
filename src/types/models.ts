@@ -18,6 +18,7 @@ export interface UserDirectoryItem {
   defaultBranchId?: string;
   defaultTrainerStaffId?: string;
   sourceInquiryId?: string;
+  createdAt?: string;
 }
 
 export interface DashboardMetrics {
@@ -377,6 +378,9 @@ export interface FreezeHistoryEntry {
   status?: string;
   reason?: string;
   days?: number;
+  resumedAt?: string;
+  completionReason?: string;
+  restoredPauseDays?: number;
   requestedAt?: string;
   approvedAt?: string;
   createdAt?: string;

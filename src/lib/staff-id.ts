@@ -5,13 +5,9 @@ export function resolveStaffId(user?: AuthUser | null): number | null {
     return null;
   }
 
-  const fromMobile = Number(user.mobile);
-  if (!Number.isNaN(fromMobile) && Number.isFinite(fromMobile)) {
-    return fromMobile;
-  }
-
+  // Use the database user ID (numeric), not the mobile number
   const fromId = Number(user.id);
-  if (!Number.isNaN(fromId) && Number.isFinite(fromId)) {
+  if (!Number.isNaN(fromId) && Number.isFinite(fromId) && fromId > 0) {
     return fromId;
   }
 

@@ -89,7 +89,7 @@ export default function LoginPage() {
           <button
             type="submit"
             disabled={isSubmitting}
-            className="w-full rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white transition hover:bg-slate-700 disabled:cursor-not-allowed disabled:bg-slate-500"
+            className="w-full rounded-xl border border-[#c42924]/40 bg-[#c42924] px-4 py-2 text-sm font-semibold text-white transition hover:bg-[#a81f1c] disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-slate-500"
           >
             {isSubmitting ? "Signing in..." : "Login"}
           </button>

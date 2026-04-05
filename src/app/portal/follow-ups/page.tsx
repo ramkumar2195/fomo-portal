@@ -14,19 +14,8 @@ import { subscriptionService } from "@/lib/api/services/subscription-service";
 import { FollowUpRecord } from "@/types/follow-up";
 import { InquiryRecord } from "@/types/inquiry";
 
-function getInquiryType(inquiry?: InquiryRecord): "ENQUIRY" | "RENEWAL" | "EXPIRED" | "IRREGULAR" {
-  const status = String(inquiry?.status || "").toUpperCase();
-  if (status === "CONVERTED") {
-    return "RENEWAL";
-  }
-  if (status === "LOST") {
-    return "EXPIRED";
-  }
-  if (status === "NOT_INTERESTED") {
-    return "IRREGULAR";
-  }
-
-  return "ENQUIRY";
+function getFollowUpSourceType(item: FollowUpRecord): "MEMBER" | "INQUIRY" {
+  return item.memberId ? "MEMBER" : "INQUIRY";
 }
 
 function getPriority(dueAt: string, overdue: boolean): "HIGH" | "MEDIUM" | "LOW" {
@@ -69,29 +58,18 @@ function priorityClass(priority: "HIGH" | "MEDIUM" | "LOW"): string {
   return "bg-slate-400 text-white";
 }
 
-function typeClass(type: "ENQUIRY" | "RENEWAL" | "EXPIRED" | "IRREGULAR"): string {
-  if (type === "RENEWAL") {
-    return "bg-violet-50 text-violet-700";
-  }
-  if (type === "EXPIRED") {
-    return "bg-rose-50 text-rose-700";
-  }
-  if (type === "IRREGULAR") {
-    return "bg-slate-100 text-slate-700";
+function typeClass(type: "MEMBER" | "INQUIRY"): string {
+  if (type === "MEMBER") {
+    return "bg-emerald-50 text-emerald-700";
   }
   return "bg-blue-50 text-blue-700";
 }
 
-function toScheduleLabel(value: string): string {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return value;
-  }
-
-  return date.toLocaleTimeString("en-IN", {
-    hour: "2-digit",
-    minute: "2-digit",
-  });
+function humanizeChannel(value: string): string {
+  return value
+    .replace(/[_-]+/g, " ")
+    .toLowerCase()
+    .replace(/\b\w/g, (character) => character.toUpperCase());
 }
 
 function getRequirement(item: FollowUpRecord, inquiry?: InquiryRecord): string {
@@ -364,7 +342,7 @@ export default function FollowUpsPage() {
           <div className="divide-y divide-gray-100">
             {scheduledQueue.map((item) => {
               const inquiry = inquiriesById[item.inquiryId];
-              const inquiryType = getInquiryType(inquiry);
+              const sourceType = getFollowUpSourceType(item);
               const priority = getPriority(item.dueAt, item.overdue);
               const requirement = getRequirement(item, inquiry);
               const clientName = inquiry?.fullName || "Unnamed Client";
@@ -378,8 +356,8 @@ export default function FollowUpsPage() {
                   <div className="flex-1">
                     <div className="mb-1 flex flex-wrap items-center gap-2">
                       <p className="font-semibold text-gray-900">{clientName}</p>
-                      <span className={`rounded px-2 py-0.5 text-[10px] font-bold tracking-wide uppercase ${typeClass(inquiryType)}`}>
-                        {inquiryType}
+                      <span className={`rounded px-2 py-0.5 text-[10px] font-bold tracking-wide uppercase ${typeClass(sourceType)}`}>
+                        {sourceType}
                       </span>
                       <span className={`rounded px-2 py-0.5 text-[10px] font-bold tracking-wide uppercase ${priorityClass(priority)}`}>
                         {priority} PRIORITY
@@ -398,7 +376,7 @@ export default function FollowUpsPage() {
                     </div>
                     <p className="text-sm text-gray-600">{requirement}</p>
                     <p className="mt-1 text-xs text-gray-400">
-                      Scheduled for {toScheduleLabel(item.dueAt)} • {formatDateTime(item.dueAt)} • Channel: {item.channel}
+                      Scheduled for {formatDateTime(item.dueAt)} • Channel: {humanizeChannel(item.channel)}
                     </p>
                   </div>
                   <div className="flex flex-wrap gap-2">

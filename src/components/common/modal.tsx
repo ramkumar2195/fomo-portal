@@ -24,8 +24,13 @@ export function Modal({ open, onClose, title, size = "md", children, footer }: M
     const handleKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") onClose();
     };
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
     document.addEventListener("keydown", handleKey);
-    return () => document.removeEventListener("keydown", handleKey);
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKey);
+    };
   }, [open, onClose]);
 
   if (!open) return null;

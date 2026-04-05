@@ -473,13 +473,13 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                   href={section.href}
                   title={collapsed ? section.label : undefined}
                   onClick={() => setMobileOpen(false)}
-                  className={`group flex items-center gap-[9px] rounded-[10px] px-[10px] py-[8px] text-[13px] transition ${
+                  className={`group flex items-center gap-[9px] rounded-[10px] px-[10px] py-[8px] text-[13px] font-medium transition ${
                     active
-                      ? "bg-[#C42924] font-medium text-white"
-                      : "text-slate-400 hover:bg-white/[0.05] hover:text-white"
+                      ? "bg-[#1a1110] text-white"
+                      : "text-slate-200 hover:bg-white/[0.05] hover:text-white"
                   }`}
                 >
-                  <span className="shrink-0">{section.icon}</span>
+                  <span className={`shrink-0 ${active ? "text-[#C42924]" : "text-slate-300 group-hover:text-[#C42924]"}`}>{section.icon}</span>
                   {!collapsed && <span className="truncate">{section.label}</span>}
                 </Link>
               );
@@ -505,16 +505,16 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                     setOpenSectionKey((current) => (current === section.key ? null : section.key));
                   }}
                   className={`flex w-full items-center gap-[9px] rounded-[10px] px-[10px] py-[8px] text-left transition ${
-                    sectionActive ? "bg-white/[0.06] text-[#C42924]" : "text-slate-500 hover:bg-white/[0.03]"
+                    sectionActive ? "bg-[#1a1110] text-white" : "text-slate-200 hover:bg-white/[0.03] hover:text-white"
                   }`}
                   title={collapsed ? section.label : undefined}
                 >
-                  <span className="shrink-0">{section.icon}</span>
+                  <span className={`shrink-0 ${sectionActive ? "text-[#C42924]" : "text-slate-300"}`}>{section.icon}</span>
                   {!collapsed ? (
                     <>
-                      <span className="truncate text-[13px] text-slate-200">{section.label}</span>
+                      <span className="truncate text-[13px] font-medium">{section.label}</span>
                       <ChevronDown
-                        className={`ml-auto h-4 w-4 transition-transform ${sectionOpen ? "rotate-180" : ""}`}
+                        className={`ml-auto h-4 w-4 transition-transform ${sectionOpen ? "rotate-180" : ""} ${sectionActive ? "text-[#C42924]" : "text-slate-400"}`}
                       />
                     </>
                   ) : null}
@@ -529,13 +529,13 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                         href={item.href}
                         title={collapsed ? item.label : undefined}
                         onClick={() => setMobileOpen(false)}
-                        className={`group flex items-center gap-[9px] rounded-[10px] px-[10px] py-[7px] text-[12px] transition ${
+                        className={`group flex items-center gap-[9px] rounded-[10px] px-[10px] py-[7px] text-[12px] font-medium transition ${
                           active
-                            ? "font-medium text-[#C42924]"
-                            : "text-slate-400 hover:bg-white/[0.05] hover:text-white"
+                            ? "bg-[#1a1110] text-white"
+                            : "text-slate-300 hover:bg-white/[0.05] hover:text-white"
                         }`}
                       >
-                        <span className="shrink-0 opacity-70">{item.icon}</span>
+                        <span className={`shrink-0 ${active ? "text-[#C42924]" : "text-slate-400 group-hover:text-[#C42924]"}`}>{item.icon}</span>
                         {!collapsed && <span className="truncate">{item.label}</span>}
                       </Link>
                     );

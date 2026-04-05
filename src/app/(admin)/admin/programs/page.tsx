@@ -15,6 +15,17 @@ import { TrainingProgramSummary } from "@/types/admin";
 
 const STATUS_OPTIONS = ["ALL", "DRAFT", "ACTIVE", "PAUSED", "COMPLETED"];
 const EDITABLE_STATUS_OPTIONS = STATUS_OPTIONS.filter((s) => s !== "ALL");
+const ACTIVE_PROGRAM_NAMES = new Set([
+  "Yoga",
+  "Zumba",
+  "HIIT",
+  "Coreflex",
+  "CrossFit",
+  "Kickboxing",
+  "Calisthenics Kids",
+  "Calisthenics Self",
+  "Calisthenics Adult",
+]);
 
 interface BranchOption {
   label: string;
@@ -125,7 +136,7 @@ export default function ProgramsPage() {
   }, [loadPrograms]);
 
   const filtered = useMemo(() => {
-    let list = programs;
+    let list = programs.filter((program) => ACTIVE_PROGRAM_NAMES.has(program.name));
     if (statusFilter !== "ALL") {
       list = list.filter((p) => p.status?.toUpperCase() === statusFilter);
     }

@@ -14,7 +14,9 @@ import {
   MoreHorizontal,
   Pencil,
   Printer,
+  RotateCcw,
   Share2,
+  Snowflake,
   UserRound,
   Wallet,
 } from "lucide-react";
@@ -98,11 +100,14 @@ const TAB_ORDER: Array<{ key: MemberProfileTabKey; label: string }> = [
 type ActionModalKey =
   | "edit-profile"
   | "freeze"
+  | "unfreeze"
+  | "unfreeze-billing"
   | "renew"
   | "renew-billing"
   | "upgrade"
   | "upgrade-billing"
   | "pt-billing"
+  | "pt-reschedule"
   | "downgrade"
   | "transfer"
   | "pt"
@@ -119,7 +124,7 @@ type MembershipFamily =
   | "GROUP_CLASS"
   | "CREDIT_PACK"
   | "UNKNOWN";
-type MembershipActionKey = "renew" | "upgrade" | "downgrade" | "freeze" | "transfer" | "pt" | "visit";
+type MembershipActionKey = "renew" | "upgrade" | "downgrade" | "freeze" | "unfreeze" | "transfer" | "pt" | "visit";
 
 interface MembershipActionState {
   key: MembershipActionKey;
@@ -181,7 +186,7 @@ interface CommercialBreakdown {
 }
 
 interface CompletedBillingState {
-  context: "renewal" | "upgrade" | "pt";
+  context: "renewal" | "upgrade" | "pt" | "balance";
   title: string;
   message: string;
   invoiceId: number;
@@ -757,6 +762,9 @@ function statusTone(status: string): string {
   }
   if (normalized.includes("IRREGULAR") || normalized.includes("AT_RISK") || normalized.includes("PENDING")) {
     return "border-amber-300 bg-amber-100/10 text-amber-200";
+  }
+  if (normalized.includes("PAUSED") || normalized.includes("FROZEN")) {
+    return "border-sky-400/40 bg-sky-500/12 text-sky-100";
   }
   if (normalized.includes("EXPIRED") || normalized.includes("INACTIVE") || normalized.includes("LAPSED")) {
     return "border-rose-300 bg-rose-100/10 text-rose-200";
@@ -1489,6 +1497,19 @@ export default function MemberProfilePage() {
     receivedAmount: "",
     balanceDueDate: "",
   });
+  const [resumeBillingForm, setResumeBillingForm] = useState({
+    paymentMode: "UPI",
+  });
+  const [ptRescheduleForm, setPtRescheduleForm] = useState({
+    sessionId: "",
+    currentDate: "",
+    currentTime: "",
+    newDate: "",
+    newTime: "",
+    reason: "",
+  });
+  const [ptAvailabilityOptions, setPtAvailabilityOptions] = useState<unknown[]>([]);
+  const [ptCalendarEntries, setPtCalendarEntries] = useState<unknown[]>([]);
   const [visitForm, setVisitForm] = useState({
     paymentMode: "UPI",
   });
@@ -2316,6 +2337,13 @@ export default function MemberProfilePage() {
   );
   const balanceDue = roundedInvoiceStats.balance;
   const roundedBalanceDue = roundedInvoiceStats.balance;
+  const normalizedPaymentStatus = String(paymentStatus || "").trim().toUpperCase();
+  const normalizedMembershipStatus = String(membershipStatus || "").trim().toUpperCase();
+  const hasOutstandingBalance = roundedBalanceDue > 0;
+  const isAccountPausedForPayment =
+    normalizedMembershipStatus === "PAUSED" &&
+    hasOutstandingBalance &&
+    normalizedPaymentStatus !== "PAID";
   const ptTabData = tabData["personal-training"] as { assignments?: unknown[]; sessions?: unknown[] } | undefined;
   const ptAssignments = Array.isArray(ptTabData?.assignments) ? ptTabData.assignments : (Array.isArray(tabData["personal-training"]) ? tabData["personal-training"] as unknown[] : []);
   const ptSessions = Array.isArray(ptTabData?.sessions) ? ptTabData.sessions : [];
@@ -2514,9 +2542,16 @@ export default function MemberProfilePage() {
     portfolioPrimaryMembership?.durationMonths || durationMonths,
     portfolioPrimaryMembership?.validityDays || validityDays,
   );
-  const visibleCurrentMembershipStatus = humanizeLabel(
-    portfolioPrimaryMembership?.status || membershipStatus,
-  );
+  const normalizedVisibleCurrentMembershipStatus = String(
+    portfolioPrimaryMembership?.status || membershipStatus || "",
+  ).trim().toUpperCase();
+  const isVisibleCurrentMembershipPaymentPending =
+    normalizedVisibleCurrentMembershipStatus === "PAUSED" &&
+    hasOutstandingBalance &&
+    normalizedPaymentStatus !== "PAID";
+  const visibleCurrentMembershipStatus = isVisibleCurrentMembershipPaymentPending
+    ? "Paused"
+    : humanizeLabel(portfolioPrimaryMembership?.status || membershipStatus);
   const selectedEntitlementRecords = normalizedEntitlementRecords.filter((entry) => {
     const linkedSubscriptionId = extractSubscriptionIdFromEntitlementSource(entry.source);
     if (!linkedSubscriptionId) {
@@ -2533,6 +2568,14 @@ export default function MemberProfilePage() {
   ) || (currentCatalogVariant?.passBenefitDays || 0) > 0;
   const normalizedProductCode = selectedProductCode.toUpperCase();
   const normalizedCategoryCode = selectedProductCategoryCode.toUpperCase();
+  const selectedMembershipStatusRaw = String(selectedMembershipRecord?.status || membershipStatus || "").trim().toUpperCase();
+  const isSelectedMembershipPaymentPendingPause =
+    selectedMembershipStatusRaw === "PAUSED" &&
+    hasOutstandingBalance &&
+    normalizedPaymentStatus !== "PAID";
+  const isSelectedMembershipOperationalFreeze =
+    selectedMembershipStatusRaw === "PAUSED" &&
+    !isSelectedMembershipPaymentPendingPause;
   const membershipFamily = deriveMembershipFamily(normalizedCategoryCode, normalizedProductCode || selectedPlanLabel || rawPlanName);
   const isGroupClassPlan = membershipFamily === "GROUP_CLASS";
   const isFlagshipPlan = membershipFamily === "FLAGSHIP";
@@ -2646,6 +2689,15 @@ export default function MemberProfilePage() {
     : selectedExpiryDate;
   const freezePreviewRemainingDays = Math.max(freezeMaxDays - freezePreviewDays, 0);
   const canShowFreezeAction = hasPrimaryMembership && canOperateMemberships && hasFreezeEntitlement && !isFlexPlan && !isGroupClassPlan && !isPtPlan;
+  const canShowBalanceCollectionAction =
+    hasPrimaryMembership &&
+    canOperateMemberships &&
+    isSelectedMembershipPaymentPendingPause;
+  const canShowManualUnfreezeAction =
+    canShowFreezeAction &&
+    isSelectedMembershipOperationalFreeze &&
+    Boolean(selectedStartDate) &&
+    selectedStartDate <= todayIsoDate;
   const canRenewMembership = hasPrimaryMembership;
   const canShowUpgradeMembershipAction =
     hasPrimaryMembership &&
@@ -2680,6 +2732,9 @@ export default function MemberProfilePage() {
     selectedCheckInsRemaining <= 0 &&
     selectedExtraVisitPrice > 0;
   const membershipActions: MembershipActionState[] = useMemo(() => {
+    if (canShowBalanceCollectionAction) {
+      return [{ key: "unfreeze", label: "Unfreeze", enabled: true }];
+    }
     const actions: MembershipActionState[] = [];
     if (canRenewMembership) {
       actions.push({ key: "renew", label: "Renew", enabled: true });
@@ -2687,7 +2742,9 @@ export default function MemberProfilePage() {
     if (canShowUpgradeMembershipAction) {
       actions.push({ key: "upgrade", label: "Upgrade", enabled: true });
     }
-    if (canShowFreezeAction) {
+    if (canShowManualUnfreezeAction) {
+      actions.push({ key: "unfreeze", label: "Unfreeze", enabled: true });
+    } else if (canShowFreezeAction) {
       actions.push({ key: "freeze", label: "Freeze", enabled: true });
     }
     if (canTransferMembership) {
@@ -2716,10 +2773,12 @@ export default function MemberProfilePage() {
     }
     return actions;
   }, [
+    canShowBalanceCollectionAction,
     canAddFlexVisit,
     canAddPtMembershipAction,
     canRenewMembership,
     canShowFreezeAction,
+    canShowManualUnfreezeAction,
     canTransferMembership,
     canShowUpgradeMembershipAction,
     isAdminOperator,
@@ -3248,6 +3307,7 @@ export default function MemberProfilePage() {
     }
     return next;
   }, [assignedTrainer, balanceDue, membershipStatus, renewalWindowDays, roundedBalanceDue, trainerLabel]);
+  const displayMembershipStatus = isAccountPausedForPayment ? "Paused" : humanizeLabel(membershipStatus);
 
   const resetActionFeedback = () => {
     setActionError(null);
@@ -3256,6 +3316,14 @@ export default function MemberProfilePage() {
 
   const openActionModal = (modal: ActionModalKey) => {
     resetActionFeedback();
+    if (modal === "unfreeze" && canShowBalanceCollectionAction) {
+      setResumeBillingForm({
+        paymentMode: "UPI",
+      });
+      setRenewCardSubtype("DEBIT_CARD");
+      setActionModal("unfreeze-billing");
+      return;
+    }
     if (modal === "renew" || modal === "upgrade") {
       const defaultVariantId = modal === "upgrade" ? "" : selectedProductVariantId || "";
       const defaultVariant =
@@ -3466,7 +3534,7 @@ export default function MemberProfilePage() {
     }
 
     const operatorId = Number((user as { id?: string | number } | null)?.id || 0);
-    const assignedToStaffId = Number(editForm.clientRepStaffId || 0) || undefined;
+    const assignedToStaffId = operatorId > 0 ? operatorId : Number(editForm.clientRepStaffId || 0) || undefined;
 
     setActionBusy(true);
     setActionError(null);
@@ -3588,7 +3656,7 @@ export default function MemberProfilePage() {
     }
 
     const operatorId = Number((user as { id?: string | number } | null)?.id || 0);
-    const assignedToStaffId = Number(editForm.clientRepStaffId || 0) || undefined;
+    const assignedToStaffId = operatorId > 0 ? operatorId : Number(editForm.clientRepStaffId || 0) || undefined;
 
     setActionBusy(true);
     setActionError(null);
@@ -3757,6 +3825,145 @@ export default function MemberProfilePage() {
     }
   };
 
+  const handleUnfreeze = async () => {
+    if (!token || !memberId) {
+      return;
+    }
+    if (canShowBalanceCollectionAction) {
+      setActionBusy(true);
+      setActionError(null);
+      try {
+        let invoices = (tabData.billing as LifecycleBillingTabState | undefined)?.invoices || [];
+
+        if (invoices.length === 0) {
+          const billingPayload = await Promise.all([
+            subscriptionService.getMemberBillingInvoices(token, memberId),
+            subscriptionService.getMemberBillingReceipts(token, memberId),
+          ]).then(([loadedInvoices, loadedReceipts]) => ({ invoices: loadedInvoices, receipts: loadedReceipts }));
+          invoices = billingPayload.invoices;
+          setTabData((current) => ({ ...current, billing: billingPayload }));
+        }
+
+        const outstandingInvoice = [...invoices]
+          .filter((invoice) => roundAmount(invoice.balanceAmount || 0) > 0)
+          .sort((left, right) => {
+            const leftTime = left.issuedAt ? new Date(left.issuedAt).getTime() : 0;
+            const rightTime = right.issuedAt ? new Date(right.issuedAt).getTime() : 0;
+            return rightTime - leftTime;
+          })[0];
+
+        if (!outstandingInvoice) {
+          throw new Error("No outstanding invoice was found for this paused membership.");
+        }
+
+        const invoiceId = Number(outstandingInvoice.id || 0);
+        if (!Number.isFinite(invoiceId) || invoiceId <= 0) {
+          throw new Error("The outstanding invoice reference is invalid.");
+        }
+
+        const outstandingBalance = roundAmount(outstandingInvoice.balanceAmount || roundedBalanceDue);
+        if (outstandingBalance <= 0) {
+          throw new Error("This membership no longer has an outstanding balance.");
+        }
+
+        const paymentReceipt = await subscriptionService.recordPayment(token, invoiceId, {
+          memberId: Number(memberId),
+          amount: outstandingBalance,
+          paymentMode: resumeBillingForm.paymentMode,
+          inquiryId: sourceInquiryId || undefined,
+        });
+
+        const pausedSubscriptionIds = Array.from(
+          new Set(
+            currentPortfolioMembershipItems
+              .filter((membership) => String(membership.status || "").trim().toUpperCase() === "PAUSED")
+              .map((membership) => Number(membership.subscriptionId))
+              .filter((subscriptionId) => Number.isFinite(subscriptionId) && subscriptionId > 0),
+          ),
+        );
+
+        const remainingBalance = roundAmount(Number(paymentReceipt.balanceAmount || 0));
+        let activationWarning = "";
+
+        if (remainingBalance === 0 && pausedSubscriptionIds.length > 0) {
+          try {
+            await Promise.all(
+              pausedSubscriptionIds.map((subscriptionId) =>
+                subscriptionService.activateMembership(token, subscriptionId),
+              ),
+            );
+          } catch {
+            activationWarning = " Payment was collected, but membership activation needs a manual retry.";
+          }
+        }
+
+        await reloadShell();
+        setTabData((current) => ({
+          ...current,
+          billing: undefined,
+          subscriptions: undefined,
+          "freeze-history": undefined,
+        }));
+
+        setCompletedBilling({
+          context: "balance",
+          title: remainingBalance === 0 ? "Balance Collected" : "Balance Payment Recorded",
+          message:
+            remainingBalance === 0
+              ? `Outstanding balance for invoice ${outstandingInvoice.invoiceNumber} was collected successfully.${activationWarning}`
+              : `Payment was recorded for invoice ${outstandingInvoice.invoiceNumber}. ${formatRoundedInr(remainingBalance)} is still pending.`,
+          invoiceId,
+          invoiceNumber: outstandingInvoice.invoiceNumber || `invoice-${invoiceId}`,
+          receiptId: paymentReceipt.receiptId,
+          receiptNumber: paymentReceipt.receiptNumber || undefined,
+          paymentStatus: paymentReceipt.paymentStatus || (remainingBalance > 0 ? "PARTIALLY_PAID" : "PAID"),
+          totalPaidAmount: Number(paymentReceipt.totalPaidAmount || outstandingBalance),
+          balanceAmount: remainingBalance,
+        });
+        setActionModal(null);
+      } catch (error) {
+        setActionError(
+          error instanceof ApiError
+            ? error.message
+            : error instanceof Error
+              ? error.message
+              : "Unable to collect the outstanding balance.",
+        );
+      } finally {
+        setActionBusy(false);
+      }
+      return;
+    }
+    if (!canShowManualUnfreezeAction) {
+      setActionError("Unfreeze is not available for this membership.");
+      return;
+    }
+
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      const response = await engagementService.unfreezeMembership(token, memberId);
+      await reloadShell();
+      setTabData((current) => ({
+        ...current,
+        "freeze-history": undefined,
+        attendance: undefined,
+        subscriptions: undefined,
+      }));
+      const restoredDays = pickNumber(response, ["restoredPauseDays"]);
+      setActionSuccess(
+        restoredDays > 0
+          ? `Membership resumed. ${restoredDays} unused pause day${restoredDays === 1 ? "" : "s"} credited back.`
+          : "Membership resumed.",
+      );
+      setActionModal(null);
+    } catch (error) {
+      setActionError(error instanceof ApiError ? error.message : "Unable to resume membership.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const handleAddVisit = async () => {
     if (!token || !memberId || !selectedSubscriptionId) {
       return;
@@ -3893,7 +4100,7 @@ export default function MemberProfilePage() {
     }
 
     const operatorId = Number((user as { id?: string | number } | null)?.id || 0);
-    const assignedToStaffId = Number(editForm.clientRepStaffId || 0) || undefined;
+    const assignedToStaffId = operatorId > 0 ? operatorId : Number(editForm.clientRepStaffId || 0) || undefined;
 
     setActionBusy(true);
     setActionError(null);
@@ -3998,6 +4205,97 @@ export default function MemberProfilePage() {
       setActionModal(null);
     } catch (error) {
       setActionError(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Unable to add PT.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const reloadPtTab = () => {
+    setTabData((current) => ({ ...current, "personal-training": undefined }));
+    setLoadingTabs((current) => ({ ...current, "personal-training": false }));
+  };
+
+  const handlePtSessionAction = async (
+    sessionId: string,
+    action: "start" | "end" | "complete" | "cancel" | "no-show",
+  ) => {
+    if (!token) {
+      return;
+    }
+    try {
+      if (action === "start") {
+        await trainingService.startSession(token, sessionId, "PORTAL");
+      } else if (action === "end") {
+        await trainingService.endSession(token, sessionId, "PORTAL");
+      } else if (action === "complete") {
+        await trainingService.markSessionComplete(token, sessionId);
+      } else if (action === "cancel") {
+        await trainingService.cancelPtSession(token, sessionId);
+      } else if (action === "no-show") {
+        await trainingService.markSessionNoShow(token, sessionId);
+      }
+      reloadPtTab();
+      setActionSuccess(`Session ${action === "start" ? "started" : action === "end" ? "ended" : action} successfully.`);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : `Failed to ${action} session.`);
+    }
+  };
+
+  const openPtRescheduleModal = async (session: RecordLike) => {
+    if (!token) {
+      return;
+    }
+    const sessionId = pickString(session, ["id"]);
+    const coachId = pickString(session, ["coachId"]) || pickString(activePtAssignmentRecord, ["coachId"]);
+    if (!sessionId || !coachId) {
+      setActionError("Coach or session details are missing for reschedule.");
+      return;
+    }
+
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      const [availabilityPage, calendarPage] = await Promise.all([
+        trainingService.getTrainerAvailability(token, coachId, 0, 100).catch(() => ({ content: [] })),
+        trainingService.getPtCalendar(token, coachId, 0, 100).catch(() => ({ content: [] })),
+      ]);
+      setPtAvailabilityOptions(Array.isArray(availabilityPage.content) ? availabilityPage.content : []);
+      setPtCalendarEntries(Array.isArray(calendarPage.content) ? calendarPage.content : []);
+      setPtRescheduleForm({
+        sessionId,
+        currentDate: pickString(session, ["sessionDate"]) || "",
+        currentTime: pickString(session, ["sessionTime", "slotStartTime"]) || "",
+        newDate: pickString(session, ["sessionDate"]) || "",
+        newTime: pickString(session, ["sessionTime", "slotStartTime"]) || "",
+        reason: "",
+      });
+      setActionModal("pt-reschedule");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Unable to load coach calendar.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handlePtReschedule = async () => {
+    if (!token || !ptRescheduleForm.sessionId || !ptRescheduleForm.newDate || !ptRescheduleForm.newTime) {
+      setActionError("Choose the new session date and time.");
+      return;
+    }
+
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await trainingService.rescheduleSession(token, ptRescheduleForm.sessionId, {
+        newDate: ptRescheduleForm.newDate,
+        newTime: ptRescheduleForm.newTime,
+        reason: ptRescheduleForm.reason || undefined,
+      });
+      reloadPtTab();
+      setActionSuccess("PT session rescheduled.");
+      setActionModal(null);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Unable to reschedule PT session.");
     } finally {
       setActionBusy(false);
     }
@@ -4636,7 +4934,12 @@ export default function MemberProfilePage() {
                 const isPtCard = membership.family === "PT";
                 const isSelectedCard = selectedMembershipRecord?.subscriptionId === membership.subscriptionId;
                 const isMenuOpen = openMembershipMenuId === membership.subscriptionId;
-                const isFrozenCard = String(membership.status || "").toUpperCase() === "PAUSED";
+                const normalizedCardStatus = String(membership.status || "").trim().toUpperCase();
+                const isPausedCard =
+                  normalizedCardStatus === "PAUSED" &&
+                  hasOutstandingBalance &&
+                  normalizedPaymentStatus !== "PAID";
+                const isFrozenCard = normalizedCardStatus === "PAUSED" && !isPausedCard;
                 const ptTotalSessions = membership.includedPtSessions || 0;
                 const ptUsedSessions = isPtCard ? ptConsumedSessions : 0;
                 const ptRemainingSessions = isPtCard ? Math.max(ptTotalSessions - ptUsedSessions, 0) : 0;
@@ -4691,6 +4994,11 @@ export default function MemberProfilePage() {
                         {isPrimaryCard ? (
                           <span className="rounded-full border border-lime-400/30 bg-lime-500/15 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-lime-100">
                             Primary
+                          </span>
+                        ) : null}
+                        {isPausedCard ? (
+                          <span className="rounded-full border border-amber-300/30 bg-amber-500/15 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-amber-100">
+                            Paused
                           </span>
                         ) : null}
                         {isFrozenCard ? (
@@ -4748,7 +5056,7 @@ export default function MemberProfilePage() {
                                 {action.label}
                               </button>
                             ))}
-                            {isPtCard || isTransformationCard ? (
+                            {((isPtCard || isTransformationCard) && !canShowBalanceCollectionAction) ? (
                               <button
                                 type="button"
                                 onClick={() => {
@@ -5117,23 +5425,6 @@ export default function MemberProfilePage() {
           return dayA - dayB;
         });
 
-        const handleSessionAction = async (sessionId: string, action: "start" | "end" | "complete" | "cancel" | "no-show") => {
-          if (!token) return;
-          try {
-            if (action === "start") await trainingService.startSession(token, sessionId, "PORTAL");
-            else if (action === "end") await trainingService.endSession(token, sessionId, "PORTAL");
-            else if (action === "complete") await trainingService.markSessionComplete(token, sessionId);
-            else if (action === "cancel") await trainingService.cancelPtSession(token, sessionId);
-            else if (action === "no-show") await trainingService.markSessionNoShow(token, sessionId);
-            // Reload PT tab data
-            setTabData((current) => ({ ...current, "personal-training": undefined }));
-            setLoadingTabs((current) => ({ ...current, "personal-training": false }));
-            setActionSuccess(`Session ${action === "start" ? "started" : action === "end" ? "ended" : action} successfully.`);
-          } catch (err) {
-            setActionError(err instanceof Error ? err.message : `Failed to ${action} session.`);
-          }
-        };
-
         const handleGenerateSessions = async () => {
           if (!token || !activeAssignId) return;
           const fromDate = new Date().toISOString().split("T")[0];
@@ -5318,21 +5609,25 @@ export default function MemberProfilePage() {
                               <div className="flex gap-1">
                                 {sessStatus === "SCHEDULED" && sessId ? (
                                   <>
-                                    <button type="button" onClick={() => void handleSessionAction(sessId, "start")}
+                                    <button type="button" onClick={() => void handlePtSessionAction(sessId, "start")}
                                       className="rounded-lg bg-blue-500/20 px-2 py-1 text-xs font-semibold text-blue-200 hover:bg-blue-500/30">
                                       Start
                                     </button>
-                                    <button type="button" onClick={() => void handleSessionAction(sessId, "no-show")}
+                                    <button type="button" onClick={() => void openPtRescheduleModal(rec)}
+                                      className="rounded-lg bg-violet-500/20 px-2 py-1 text-xs font-semibold text-violet-200 hover:bg-violet-500/30">
+                                      Reschedule
+                                    </button>
+                                    <button type="button" onClick={() => void handlePtSessionAction(sessId, "no-show")}
                                       className="rounded-lg bg-rose-500/20 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-500/30">
                                       No Show
                                     </button>
-                                    <button type="button" onClick={() => void handleSessionAction(sessId, "cancel")}
+                                    <button type="button" onClick={() => void handlePtSessionAction(sessId, "cancel")}
                                       className="rounded-lg bg-orange-500/20 px-2 py-1 text-xs font-semibold text-orange-200 hover:bg-orange-500/30">
                                       Cancel
                                     </button>
                                   </>
                                 ) : sessStatus === "IN_PROGRESS" && sessId ? (
-                                  <button type="button" onClick={() => void handleSessionAction(sessId, "end")}
+                                  <button type="button" onClick={() => void handlePtSessionAction(sessId, "end")}
                                     className="rounded-lg bg-emerald-500/20 px-2 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/30">
                                     End Session
                                   </button>
@@ -5630,8 +5925,8 @@ export default function MemberProfilePage() {
                   <div className="space-y-4">
                     <div className="flex flex-wrap items-center gap-3">
                       <h1 className="text-4xl font-semibold tracking-tight text-white">{memberName}</h1>
-                      <span className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] ${statusTone(membershipStatus)}`}>
-                        {humanizeLabel(membershipStatus)}
+                      <span className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] ${statusTone(displayMembershipStatus)}`}>
+                        {displayMembershipStatus}
                       </span>
                     </div>
                     <p className="text-sm font-medium uppercase tracking-[0.24em] text-slate-400">
@@ -5671,7 +5966,7 @@ export default function MemberProfilePage() {
                             <p className="text-sm text-slate-400">{visibleCurrentMembershipDuration}</p>
                             {visibleCurrentMembershipStatus === "Paused" || visibleCurrentMembershipStatus === "Frozen" ? (
                               <span className="rounded-full border border-sky-400/30 bg-sky-500/15 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.18em] text-sky-100">
-                                Paused
+                                {visibleCurrentMembershipStatus}
                               </span>
                             ) : null}
                           </div>
@@ -5861,12 +6156,7 @@ export default function MemberProfilePage() {
                 <button type="button" onClick={() => setActionModal(null)} className="flex-1 rounded-xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-slate-200">Cancel</button>
                 <button type="button" onClick={() => void handleFreeze()} disabled={actionBusy} className="flex-[2] rounded-xl bg-[#c42924] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60">
                   <span className="inline-flex items-center gap-2">
-                    <svg viewBox="0 0 24 24" className="h-4 w-4" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                      <path d="M12 3v18" />
-                      <path d="M6 7.5h12" />
-                      <path d="M7.5 16.5h9" />
-                      <path d="M9 12h6" />
-                    </svg>
+                    <Snowflake className="h-4 w-4" />
                     {actionBusy ? "Saving..." : "Activate Freeze"}
                   </span>
                 </button>
@@ -5947,6 +6237,145 @@ export default function MemberProfilePage() {
                     </div>
                   ))}
                 </dl>
+              </div>
+            </div>
+          </Modal>
+
+          <Modal
+            open={actionModal === "unfreeze-billing"}
+            onClose={() => setActionModal(null)}
+            title="Collect Remaining Balance"
+            size="lg"
+            footer={
+              <div className="flex w-full gap-3">
+                <button type="button" onClick={() => setActionModal(null)} className="flex-1 rounded-xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-slate-200">Cancel</button>
+                <button
+                  type="button"
+                  onClick={() => void handleUnfreeze()}
+                  disabled={actionBusy}
+                  className="flex-[2] rounded-xl bg-[#c42924] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <Wallet className="h-4 w-4" />
+                    {actionBusy ? "Recording Payment..." : "Record Payment & Unfreeze"}
+                  </span>
+                </button>
+              </div>
+            }
+          >
+            <div className="space-y-5">
+              {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
+              <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm leading-6 text-amber-100">
+                This membership is paused because the invoice is only partially paid. Collect the remaining balance to activate the base membership and linked PT together.
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Current Invoice</p>
+                  <p className="mt-1.5 text-base font-semibold text-white">{roundedInvoiceStats.latestInvoice || "-"}</p>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Outstanding Balance</p>
+                  <p className="mt-1.5 text-base font-semibold text-white">{formatRoundedInr(roundedBalanceDue)}</p>
+                </div>
+              </div>
+              <div className="space-y-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4">
+                <div>
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Received Amount</p>
+                  <p className="mt-1 text-base font-semibold text-white">{formatRoundedInr(roundedBalanceDue)}</p>
+                </div>
+                <div className="space-y-2">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Payment Mode</p>
+                  <div className="flex flex-wrap gap-2">
+                    {[
+                      { value: "UPI", label: "UPI" },
+                      { value: "CARD", label: "Card" },
+                      { value: "CASH", label: "Cash" },
+                    ].map((option) => {
+                      const selected = resumeBillingForm.paymentMode === option.value;
+                      return (
+                        <button
+                          key={option.value}
+                          type="button"
+                          onClick={() => setResumeBillingForm((current) => ({ ...current, paymentMode: option.value }))}
+                          className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                            selected
+                              ? "border-[#c42924]/70 bg-[#c42924]/15 text-[#ffd6d4]"
+                              : "border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.08]"
+                          }`}
+                        >
+                          {option.label}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+                {resumeBillingForm.paymentMode === "CARD" ? (
+                  <div className="space-y-2">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Card Type</p>
+                    <div className="flex flex-wrap gap-2">
+                      {[
+                        { value: "DEBIT_CARD", label: "Debit Card" },
+                        { value: "CREDIT_CARD", label: "Credit Card" },
+                      ].map((option) => {
+                        const selected = renewCardSubtype === option.value;
+                        return (
+                          <button
+                            key={option.value}
+                            type="button"
+                            onClick={() => setRenewCardSubtype(option.value as "DEBIT_CARD" | "CREDIT_CARD")}
+                            className={`rounded-full border px-4 py-2 text-sm font-semibold transition ${
+                              selected
+                                ? "border-[#c42924]/70 bg-[#c42924]/15 text-[#ffd6d4]"
+                                : "border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.08]"
+                            }`}
+                          >
+                            {option.label}
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          </Modal>
+
+          <Modal
+            open={actionModal === "unfreeze"}
+            onClose={() => setActionModal(null)}
+            title="Resume membership"
+            size="md"
+            footer={
+              <div className="flex w-full gap-3">
+                <button type="button" onClick={() => setActionModal(null)} className="flex-1 rounded-xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-slate-200">Cancel</button>
+                <button
+                  type="button"
+                  onClick={() => void handleUnfreeze()}
+                  disabled={actionBusy}
+                  className="flex-[2] rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
+                >
+                  <span className="inline-flex items-center gap-2">
+                    <RotateCcw className="h-4 w-4" />
+                    {actionBusy ? "Resuming..." : "Resume Membership"}
+                  </span>
+                </button>
+              </div>
+            }
+          >
+            <div className="space-y-5">
+              {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
+              <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm leading-6 text-emerald-100">
+                Resume this freeze now. Base membership and linked PT access will be restored, biometric access will be unblocked, and any unused freeze days after the minimum freeze window will be credited back.
+              </div>
+              <div className="grid gap-3 sm:grid-cols-2">
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Current Membership</p>
+                  <p className="mt-1.5 text-base font-semibold text-white">{planName}</p>
+                </div>
+                <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Current Expiry</p>
+                  <p className="mt-1.5 text-base font-semibold text-white">{formatDateOnly(selectedExpiryDate) || "-"}</p>
+                </div>
               </div>
             </div>
           </Modal>
@@ -6971,6 +7400,126 @@ export default function MemberProfilePage() {
                         </div>
                         <span className="text-3xl font-semibold text-white">{formatRoundedInr(ptInvoiceTotal)}</span>
                       </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Modal>
+
+          <Modal
+            open={actionModal === "pt-reschedule"}
+            onClose={() => setActionModal(null)}
+            title="Reschedule PT Session"
+            size="xl"
+            footer={
+              <>
+                <button type="button" onClick={() => setActionModal(null)} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Cancel</button>
+                <button type="button" onClick={() => void handlePtReschedule()} disabled={actionBusy} className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                  {actionBusy ? "Saving..." : "Reschedule Session"}
+                </button>
+              </>
+            }
+          >
+            <div className="space-y-5">
+              {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
+              <div className="grid gap-5 lg:grid-cols-[0.92fr_1.08fr]">
+                <div className="space-y-4">
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Current Slot</p>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <p className="text-xs text-slate-500">Date</p>
+                        <p className="mt-1 text-sm font-semibold text-white">{formatDateOnly(ptRescheduleForm.currentDate) || "-"}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-500">Time</p>
+                        <p className="mt-1 text-sm font-semibold text-white">{ptRescheduleForm.currentTime ? formatClockTime(ptRescheduleForm.currentTime) : "-"}</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">New Slot</p>
+                    <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                      <label className="space-y-2">
+                        <span className="text-xs font-medium text-slate-300">New Date</span>
+                        <input
+                          type="date"
+                          value={ptRescheduleForm.newDate}
+                          onChange={(event) => setPtRescheduleForm((current) => ({ ...current, newDate: event.target.value }))}
+                          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                        />
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-xs font-medium text-slate-300">New Time</span>
+                        <select
+                          value={ptRescheduleForm.newTime}
+                          onChange={(event) => setPtRescheduleForm((current) => ({ ...current, newTime: event.target.value }))}
+                          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                        >
+                          {ptAvailabilityOptions.length > 0
+                            ? ptAvailabilityOptions.map((slot, index) => {
+                                const record = toRecord(slot);
+                                const startTime = pickString(record, ["startTime"]) || "";
+                                const endTime = pickString(record, ["endTime"]) || "";
+                                return (
+                                  <option key={`${startTime}-${index}`} value={startTime}>
+                                    {humanizeLabel(pickString(record, ["dayOfWeek"]) || "")} · {formatClockTime(startTime)}{endTime ? ` - ${formatClockTime(endTime)}` : ""}
+                                  </option>
+                                );
+                              })
+                            : <option value={ptRescheduleForm.newTime}>{ptRescheduleForm.newTime ? formatClockTime(ptRescheduleForm.newTime) : "Select time"}</option>}
+                        </select>
+                      </label>
+                    </div>
+                    <label className="mt-4 block space-y-2">
+                      <span className="text-xs font-medium text-slate-300">Reason</span>
+                      <textarea
+                        value={ptRescheduleForm.reason}
+                        onChange={(event) => setPtRescheduleForm((current) => ({ ...current, reason: event.target.value }))}
+                        placeholder="Reason for rescheduling"
+                        className="min-h-[88px] w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white placeholder:text-slate-500"
+                      />
+                    </label>
+                  </div>
+                </div>
+                <div className="space-y-4">
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Coach Availability</p>
+                    <div className="mt-3 space-y-2">
+                      {ptAvailabilityOptions.length > 0 ? ptAvailabilityOptions.slice(0, 8).map((slot, index) => {
+                        const record = toRecord(slot);
+                        return (
+                          <div key={index} className="flex items-center justify-between rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2 text-sm">
+                            <span className="text-slate-300">{humanizeLabel(pickString(record, ["dayOfWeek"]) || "")}</span>
+                            <span className="font-semibold text-white">
+                              {formatClockTime(pickString(record, ["startTime"]) || "")} - {formatClockTime(pickString(record, ["endTime"]) || "")}
+                            </span>
+                          </div>
+                        );
+                      }) : (
+                        <p className="text-sm text-slate-400">No trainer availability is configured yet.</p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Coach Calendar Snapshot</p>
+                    <div className="mt-3 space-y-2">
+                      {ptCalendarEntries.length > 0 ? ptCalendarEntries.slice(0, 8).map((entry, index) => {
+                        const record = toRecord(entry);
+                        const status = (pickString(record, ["status"]) || "SCHEDULED").replaceAll("_", " ");
+                        return (
+                          <div key={index} className="rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-sm font-semibold text-white">{formatDateOnly(pickString(record, ["sessionDate"])) || "-"}</span>
+                              <span className="text-xs text-slate-400">{status}</span>
+                            </div>
+                            <p className="mt-1 text-xs text-slate-400">{formatClockTime(pickString(record, ["sessionTime", "slotStartTime"]) || "")}</p>
+                          </div>
+                        );
+                      }) : (
+                        <p className="text-sm text-slate-400">No booked PT sessions found for this coach.</p>
+                      )}
                     </div>
                   </div>
                 </div>

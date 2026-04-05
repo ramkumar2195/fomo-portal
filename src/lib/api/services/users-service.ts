@@ -78,6 +78,7 @@ interface BackendUserPayload {
   sourceInquiryId?: string | number;
   branchId?: string | number;
   branchCode?: string | number;
+  createdAt?: string;
 }
 
 export interface UserSearchQuery {
@@ -418,6 +419,7 @@ function mapDirectoryUser(payload: BackendUserPayload): UserDirectoryItem {
       payload.defaultTrainerStaffId !== undefined ? String(payload.defaultTrainerStaffId) : undefined,
     sourceInquiryId:
       payload.sourceInquiryId !== undefined ? String(payload.sourceInquiryId) : undefined,
+    createdAt: payload.createdAt,
   };
 }
 

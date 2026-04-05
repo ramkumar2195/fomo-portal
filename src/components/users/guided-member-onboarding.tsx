@@ -61,6 +61,20 @@ interface SubscriptionFormState {
   paymentMode: string;
   receivedAmount: string;
   balanceDueDate: string;
+  paymentCardSubtype: "DEBIT_CARD" | "CREDIT_CARD";
+  paymentUpiVendor: "GOOGLE_PAY" | "PHONEPE" | "PAYTM" | "OTHER";
+}
+
+type PtScheduleTemplate = "EVERYDAY" | "ALTERNATE_DAYS";
+
+interface PtSetupFormState {
+  coachId: string;
+  startDate: string;
+  endDate: string;
+  totalSessions: string;
+  scheduleTemplate: PtScheduleTemplate;
+  scheduleDays: string[];
+  slotStartTime: string;
 }
 
 interface ComplementaryFieldState {
@@ -95,8 +109,10 @@ interface CompletedOnboardingState {
   receiptNumber?: string;
   paymentStatus: string;
   paymentMode: string;
+  paymentModeLabel: string;
   totalPaidAmount: number;
   balanceAmount: number;
+  membershipActivated: boolean;
 }
 
 interface StepItem {
@@ -156,8 +172,31 @@ const PAYMENT_MODE_OPTIONS = [
   { label: "UPI", value: "UPI" },
   { label: "Card", value: "CARD" },
   { label: "Cash", value: "CASH" },
-  { label: "Other", value: "OTHER" },
 ] as const;
+
+const PAYMENT_CARD_OPTIONS = [
+  { label: "Debit Card", value: "DEBIT_CARD" },
+  { label: "Credit Card", value: "CREDIT_CARD" },
+] as const;
+
+const PAYMENT_UPI_OPTIONS = [
+  { label: "Google Pay", value: "GOOGLE_PAY" },
+  { label: "PhonePe", value: "PHONEPE" },
+  { label: "Paytm", value: "PAYTM" },
+  { label: "Other UPI", value: "OTHER" },
+] as const;
+
+const PT_SLOT_DURATION_MINUTES = 60;
+const PT_WEEKDAY_OPTIONS = [
+  { code: "MONDAY", label: "Mon" },
+  { code: "TUESDAY", label: "Tue" },
+  { code: "WEDNESDAY", label: "Wed" },
+  { code: "THURSDAY", label: "Thu" },
+  { code: "FRIDAY", label: "Fri" },
+  { code: "SATURDAY", label: "Sat" },
+] as const;
+const PT_EVERYDAY_DAY_CODES = PT_WEEKDAY_OPTIONS.map((day) => day.code);
+const ONBOARDING_COMPLETION_STORAGE_PREFIX = "guided-member-onboarding-completed";
 
 function toOptionalString(value: string): string | undefined {
   const trimmed = value.trim();
@@ -535,6 +574,124 @@ function statusBadgeClass(active: boolean): string {
     : "border-white/10 bg-white/[0.04] text-slate-300";
 }
 
+function derivePtRescheduleLimit(durationMonths: number): number {
+  return Math.max(0, durationMonths) * 2;
+}
+
+function addMinutesToTime(timeValue: string, minutesToAdd: number): string {
+  if (!timeValue) {
+    return "";
+  }
+  const [hours, minutes] = timeValue.split(":").map((part) => Number(part));
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return "";
+  }
+  const totalMinutes = hours * 60 + minutes + minutesToAdd;
+  const nextHours = Math.floor(totalMinutes / 60) % 24;
+  const nextMinutes = totalMinutes % 60;
+  return `${String(nextHours).padStart(2, "0")}:${String(nextMinutes).padStart(2, "0")}`;
+}
+
+function formatClockTime(timeValue?: string): string {
+  if (!timeValue) {
+    return "-";
+  }
+  const [hoursValue, minutesValue] = String(timeValue).split(":");
+  const hours = Number(hoursValue);
+  const minutes = Number(minutesValue);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return timeValue;
+  }
+  const normalizedHours = ((hours % 24) + 24) % 24;
+  const meridiem = normalizedHours >= 12 ? "PM" : "AM";
+  const displayHours = normalizedHours % 12 || 12;
+  return `${String(displayHours).padStart(2, "0")}:${String(minutes).padStart(2, "0")} ${meridiem}`;
+}
+
+function buildPtTimeSlotOptions(): string[] {
+  const windows = [
+    { start: 6 * 60, end: 10 * 60 },
+    { start: 17 * 60, end: 21 * 60 },
+  ];
+  const options: string[] = [];
+  windows.forEach((window) => {
+    for (let minute = window.start; minute + PT_SLOT_DURATION_MINUTES <= window.end; minute += PT_SLOT_DURATION_MINUTES) {
+      const hours = Math.floor(minute / 60);
+      const mins = minute % 60;
+      options.push(`${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`);
+    }
+  });
+  return options;
+}
+
+function formatPtDayLabel(dayCode: string): string {
+  return PT_WEEKDAY_OPTIONS.find((day) => day.code === dayCode)?.label || featurePillLabel(dayCode);
+}
+
+function formatPtProductName(value?: string): string {
+  const raw = String(value || "").trim();
+  if (!raw) {
+    return "Personal Training";
+  }
+  return raw
+    .replace(/\bPT\b/gi, "Personal Training")
+    .replace(/\s{2,}/g, " ")
+    .trim();
+}
+
+function buildSyntheticInternalEmail(seed?: string, domain = "members.fomotraining.internal"): string {
+  const normalizedSeed = String(seed || "")
+    .replace(/[^a-zA-Z0-9]/g, "")
+    .toLowerCase();
+  const safeSeed = normalizedSeed || `member${Date.now()}`;
+  return `${safeSeed}@${domain}`;
+}
+
+function projectMembershipEndDate(startDate: string, durationMonths = 0, validityDays = 0): string {
+  if (!startDate) {
+    return "";
+  }
+  const parsedStart = new Date(`${startDate}T00:00:00`);
+  if (Number.isNaN(parsedStart.getTime())) {
+    return "";
+  }
+
+  if (durationMonths > 0) {
+    const next = new Date(parsedStart);
+    next.setMonth(next.getMonth() + durationMonths);
+    next.setDate(next.getDate() - 1);
+    const year = next.getFullYear();
+    const month = String(next.getMonth() + 1).padStart(2, "0");
+    const day = String(next.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  if (validityDays > 0) {
+    const next = new Date(parsedStart);
+    next.setDate(next.getDate() + Math.max(validityDays - 1, 0));
+    const year = next.getFullYear();
+    const month = String(next.getMonth() + 1).padStart(2, "0");
+    const day = String(next.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  }
+
+  return startDate;
+}
+
+function resolvePaymentModeLabel(
+  paymentMode: string,
+  cardSubtype: SubscriptionFormState["paymentCardSubtype"],
+  upiVendor: SubscriptionFormState["paymentUpiVendor"],
+): string {
+  if (paymentMode === "CARD") {
+    return cardSubtype === "CREDIT_CARD" ? "Credit Card" : "Debit Card";
+  }
+  if (paymentMode === "UPI") {
+    return PAYMENT_UPI_OPTIONS.find((option) => option.value === upiVendor)?.label || "UPI";
+  }
+  return PAYMENT_MODE_OPTIONS.find((option) => option.value === paymentMode)?.label || paymentMode || "-";
+}
+
 export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardingProps) {
   const router = useRouter();
   const { token, user, accessMetadata } = useAuth();
@@ -562,6 +719,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   const [documentBusyKey, setDocumentBusyKey] = useState<string | null>(null);
   const [membershipLineItems, setMembershipLineItems] = useState<MembershipLineItem[]>([]);
   const membershipTableRef = useRef<HTMLDivElement | null>(null);
+  const previousAutoReceivedAmountRef = useRef<number>(0);
   const [showPtComposer, setShowPtComposer] = useState(false);
   const [primaryCategoryFilter, setPrimaryCategoryFilter] = useState("");
   const [primaryProductFilter, setPrimaryProductFilter] = useState("");
@@ -595,9 +753,21 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     paymentMode: "UPI",
     receivedAmount: "",
     balanceDueDate: "",
+    paymentCardSubtype: "DEBIT_CARD",
+    paymentUpiVendor: "GOOGLE_PAY",
+  });
+  const [ptSetupForm, setPtSetupForm] = useState<PtSetupFormState>({
+    coachId: "",
+    startDate: new Date().toISOString().slice(0, 10),
+    endDate: "",
+    totalSessions: "",
+    scheduleTemplate: "ALTERNATE_DAYS",
+    scheduleDays: ["MONDAY", "WEDNESDAY", "FRIDAY"],
+    slotStartTime: "06:00",
   });
 
   const [complementaries, setComplementaries] = useState<ComplementaryState>(initialComplementaryState);
+  const completionStorageKey = `${ONBOARDING_COMPLETION_STORAGE_PREFIX}:${sourceInquiryId}`;
 
   useEffect(() => {
     if (!toast) {
@@ -613,10 +783,31 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       return;
     }
 
+    try {
+      window.sessionStorage.setItem(completionStorageKey, JSON.stringify(completedOnboarding));
+    } catch {
+      // Ignore storage failures and keep the in-memory completion state.
+    }
     window.scrollTo({ top: 0, behavior: "auto" });
     void router.prefetch("/portal/members");
     void router.prefetch(`/admin/members/${completedOnboarding.memberId}`);
-  }, [completedOnboarding, router]);
+  }, [completedOnboarding, completionStorageKey, router]);
+
+  useEffect(() => {
+    try {
+      const stored = window.sessionStorage.getItem(completionStorageKey);
+      if (!stored) {
+        return;
+      }
+      const parsed = JSON.parse(stored) as CompletedOnboardingState;
+      if (parsed && typeof parsed.memberId === "number" && typeof parsed.invoiceId === "number") {
+        setCompletedOnboarding(parsed);
+        setCurrentStep(3);
+      }
+    } catch {
+      // Ignore invalid persisted onboarding state.
+    }
+  }, [completionStorageKey]);
 
   useEffect(() => {
     if (!token) {
@@ -814,12 +1005,9 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         if (addOnProductFilter && variant.productCode !== addOnProductFilter) {
           return false;
         }
-        if (selectedPrimaryVariant?.durationMonths && variant.durationMonths > selectedPrimaryVariant.durationMonths) {
-          return false;
-        }
         return true;
       }),
-    [addOnCategoryFilter, addOnProductFilter, addOnVariants, selectedPrimaryVariant?.durationMonths],
+    [addOnCategoryFilter, addOnProductFilter, addOnVariants],
   );
 
   const canAddPrimaryMembership = !primaryLineItem;
@@ -934,6 +1122,30 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     }
   }, [filteredAddOnVariants, subscriptionForm.addOnVariantId]);
 
+  useEffect(() => {
+    if (ptSetupForm.scheduleTemplate !== "EVERYDAY") {
+      return;
+    }
+    setPtSetupForm((current) =>
+      current.scheduleDays.join(",") === PT_EVERYDAY_DAY_CODES.join(",")
+        ? current
+        : { ...current, scheduleDays: [...PT_EVERYDAY_DAY_CODES] },
+    );
+  }, [ptSetupForm.scheduleTemplate]);
+
+  useEffect(() => {
+    if (subscriptionForm.startDate && !ptLineItem) {
+      setPtSetupForm((current) => (
+        current.startDate === subscriptionForm.startDate
+          ? current
+          : {
+              ...current,
+              startDate: subscriptionForm.startDate,
+            }
+      ));
+    }
+  }, [ptLineItem, subscriptionForm.startDate]);
+
   const draftSelectedAddOnVariant = useMemo(
     () => addOnVariants.find((variant) => variant.variantId === subscriptionForm.addOnVariantId),
     [addOnVariants, subscriptionForm.addOnVariantId],
@@ -943,6 +1155,60 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     () => addOnVariants.find((variant) => variant.variantId === (ptLineItem?.variantId || draftSelectedAddOnVariant?.variantId)),
     [addOnVariants, draftSelectedAddOnVariant?.variantId, ptLineItem?.variantId],
   );
+  const ptEligibleCoaches = useMemo(
+    () =>
+      branchCoaches.filter((coach) => String(coach.designation || "").toUpperCase() === "PT_COACH"),
+    [branchCoaches],
+  );
+  const selectedPtCoach = useMemo(
+    () =>
+      ptEligibleCoaches.find((coach) => String(coach.id) === String(ptSetupForm.coachId))
+      || branchCoaches.find((coach) => String(coach.id) === String(ptSetupForm.coachId))
+      || null,
+    [branchCoaches, ptEligibleCoaches, ptSetupForm.coachId],
+  );
+  const ptTimeSlotOptions = useMemo(() => buildPtTimeSlotOptions(), []);
+  const selectedPtDays = useMemo(
+    () => (ptSetupForm.scheduleTemplate === "EVERYDAY" ? PT_EVERYDAY_DAY_CODES : ptSetupForm.scheduleDays),
+    [ptSetupForm.scheduleDays, ptSetupForm.scheduleTemplate],
+  );
+  const ptSlotEndTime = useMemo(
+    () => addMinutesToTime(ptSetupForm.slotStartTime, PT_SLOT_DURATION_MINUTES),
+    [ptSetupForm.slotStartTime],
+  );
+  const projectedPtEndDate = useMemo(
+    () =>
+      projectMembershipEndDate(
+        ptSetupForm.startDate,
+        selectedAddOnVariant?.durationMonths || 0,
+        selectedAddOnVariant?.validityDays || 0,
+      ),
+    [ptSetupForm.startDate, selectedAddOnVariant],
+  );
+  const selectedPtSessionCount = useMemo(() => {
+    const parsed = Number(ptSetupForm.totalSessions || 0);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.trunc(parsed);
+    }
+    return Number(selectedAddOnVariant?.includedPtSessions || 0);
+  }, [ptSetupForm.totalSessions, selectedAddOnVariant?.includedPtSessions]);
+
+  useEffect(() => {
+    if (!selectedAddOnVariant) {
+      return;
+    }
+
+    const nextEndDate = ptSetupForm.startDate
+      ? projectMembershipEndDate(ptSetupForm.startDate, selectedAddOnVariant.durationMonths, selectedAddOnVariant.validityDays)
+      : "";
+
+    setPtSetupForm((current) => ({
+      ...current,
+      endDate: nextEndDate || current.endDate,
+      totalSessions: current.totalSessions || String(selectedAddOnVariant.includedPtSessions || 0),
+      startDate: current.startDate || subscriptionForm.startDate || new Date().toISOString().slice(0, 10),
+    }));
+  }, [ptSetupForm.startDate, selectedAddOnVariant, subscriptionForm.startDate]);
 
   const primaryDraftCommercial = useMemo(
     () => resolveCommercialBreakdown(
@@ -1062,6 +1328,24 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   ]);
 
   useEffect(() => {
+    if (completedOnboarding || pricingPreview.totalPayable <= 0) {
+      return;
+    }
+    setSubscriptionForm((current) => {
+      const currentAmount = Number(current.receivedAmount || 0);
+      const shouldAutofill =
+        !current.receivedAmount.trim() ||
+        currentAmount === previousAutoReceivedAmountRef.current;
+      if (!shouldAutofill) {
+        previousAutoReceivedAmountRef.current = pricingPreview.totalPayable;
+        return current;
+      }
+      previousAutoReceivedAmountRef.current = pricingPreview.totalPayable;
+      return { ...current, receivedAmount: String(pricingPreview.totalPayable) };
+    });
+  }, [completedOnboarding, pricingPreview.totalPayable]);
+
+  useEffect(() => {
     if (!token || !memberForm.defaultBranchId) {
       setBranchCoaches([]);
       setBranchMembers([]);
@@ -1116,26 +1400,11 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         return;
       }
 
-      const assignmentCount = new Map<string, number>();
-      branchMembers.forEach((member) => {
-        if (!member.defaultTrainerStaffId) {
-          return;
-        }
-        assignmentCount.set(member.defaultTrainerStaffId, (assignmentCount.get(member.defaultTrainerStaffId) || 0) + 1);
-      });
-
-      const nextTrainer = branchCoaches
+      const roundRobinPool = branchCoaches
         .slice()
-        .sort((left, right) => {
-          const leftCount = assignmentCount.get(left.id) || 0;
-          const rightCount = assignmentCount.get(right.id) || 0;
-          if (leftCount !== rightCount) {
-            return leftCount - rightCount;
-          }
-          return left.name.localeCompare(right.name);
-        })[0];
-
-      setAssignedTrainer(nextTrainer || null);
+        .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
+      const nextTrainerIndex = branchMembers.length % roundRobinPool.length;
+      setAssignedTrainer(roundRobinPool[nextTrainerIndex] || roundRobinPool[0] || null);
       return;
     }
 
@@ -1265,6 +1534,22 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       setToast({ kind: "error", message: "Select a PT add-on variant before adding it." });
       return;
     }
+    if (!ptSetupForm.coachId) {
+      setToast({ kind: "error", message: "Select the PT coach before adding the secondary subscription." });
+      return;
+    }
+    if (!ptSetupForm.startDate) {
+      setToast({ kind: "error", message: "Select the PT start date before adding the secondary subscription." });
+      return;
+    }
+    if (selectedPtDays.length === 0) {
+      setToast({ kind: "error", message: "Select the PT schedule days before adding the secondary subscription." });
+      return;
+    }
+    if (!ptSetupForm.slotStartTime) {
+      setToast({ kind: "error", message: "Select the PT slot before adding the secondary subscription." });
+      return;
+    }
 
     const addOnCommercial = resolveCommercialBreakdown(
       draftSelectedAddOnVariant.basePrice || 0,
@@ -1274,22 +1559,22 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     const product = products.find((item) => item.productCode === draftSelectedAddOnVariant.productCode);
 
     setMembershipLineItems((current) => [
-        ...current.filter((item) => item.lineType !== "PT_ADD_ON"),
-        {
-          lineType: "PT_ADD_ON",
+      ...current.filter((item) => item.lineType !== "PT_ADD_ON"),
+      {
+        lineType: "PT_ADD_ON",
         categoryCode: draftSelectedAddOnVariant.categoryCode,
         productCode: draftSelectedAddOnVariant.productCode,
         productName: product?.productName || draftSelectedAddOnVariant.productCode,
         variantId: draftSelectedAddOnVariant.variantId,
         variantName: draftSelectedAddOnVariant.variantName,
-          basePrice: draftSelectedAddOnVariant.basePrice || 0,
-          sellingPrice: addOnCommercial.sellingPrice,
-          discountPercent: addOnCommercial.discountPercent,
-          cgstAmount: Number(((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
-          sgstAmount: Number(((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
-          totalAmount: Number((addOnCommercial.sellingPrice + ((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 100)).toFixed(2)),
-        },
-      ]);
+        basePrice: draftSelectedAddOnVariant.basePrice || 0,
+        sellingPrice: addOnCommercial.sellingPrice,
+        discountPercent: addOnCommercial.discountPercent,
+        cgstAmount: Number(((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
+        sgstAmount: Number(((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
+        totalAmount: Number((addOnCommercial.sellingPrice + ((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 100)).toFixed(2)),
+      },
+    ]);
     setAddOnCategoryFilter("");
     setAddOnProductFilter("");
       setSubscriptionForm((current) => ({
@@ -1319,6 +1604,15 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         addOnSellingPrice: "",
         addOnDiscountPercent: "",
       }));
+      setPtSetupForm({
+        coachId: "",
+        startDate: subscriptionForm.startDate || new Date().toISOString().slice(0, 10),
+        endDate: "",
+        totalSessions: "",
+        scheduleTemplate: "ALTERNATE_DAYS",
+        scheduleDays: ["MONDAY", "WEDNESDAY", "FRIDAY"],
+        slotStartTime: "06:00",
+      });
       setManualTrainerId("");
       setComplementaries(initialComplementaryState);
       setShowPtComposer(false);
@@ -1333,6 +1627,15 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       addOnSellingPrice: "",
       addOnDiscountPercent: "",
     }));
+    setPtSetupForm({
+      coachId: "",
+      startDate: subscriptionForm.startDate || new Date().toISOString().slice(0, 10),
+      endDate: "",
+      totalSessions: "",
+      scheduleTemplate: "ALTERNATE_DAYS",
+      scheduleDays: ["MONDAY", "WEDNESDAY", "FRIDAY"],
+      slotStartTime: "06:00",
+    });
     setShowPtComposer(false);
   };
 
@@ -1360,6 +1663,36 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       if (!subscriptionForm.startDate) {
         setToast({ kind: "error", message: "Membership start date is required." });
         return false;
+      }
+      if (ptLineItem) {
+        if (!selectedAddOnVariant) {
+          setToast({ kind: "error", message: "The PT secondary subscription is incomplete." });
+          return false;
+        }
+        if (!ptSetupForm.coachId) {
+          setToast({ kind: "error", message: "Select the PT coach before continuing." });
+          return false;
+        }
+        if (!ptSetupForm.startDate) {
+          setToast({ kind: "error", message: "PT start date is required." });
+          return false;
+        }
+        if (selectedPtDays.length === 0) {
+          setToast({ kind: "error", message: "Select the PT schedule days before continuing." });
+          return false;
+        }
+        if (!ptSetupForm.slotStartTime) {
+          setToast({ kind: "error", message: "Select the PT slot before continuing." });
+          return false;
+        }
+        if (
+          selectedPrimaryVariant?.durationMonths &&
+          selectedAddOnVariant?.durationMonths &&
+          selectedAddOnVariant.durationMonths > selectedPrimaryVariant.durationMonths
+        ) {
+          setToast({ kind: "error", message: "PT duration cannot exceed the primary membership duration." });
+          return false;
+        }
       }
     }
 
@@ -1526,6 +1859,11 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       let paymentReceipt: Awaited<ReturnType<typeof subscriptionService.recordPayment>> | null = null;
       let membershipActivated = false;
       const completionWarnings: string[] = [];
+      const selectedPtAddOnSubscription = selectedAddOnVariant
+        ? subscriptionResponse.createdSubscriptions.find((item) =>
+            item.addOn === true || Number(item.productVariantId || 0) === Number(selectedAddOnVariant.variantId),
+          ) || null
+        : null;
       if (pricingPreview.receivedAmount > 0) {
         paymentReceipt = await subscriptionService.recordPayment(token, invoiceId, {
           memberId,
@@ -1545,11 +1883,40 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         }
       }
 
+      if (membershipActivated && selectedAddOnVariant && selectedPtAddOnSubscription?.memberSubscriptionId) {
+        try {
+          const memberEmailForAssignment =
+            toOptionalString(memberForm.email) || buildSyntheticInternalEmail(memberForm.mobileNumber.trim(), "members.fomotraining.internal");
+          const coachEmailForAssignment =
+            selectedPtCoach?.email
+            || buildSyntheticInternalEmail(selectedPtCoach?.mobile || selectedPtCoach?.id || ptSetupForm.coachId, "staff.fomotraining.internal");
+          await subscriptionService.provisionPtOperationalSetup(token, selectedPtAddOnSubscription.memberSubscriptionId, {
+            memberEmail: memberEmailForAssignment,
+            coachId: Number(ptSetupForm.coachId),
+            coachEmail: coachEmailForAssignment,
+            startDate: ptSetupForm.startDate || subscriptionForm.startDate,
+            endDate: projectedPtEndDate || undefined,
+            productVariantId: Number(selectedAddOnVariant.variantId),
+            packageName: `${formatPtProductName(selectedAddOnVariant.variantName || selectedAddOnVariant.productCode)} · ${formatPlanDurationLabel(selectedAddOnVariant.durationMonths, selectedAddOnVariant.validityDays)}`,
+            totalSessions: selectedPtSessionCount,
+            rescheduleLimit: derivePtRescheduleLimit(Number(selectedAddOnVariant.durationMonths || 0)),
+            slotDurationMinutes: PT_SLOT_DURATION_MINUTES,
+            slots: selectedPtDays.map((dayCode) => ({
+              dayOfWeek: dayCode,
+              slotStartTime: `${ptSetupForm.slotStartTime}:00`,
+              slotEndTime: `${ptSlotEndTime}:00`,
+            })),
+          });
+        } catch {
+          completionWarnings.push("PT operational setup needs to be completed from the member profile.");
+        }
+      }
+
       if (pricingPreview.balanceAmount > 0 && subscriptionForm.balanceDueDate) {
         try {
           await subscriptionService.createInquiryFollowUp(token, sourceInquiryId, {
             dueAt: `${subscriptionForm.balanceDueDate}T09:00:00`,
-            assignedToStaffId: inquiry?.clientRepStaffId || billedByStaffId || undefined,
+            assignedToStaffId: billedByStaffId || inquiry?.clientRepStaffId || undefined,
             createdByStaffId: billedByStaffId || undefined,
             notes: `Collect the remaining balance of ${formatCurrency(pricingPreview.balanceAmount)} for invoice ${subscriptionResponse.invoiceNumber}.`,
           });
@@ -1562,28 +1929,6 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         await subscriptionService.convertInquiry(token, String(sourceInquiryId), { memberId });
       } catch {
         completionWarnings.push("Inquiry conversion status could not be updated automatically.");
-      }
-
-      // Auto-enroll class-based memberships into their mapped programs.
-      let enrolledProgramName: string | null = null;
-      const programKeywords = deriveProgramKeywords(selectedPrimaryProduct, selectedPrimaryVariant);
-      if (programKeywords.length > 0) {
-        try {
-          const programsPage = await trainingService.listPrograms(token, 0, 100);
-          const programs = programsPage.content || [];
-          const matchingPrograms = programs.filter((program) => {
-            const programName = String(program.name || "").toLowerCase().trim().replace(/\s+/g, " ");
-            return programKeywords.some((keyword) => programName === keyword || programName.startsWith(`${keyword} `));
-          });
-          if (matchingPrograms.length > 0) {
-            for (const program of matchingPrograms) {
-              await trainingService.enrollProgramMember(token, String(program.id), String(memberId));
-            }
-            enrolledProgramName = matchingPrograms.map((program) => program.name).join(", ");
-          }
-        } catch {
-          completionWarnings.push("Program enrollment needs to be completed manually.");
-        }
       }
 
       if (membershipActivated) {
@@ -1634,11 +1979,19 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         receiptNumber: paymentReceipt?.receiptNumber,
         paymentStatus: paymentReceipt?.paymentStatus || subscriptionResponse.invoiceStatus,
         paymentMode: paymentReceipt?.paymentMode || subscriptionForm.paymentMode,
+        paymentModeLabel: resolvePaymentModeLabel(
+          paymentReceipt?.paymentMode || subscriptionForm.paymentMode,
+          subscriptionForm.paymentCardSubtype,
+          subscriptionForm.paymentUpiVendor,
+        ),
         totalPaidAmount: paymentReceipt?.totalPaidAmount || subscriptionResponse.totalPaidAmount || 0,
         balanceAmount: paymentReceipt?.balanceAmount ?? subscriptionResponse.balanceAmount ?? invoiceTotal,
+        membershipActivated,
       });
 
-      const enrollmentNote = enrolledProgramName ? ` Enrolled in ${enrolledProgramName} program.` : "";
+      const enrollmentNote = isGroupClassVariant(selectedPrimaryVariant)
+        ? " Group-class program enrollment will sync automatically after activation."
+        : "";
       const warningNote = completionWarnings.length > 0 ? ` ${completionWarnings.join(" ")}` : "";
       setToast({
         kind: "success",
@@ -1703,7 +2056,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     ? "Pick a plan to evaluate trainer assignment."
     : isFlagshipVariant(selectedPrimaryVariant)
       ? assignedTrainer
-        ? `Auto-assigned to ${assignedTrainer.name}`
+        ? `Auto-assigned to ${assignedTrainer.name} using branch round-robin.`
         : "No active internal coach available for this branch."
       : isTransformationVariant(selectedPrimaryVariant)
         ? selectedManualTrainer
@@ -2353,13 +2706,13 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                 </select>
                               </label>
                               <div className="rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3">
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Summary</p>
+                                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Summary</p>
                                 <p className="mt-2 text-sm font-semibold text-white">
-                                  {draftSelectedAddOnVariant ? normalizeDisplayVariantName(draftSelectedAddOnVariant.variantName) : "Choose a PT plan"}
+                                  {draftSelectedAddOnVariant ? formatPtProductName(normalizeDisplayVariantName(draftSelectedAddOnVariant.variantName)) : "Choose a PT plan"}
                                 </p>
                                 <p className="mt-1 text-xs text-slate-400">
                                   {draftSelectedAddOnVariant
-                                    ? `${draftSelectedAddOnVariant.includedPtSessions} PT sessions · ${formatCurrency(draftSelectedAddOnVariant.basePrice)}`
+                                    ? `${draftSelectedAddOnVariant.includedPtSessions} sessions · ${selectedPtCoach?.name || "Choose coach"}`
                                     : "Select a PT category, product, and variant to add it below."}
                                 </p>
                               </div>
@@ -2386,6 +2739,15 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                         addOnVariantId: variant.variantId,
                                         addOnSellingPrice: "",
                                         addOnDiscountPercent: "",
+                                      }));
+                                      setPtSetupForm((current) => ({
+                                        ...current,
+                                        totalSessions: String(variant.includedPtSessions || 0),
+                                        endDate: projectMembershipEndDate(
+                                          current.startDate || subscriptionForm.startDate,
+                                          variant.durationMonths,
+                                          variant.validityDays,
+                                        ),
                                       }));
                                     }}
                                     className={`rounded-[20px] border p-4 text-left transition ${active ? "border-[#c42924]/50 bg-[#1b1114] shadow-[0_20px_60px_rgba(196,36,41,0.12)]" : "border-white/10 bg-[#151b26] hover:border-white/20 hover:bg-[#18202c]"}`}
@@ -2422,6 +2784,141 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                   </button>
                                 );
                               })}
+                            </div>
+                            <div className="rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
+                              <div className="mb-4 flex items-center gap-3">
+                                <UserRound className="h-5 w-5 text-[#ffb4b1]" />
+                                <div>
+                                  <h4 className="text-sm font-semibold text-white">PT Setup</h4>
+                                  <p className="text-xs text-slate-400">Capture the same coach, schedule, and session details used in Add PT.</p>
+                                </div>
+                              </div>
+                              <div className="grid gap-4 lg:grid-cols-3">
+                                <label className="space-y-2">
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Coach</span>
+                                  <select
+                                    className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                                    value={ptSetupForm.coachId}
+                                    onChange={(event) => setPtSetupForm((current) => ({ ...current, coachId: event.target.value }))}
+                                  >
+                                    <option value="">{ptEligibleCoaches.length > 0 ? "Select coach" : "No PT coach available"}</option>
+                                    {ptEligibleCoaches.map((coach) => (
+                                      <option key={coach.id} value={coach.id}>
+                                        {coach.name} · {coach.mobile}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                                <label className="space-y-2">
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Start Date</span>
+                                  <input
+                                    type="date"
+                                    className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                                    value={ptSetupForm.startDate}
+                                    onChange={(event) => setPtSetupForm((current) => ({ ...current, startDate: event.target.value }))}
+                                  />
+                                </label>
+                                <label className="space-y-2">
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Total Sessions</span>
+                                  <input
+                                    className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
+                                    value={ptSetupForm.totalSessions}
+                                    onChange={(event) => setPtSetupForm((current) => ({ ...current, totalSessions: sanitizeIntegerString(event.target.value) }))}
+                                    placeholder={selectedAddOnVariant ? String(selectedAddOnVariant.includedPtSessions || 0) : "0"}
+                                    inputMode="numeric"
+                                  />
+                                </label>
+                              </div>
+                              <div className="mt-4 grid gap-4 lg:grid-cols-3">
+                                <div className="space-y-2 lg:col-span-2">
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Schedule Template</span>
+                                  <div className="grid grid-cols-2 gap-2">
+                                    {[
+                                      { label: "Everyday", value: "EVERYDAY" },
+                                      { label: "Alternate Days", value: "ALTERNATE_DAYS" },
+                                    ].map((option) => {
+                                      const selected = ptSetupForm.scheduleTemplate === option.value;
+                                      return (
+                                        <button
+                                          key={option.value}
+                                          type="button"
+                                          onClick={() => setPtSetupForm((current) => ({ ...current, scheduleTemplate: option.value as PtScheduleTemplate }))}
+                                          className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                                            selected
+                                              ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
+                                              : "border-white/10 bg-[#111925] text-slate-300 hover:border-white/20"
+                                          }`}
+                                        >
+                                          {option.label}
+                                        </button>
+                                      );
+                                    })}
+                                  </div>
+                                </div>
+                                <label className="space-y-2">
+                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Slot</span>
+                                  <select
+                                    className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                                    value={ptSetupForm.slotStartTime}
+                                    onChange={(event) => setPtSetupForm((current) => ({ ...current, slotStartTime: event.target.value }))}
+                                  >
+                                    {ptTimeSlotOptions.map((slot) => (
+                                      <option key={slot} value={slot}>
+                                        {formatClockTime(slot)} - {formatClockTime(addMinutesToTime(slot, PT_SLOT_DURATION_MINUTES))}
+                                      </option>
+                                    ))}
+                                  </select>
+                                </label>
+                              </div>
+                              <div className="mt-4 space-y-2">
+                                <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Schedule Days</span>
+                                <div className="grid grid-cols-3 gap-2 md:grid-cols-6">
+                                  {PT_WEEKDAY_OPTIONS.map((day) => {
+                                    const locked = ptSetupForm.scheduleTemplate === "EVERYDAY";
+                                    const selected = selectedPtDays.includes(day.code);
+                                    return (
+                                      <button
+                                        key={day.code}
+                                        type="button"
+                                        disabled={locked}
+                                        onClick={() =>
+                                          setPtSetupForm((current) => ({
+                                            ...current,
+                                            scheduleDays: selected
+                                              ? current.scheduleDays.filter((code) => code !== day.code)
+                                              : [...current.scheduleDays, day.code],
+                                          }))
+                                        }
+                                        className={`rounded-2xl border px-3 py-3 text-sm font-semibold transition ${
+                                          selected
+                                            ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
+                                            : "border-white/10 bg-[#111925] text-slate-300 hover:border-white/20"
+                                        } ${locked ? "cursor-not-allowed opacity-70" : ""}`}
+                                      >
+                                        {day.label}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              </div>
+                              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Reschedules</p>
+                                  <p className="mt-2 text-base font-semibold text-white">{selectedAddOnVariant ? derivePtRescheduleLimit(selectedAddOnVariant.durationMonths) : "-"}</p>
+                                </div>
+                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Projected End</p>
+                                  <p className="mt-2 text-base font-semibold text-white">{projectedPtEndDate || "-"}</p>
+                                </div>
+                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Coach</p>
+                                  <p className="mt-2 text-base font-semibold text-white">{selectedPtCoach?.name || "-"}</p>
+                                </div>
+                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Slot Window</p>
+                                  <p className="mt-2 text-base font-semibold text-white">{formatClockTime(ptSetupForm.slotStartTime)} - {formatClockTime(ptSlotEndTime)}</p>
+                                </div>
+                              </div>
                             </div>
                             <div className="rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
                               <div className="mb-4 flex items-center gap-3">
@@ -2700,7 +3197,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                     <option value="">Choose a trainer...</option>
                                     {branchCoaches.map((coach) => (
                                       <option key={coach.id} value={coach.id}>
-                                        {coach.name} — {coach.designation || "COACH"} · {coach.mobile}
+                                        {coach.name} · {coach.mobile}
                                       </option>
                                     ))}
                                   </select>
@@ -2713,7 +3210,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                 {selectedManualTrainer ? (
                                   <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
                                     <p className="text-sm font-semibold text-emerald-100">{selectedManualTrainer.name}</p>
-                                    <p className="mt-1 text-sm text-emerald-50/80">{selectedManualTrainer.designation || "COACH"} · {selectedManualTrainer.mobile}</p>
+                                    <p className="mt-1 text-sm text-emerald-50/80">{selectedManualTrainer.mobile}</p>
                                   </div>
                                 ) : null}
                               </div>
@@ -2732,9 +3229,9 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                             ) : (
                               <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
                                 <p className="text-sm font-semibold text-emerald-100">{assignedTrainer.name}</p>
-                                <p className="mt-1 text-sm text-emerald-50/80">{assignedTrainer.designation || "COACH"} · {assignedTrainer.mobile}</p>
+                                <p className="mt-1 text-sm text-emerald-50/80">{assignedTrainer.mobile}</p>
                                 <p className="mt-3 text-xs text-emerald-100/70">
-                                  Assigned automatically from the lightest active coach allocation in the selected branch.
+                                  Assigned automatically from the branch round-robin queue for onboarding trainers.
                                 </p>
                               </div>
                             )}
@@ -2767,6 +3264,11 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                               " created without a receipt because no payment was collected."
                             )}
                           </p>
+                          <p className="mt-2 text-emerald-50/80">
+                            {completedOnboarding.membershipActivated
+                              ? "Access is active and the onboarding flow is complete."
+                              : `Payment has been recorded, but activation will remain pending until ${membershipPolicySettings.minPartialPaymentPercent}% of the invoice is collected.`}
+                          </p>
                         </div>
                       ) : null}
 
@@ -2786,7 +3288,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                 <div className="flex items-center justify-between gap-3"><dt>Invoice Date</dt><dd>{new Date().toLocaleDateString("en-IN")}</dd></div>
                                 <div className="flex items-center justify-between gap-3"><dt>Start Date</dt><dd>{pricingPreview.startDate || "-"}</dd></div>
                                 <div className="flex items-center justify-between gap-3"><dt>End Date</dt><dd>{pricingPreview.endDate || "-"}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Bill Rep</dt><dd>{user?.name || "-"}</dd></div>
+                                <div className="flex items-center justify-between gap-3"><dt>Billing Representative</dt><dd>{user?.name || "-"}</dd></div>
                                 <div className="flex items-center justify-between gap-3"><dt>Invoice Status</dt><dd>{completedOnboarding ? formatInvoiceLifecycleStatus(completedOnboarding.invoiceStatus, true) : "Issued on completion"}</dd></div>
                               </dl>
                             </div>
@@ -2875,21 +3377,77 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                               />
                             </label>
 
-                            <label className="space-y-2">
+                            <div className="space-y-2">
                               <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Payment Mode</span>
-                              <select
-                                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
-                                value={subscriptionForm.paymentMode}
-                                onChange={(event) => setSubscriptionForm((current) => ({ ...current, paymentMode: event.target.value }))}
-                                disabled={Boolean(completedOnboarding)}
-                              >
-                                {PAYMENT_MODE_OPTIONS.map((option) => (
-                                  <option key={option.value} value={option.value}>
-                                    {option.label}
-                                  </option>
-                                ))}
-                              </select>
-                            </label>
+                              <div className="grid grid-cols-3 gap-2">
+                                {String(billingSettings?.paymentModesEnabled || "UPI,CARD,CASH")
+                                  .split(",")
+                                  .map((mode) => mode.trim().toUpperCase())
+                                  .filter((mode) => ["UPI", "CARD", "CASH"].includes(mode))
+                                  .map((mode) => {
+                                    const selected = subscriptionForm.paymentMode === mode;
+                                    return (
+                                      <button
+                                        key={mode}
+                                        type="button"
+                                        disabled={Boolean(completedOnboarding)}
+                                        onClick={() => setSubscriptionForm((current) => ({ ...current, paymentMode: mode }))}
+                                        className={`rounded-2xl border px-4 py-4 text-sm font-semibold uppercase tracking-[0.18em] transition ${
+                                          selected
+                                            ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
+                                            : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20"
+                                        } ${completedOnboarding ? "cursor-not-allowed opacity-60" : ""}`}
+                                      >
+                                        {mode === "UPI" ? "UPI" : mode === "CARD" ? "Card" : "Cash"}
+                                      </button>
+                                    );
+                                  })}
+                              </div>
+                              {subscriptionForm.paymentMode === "CARD" ? (
+                                <div className="grid grid-cols-2 gap-2">
+                                  {PAYMENT_CARD_OPTIONS.map((option) => {
+                                    const selected = subscriptionForm.paymentCardSubtype === option.value;
+                                    return (
+                                      <button
+                                        key={option.value}
+                                        type="button"
+                                        disabled={Boolean(completedOnboarding)}
+                                        onClick={() => setSubscriptionForm((current) => ({ ...current, paymentCardSubtype: option.value }))}
+                                        className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                                          selected
+                                            ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
+                                            : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20"
+                                        } ${completedOnboarding ? "cursor-not-allowed opacity-60" : ""}`}
+                                      >
+                                        {option.label}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              ) : null}
+                              {subscriptionForm.paymentMode === "UPI" ? (
+                                <div className="grid grid-cols-2 gap-2">
+                                  {PAYMENT_UPI_OPTIONS.map((option) => {
+                                    const selected = subscriptionForm.paymentUpiVendor === option.value;
+                                    return (
+                                      <button
+                                        key={option.value}
+                                        type="button"
+                                        disabled={Boolean(completedOnboarding)}
+                                        onClick={() => setSubscriptionForm((current) => ({ ...current, paymentUpiVendor: option.value }))}
+                                        className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                                          selected
+                                            ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
+                                            : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20"
+                                        } ${completedOnboarding ? "cursor-not-allowed opacity-60" : ""}`}
+                                      >
+                                        {option.label}
+                                      </button>
+                                    );
+                                  })}
+                                </div>
+                              ) : null}
+                            </div>
 
                             {pricingPreview.balanceAmount > 0 ? (
                               <label className="space-y-2">
@@ -2909,7 +3467,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                               <dl className="mt-3 space-y-2 text-sm text-slate-300">
                                 <div className="flex items-center justify-between gap-3"><dt>Receipt Number</dt><dd>{generatedReceiptNumber}</dd></div>
                                 <div className="flex items-center justify-between gap-3"><dt>Receipt Date</dt><dd>{completedOnboarding ? new Date().toLocaleDateString("en-IN") : "Generated after payment"}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Payment Method</dt><dd>{completedOnboarding?.paymentMode || subscriptionForm.paymentMode || "-"}</dd></div>
+                                <div className="flex items-center justify-between gap-3"><dt>Payment Method</dt><dd>{completedOnboarding?.paymentModeLabel || resolvePaymentModeLabel(subscriptionForm.paymentMode, subscriptionForm.paymentCardSubtype, subscriptionForm.paymentUpiVendor)}</dd></div>
                                 <div className="flex items-center justify-between gap-3"><dt>Payment Status</dt><dd>{completedOnboarding ? formatPaymentCollectionStatus(completedOnboarding.totalPaidAmount, completedOnboarding.balanceAmount) : formatPaymentCollectionStatus(pricingPreview.receivedAmount, pricingPreview.balanceAmount)}</dd></div>
                                 <div className="flex items-center justify-between gap-3"><dt>Total Paid</dt><dd>{formatCurrency(completedOnboarding?.totalPaidAmount || pricingPreview.receivedAmount)}</dd></div>
                                 <div className="flex items-center justify-between gap-3 border-t border-white/10 pt-2 text-base font-semibold text-white"><dt>Balance Due</dt><dd>{formatCurrency(completedOnboarding?.balanceAmount ?? pricingPreview.balanceAmount)}</dd></div>
@@ -2938,7 +3496,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                 <button
                   type="button"
                   onClick={onNextStep}
-                  className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-700"
+                  className="rounded-2xl border border-[#c42924]/40 bg-[#c42924] px-5 py-3 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(196,41,36,0.28)] hover:bg-[#a81f1c]"
                 >
                   Next
                 </button>
@@ -2947,7 +3505,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                   type="button"
                   onClick={completeOnboarding}
                   disabled={submitting}
-                  className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-400"
+                  className="rounded-2xl border border-[#c42924]/40 bg-[#c42924] px-5 py-3 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(196,41,36,0.28)] hover:bg-[#a81f1c] disabled:cursor-not-allowed disabled:border-white/10 disabled:bg-slate-500 disabled:shadow-none"
                 >
                   {submitting ? "Completing Onboarding..." : "Complete Onboarding"}
                 </button>
@@ -2967,7 +3525,9 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                 <p className="text-[11px] font-semibold uppercase tracking-[0.24em] text-emerald-300">Onboarding Completed</p>
                 <h3 className="mt-2 text-2xl font-semibold text-white">{memberForm.fullName || "Member created"}</h3>
                 <p className="mt-2 text-sm text-slate-300">
-                  The member, invoice, and payment records are ready. You can open the profile directly or distribute the billing documents from here.
+                  {completedOnboarding.membershipActivated
+                    ? "The member, invoice, and payment records are ready. You can open the profile directly or distribute the billing documents from here."
+                    : `The member and billing records are ready, but access is still pending until ${membershipPolicySettings.minPartialPaymentPercent}% of the invoice is collected.`}
                 </p>
               </div>
               <div className="rounded-full border border-emerald-400/30 bg-emerald-400/10 p-3 text-emerald-200">
@@ -3064,14 +3624,28 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
             <div className="mt-6 flex flex-wrap justify-end gap-3">
               <button
                 type="button"
-                onClick={() => router.replace("/portal/members")}
+                onClick={() => {
+                  try {
+                    window.sessionStorage.removeItem(completionStorageKey);
+                  } catch {
+                    // ignore
+                  }
+                  router.replace("/portal/members");
+                }}
                 className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
               >
                 Back to Members
               </button>
               <button
                 type="button"
-                onClick={() => router.replace(`/admin/members/${completedOnboarding.memberId}`)}
+                onClick={() => {
+                  try {
+                    window.sessionStorage.removeItem(completionStorageKey);
+                  } catch {
+                    // ignore
+                  }
+                  router.replace(`/admin/members/${completedOnboarding.memberId}`);
+                }}
                 className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-700"
               >
                 Open Member Profile

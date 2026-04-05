@@ -14,6 +14,17 @@ import { ClassScheduleItem } from "@/types/models";
 
 const CLASS_TYPES = ["ALL", "GROUP", "PROGRAM", "PT", "EVENT"];
 const EDITABLE_CLASS_TYPES = CLASS_TYPES.filter((t) => t !== "ALL");
+const ACTIVE_CLASS_NAMES = new Set([
+  "Yoga",
+  "Zumba",
+  "HIIT",
+  "Coreflex",
+  "CrossFit",
+  "Kickboxing",
+  "Calisthenics Kids",
+  "Calisthenics Self",
+  "Calisthenics Adult",
+]);
 
 interface BranchFilterOption {
   label: string;
@@ -110,8 +121,9 @@ export default function ClassesPage() {
 
   const filteredSchedules = useMemo(() => {
     const normalized = search.trim().toLowerCase();
-    if (!normalized) return schedules;
-    return schedules.filter(
+    const supportedSchedules = schedules.filter((schedule) => ACTIVE_CLASS_NAMES.has(schedule.className));
+    if (!normalized) return supportedSchedules;
+    return supportedSchedules.filter(
       (s) =>
         s.className.toLowerCase().includes(normalized) ||
         s.trainerName.toLowerCase().includes(normalized)

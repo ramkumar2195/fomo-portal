@@ -406,6 +406,18 @@ export default function LeadsPage() {
   const [historyRows, setHistoryRows] = useState<InquiryStatusHistoryEntry[]>([]);
 
   useEffect(() => {
+    const modalOpen = Boolean(inquiryModalMode || followUpInquiry || assignInquiry || closeInquiry || convertInquiry || historyInquiry);
+    if (!modalOpen) {
+      return;
+    }
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = previousOverflow;
+    };
+  }, [assignInquiry, closeInquiry, convertInquiry, followUpInquiry, historyInquiry, inquiryModalMode]);
+
+  useEffect(() => {
     const handle = window.setTimeout(() => {
       setDebouncedSearch(search.trim());
     }, 300);
