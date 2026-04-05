@@ -318,6 +318,45 @@ function formatClockTime(timeValue?: string): string {
   return `${String(displayHours).padStart(2, "0")}:${String(minutes).padStart(2, "0")} ${meridiem}`;
 }
 
+function parseLocalDateTime(dateValue?: string, timeValue?: string): Date | null {
+  if (!dateValue || !timeValue) {
+    return null;
+  }
+  const [year, month, day] = String(dateValue).split("-").map((part) => Number(part));
+  const [hours, minutes] = String(timeValue).split(":").map((part) => Number(part));
+  if (![year, month, day, hours, minutes].every(Number.isFinite)) {
+    return null;
+  }
+  return new Date(year, month - 1, day, hours, minutes, 0, 0);
+}
+
+function getPtSessionStartDateTime(session: RecordLike): Date | null {
+  return parseLocalDateTime(
+    pickString(session, ["sessionDate"]),
+    pickString(session, ["slotStartTime", "sessionTime"]),
+  );
+}
+
+function getPtSessionEndDateTime(session: RecordLike): Date | null {
+  const endTime =
+    pickString(session, ["slotEndTime"])
+    || addMinutesToTime(pickString(session, ["slotStartTime", "sessionTime"]) || "", PT_SLOT_DURATION_MINUTES);
+  return parseLocalDateTime(pickString(session, ["sessionDate"]), endTime);
+}
+
+function getPtSessionSortTimestamp(session: RecordLike): number {
+  return getPtSessionStartDateTime(session)?.getTime() || Number.MAX_SAFE_INTEGER;
+}
+
+function canStartPtSessionNow(session: RecordLike, now = new Date()): boolean {
+  const startAt = getPtSessionStartDateTime(session);
+  const endAt = getPtSessionEndDateTime(session);
+  if (!startAt || !endAt) {
+    return false;
+  }
+  return now >= startAt && now <= endAt;
+}
+
 function buildPtTimeSlotOptions(): string[] {
   const windows = [
     { start: 6 * 60, end: 10 * 60 },
@@ -5407,10 +5446,49 @@ export default function MemberProfilePage() {
           || commercialPtCatalogVariant?.includedPtSessions
           || pickNumber(activeAssignRec, ["sessionCount", "includedSessions", "totalSessions"])
           || 0;
-        const pendingSessions = scheduledSessions + inProgressSessions;
+        const actionableStatuses = new Set(["SCHEDULED", "UPCOMING", "PENDING", "IN_PROGRESS"]);
+        const recordedSessionsCount = ptSessions.filter((session) => {
+          const status = pickString(toRecord(session), ["status"])?.toUpperCase();
+          return Boolean(status) && !["SCHEDULED", "UPCOMING", "PENDING"].includes(status);
+        }).length;
+        const actionableSessions = [...ptSessions]
+          .map((session) => toRecord(session))
+          .filter((session) => actionableStatuses.has((pickString(session, ["status"]) || "SCHEDULED").toUpperCase()))
+          .sort((left, right) => getPtSessionSortTimestamp(left) - getPtSessionSortTimestamp(right));
+        const actionableDueSessions = actionableSessions.filter((session) => {
+          const status = (pickString(session, ["status"]) || "SCHEDULED").toUpperCase();
+          if (status === "IN_PROGRESS") {
+            return true;
+          }
+          const sessionDate = pickString(session, ["sessionDate"]);
+          return Boolean(sessionDate) && sessionDate <= todayIsoDate;
+        });
+        const sessionRegisterRows = (actionableDueSessions.length > 0 ? actionableDueSessions : actionableSessions.slice(0, 1))
+          .sort((left, right) => getPtSessionSortTimestamp(left) - getPtSessionSortTimestamp(right));
+        const sessionRegisterKeys = new Set(
+          sessionRegisterRows.map((session) => pickString(session, ["id"]) || `${pickString(session, ["sessionDate"])}-${pickString(session, ["slotStartTime", "sessionTime"])}`),
+        );
+        const sessionHistoryRows = [...ptSessions]
+          .map((session) => toRecord(session))
+          .filter((session) => {
+            const key = pickString(session, ["id"]) || `${pickString(session, ["sessionDate"])}-${pickString(session, ["slotStartTime", "sessionTime"])}`;
+            if (sessionRegisterKeys.has(key)) {
+              return false;
+            }
+            const status = (pickString(session, ["status"]) || "SCHEDULED").toUpperCase();
+            if (actionableStatuses.has(status)) {
+              const sessionDate = pickString(session, ["sessionDate"]);
+              return Boolean(sessionDate) && sessionDate < todayIsoDate;
+            }
+            return true;
+          })
+          .sort((left, right) => getPtSessionSortTimestamp(right) - getPtSessionSortTimestamp(left));
         const remainingPtSessions = includedPtSessions > 0 ? Math.max(includedPtSessions - (completedSessions + noShowSessions), 0) : 0;
         const trainerCountedSessions = completedSessions; // Only COMPLETED counts for trainer
         const memberConsumedSessions = completedSessions + noShowSessions; // COMPLETED + NO_SHOW for member
+        const pendingSessions = includedPtSessions > 0
+          ? Math.max(includedPtSessions - memberConsumedSessions, 0)
+          : actionableSessions.length;
         const attendancePct = totalSessions > 0 ? Math.round((completedSessions / totalSessions) * 100) : 0;
 
         // PT slot data from tabData
@@ -5545,7 +5623,7 @@ export default function MemberProfilePage() {
               <ProfilePanel title="Session Tracker" subtitle="Session counts — NO_SHOW counts as consumed for member but NOT for trainer payment" accent="lime">
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   <StatPill label="Total PT Sessions" value={includedPtSessions > 0 ? String(includedPtSessions) : String(totalSessions)} />
-                  <StatPill label="Total Recorded Sessions" value={String(totalSessions)} />
+                  <StatPill label="Total Recorded Sessions" value={String(recordedSessionsCount)} />
                   <StatPill label="Pending PT Sessions" value={String(pendingSessions)} />
                   <StatPill label="Client Show" value={String(completedSessions)} />
                   <StatPill label="Client No-Show" value={String(noShowSessions)} />
@@ -5567,9 +5645,9 @@ export default function MemberProfilePage() {
             ) : null}
 
             {/* Session Register with Actions */}
-            {totalSessions > 0 ? (
+            {sessionRegisterRows.length > 0 ? (
               <div ref={sessionRegisterRef}>
-              <ProfilePanel title="Session Register" subtitle="All PT sessions — use actions to record attendance" accent="slate">
+              <ProfilePanel title="Session Register" subtitle="Only due or currently actionable PT sessions are shown here. Older and completed items move to history." accent="slate">
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm">
                     <thead>
@@ -5584,8 +5662,7 @@ export default function MemberProfilePage() {
                       </tr>
                     </thead>
                     <tbody>
-                      {ptSessions.map((s, idx) => {
-                        const rec = toRecord(s);
+                      {sessionRegisterRows.map((rec, idx) => {
                         const sessId = pickString(rec, ["id"]);
                         const sessStatus = (pickString(rec, ["status"]) || "SCHEDULED").toUpperCase();
                         const slotS = pickString(rec, ["slotStartTime", "sessionTime"]) || "";
@@ -5593,6 +5670,7 @@ export default function MemberProfilePage() {
                         const actualStart = pickString(rec, ["actualStartTime"]) || "";
                         const dur = pickString(rec, ["durationMinutes"]) || "";
                         const startBy = pickString(rec, ["startedBy"]) || "";
+                        const startAllowed = canStartPtSessionNow(rec);
                         return (
                           <tr key={idx} className="border-b border-white/5 hover:bg-white/[0.02]">
                             <td className="px-3 py-2.5 text-white">{formatDateOnly(pickString(rec, ["sessionDate"]))}</td>
@@ -5607,12 +5685,18 @@ export default function MemberProfilePage() {
                             <td className="px-3 py-2.5 text-slate-400">{startBy || "-"}</td>
                             <td className="px-3 py-2.5">
                               <div className="flex gap-1">
-                                {sessStatus === "SCHEDULED" && sessId ? (
+                                {["SCHEDULED", "UPCOMING", "PENDING"].includes(sessStatus) && sessId ? (
                                   <>
-                                    <button type="button" onClick={() => void handlePtSessionAction(sessId, "start")}
-                                      className="rounded-lg bg-blue-500/20 px-2 py-1 text-xs font-semibold text-blue-200 hover:bg-blue-500/30">
-                                      Start
-                                    </button>
+                                    {startAllowed ? (
+                                      <button type="button" onClick={() => void handlePtSessionAction(sessId, "start")}
+                                        className="rounded-lg bg-blue-500/20 px-2 py-1 text-xs font-semibold text-blue-200 hover:bg-blue-500/30">
+                                        Start
+                                      </button>
+                                    ) : (
+                                      <span className="rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-400">
+                                        Start in slot window
+                                      </span>
+                                    )}
                                     <button type="button" onClick={() => void openPtRescheduleModal(rec)}
                                       className="rounded-lg bg-violet-500/20 px-2 py-1 text-xs font-semibold text-violet-200 hover:bg-violet-500/30">
                                       Reschedule
@@ -5649,13 +5733,56 @@ export default function MemberProfilePage() {
               <ProfilePanel title="Session Register" accent="slate">
                 <p className="text-sm text-slate-400">
                   {activePtAssignment
-                    ? "No sessions recorded yet. Configure slot schedule and generate sessions, or create sessions manually."
+                    ? "No due PT session is available yet. The next actionable session will appear here on the scheduled day and slot."
                     : hasAssignedTrainer
                       ? "PT is billed and a trainer is already linked. Sessions will appear here after the weekly slot schedule is configured."
                       : "PT is billed for this member, but sessions will appear here only after the trainer assignment and weekly slot schedule are configured."}
                 </p>
               </ProfilePanel>
               </div>
+            ) : null}
+
+            {sessionHistoryRows.length > 0 ? (
+              <ProfilePanel title="Session History" subtitle="Completed, cancelled, no-show, and previously scheduled PT sessions." accent="slate">
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-white/10 text-xs uppercase tracking-wider text-slate-400">
+                        <th className="px-3 py-2">Date</th>
+                        <th className="px-3 py-2">Slot</th>
+                        <th className="px-3 py-2">Status</th>
+                        <th className="px-3 py-2">Started</th>
+                        <th className="px-3 py-2">Duration</th>
+                        <th className="px-3 py-2">By</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {sessionHistoryRows.map((rec, idx) => {
+                        const sessStatus = (pickString(rec, ["status"]) || "SCHEDULED").toUpperCase();
+                        const slotS = pickString(rec, ["slotStartTime", "sessionTime"]) || "";
+                        const slotE = pickString(rec, ["slotEndTime"]) || "";
+                        const actualStart = pickString(rec, ["actualStartTime"]) || "";
+                        const dur = pickString(rec, ["durationMinutes"]) || "";
+                        const startBy = pickString(rec, ["startedBy"]) || "";
+                        return (
+                          <tr key={idx} className="border-b border-white/5 hover:bg-white/[0.02]">
+                            <td className="px-3 py-2.5 text-white">{formatDateOnly(pickString(rec, ["sessionDate"]))}</td>
+                            <td className="px-3 py-2.5 text-slate-300">{slotS}{slotE ? ` - ${slotE}` : ""}</td>
+                            <td className="px-3 py-2.5">
+                              <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-semibold ${statusBadge(sessStatus)}`}>
+                                {sessStatus.replace("_", " ")}
+                              </span>
+                            </td>
+                            <td className="px-3 py-2.5 text-slate-300">{actualStart ? formatDateTime(actualStart) : "-"}</td>
+                            <td className="px-3 py-2.5 text-slate-300">{dur ? `${dur} min` : "-"}</td>
+                            <td className="px-3 py-2.5 text-slate-400">{startBy || "-"}</td>
+                          </tr>
+                        );
+                      })}
+                    </tbody>
+                  </table>
+                </div>
+              </ProfilePanel>
             ) : null}
 
             {/* Action buttons */}

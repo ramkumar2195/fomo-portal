@@ -103,6 +103,7 @@ export default function FollowUpsPage() {
   const { selectedBranchCode, effectiveBranchId } = useBranch();
   const [queue, setQueue] = useState<FollowUpRecord[]>([]);
   const [inquiriesById, setInquiriesById] = useState<Record<number, InquiryRecord>>({});
+  const [queueScope, setQueueScope] = useState<"BRANCH" | "MINE">("BRANCH");
   const [currentPage, setCurrentPage] = useState(1);
   const [totalPages, setTotalPages] = useState(1);
   const [totalRows, setTotalRows] = useState(0);
@@ -126,14 +127,14 @@ export default function FollowUpsPage() {
 
     try {
       const staffId = resolveStaffId(user);
+      const branchScopedQuery = { branchId: effectiveBranchId, branchCode: selectedBranchCode || undefined };
       const queueBaseQuery =
-        user?.role === "ADMIN"
-          ? { branchId: effectiveBranchId, branchCode: selectedBranchCode || undefined }
-          : {
-              assignedToStaffId: staffId || undefined,
-              branchId: effectiveBranchId,
-              branchCode: selectedBranchCode || undefined,
-            };
+        queueScope === "MINE" && staffId
+          ? {
+              ...branchScopedQuery,
+              assignedToStaffId: staffId,
+            }
+          : branchScopedQuery;
 
       const now = new Date();
       const startOfToday = new Date(now);
@@ -219,7 +220,7 @@ export default function FollowUpsPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, user, currentPage, selectedBranchCode, effectiveBranchId]);
+  }, [token, user, currentPage, selectedBranchCode, effectiveBranchId, queueScope]);
 
   useEffect(() => {
     void loadQueue();
@@ -230,6 +231,10 @@ export default function FollowUpsPage() {
       setCurrentPage(totalPages);
     }
   }, [currentPage, totalPages]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [queueScope]);
 
   const scheduledQueue = useMemo(
     () =>
@@ -327,15 +332,44 @@ export default function FollowUpsPage() {
         title="Scheduled Follow-ups"
         subtitle="Live queue from follow-up APIs"
         actions={
-          <button
-            type="button"
-            onClick={() => void loadQueue()}
-            className="rounded-lg border border-gray-200 px-3 py-2 text-sm font-semibold text-gray-700 hover:bg-gray-100"
-          >
-            Refresh
-          </button>
+          <div className="flex items-center gap-2">
+            <div className="inline-flex rounded-xl border border-white/10 bg-white/[0.03] p-1">
+              {[
+                { value: "BRANCH", label: "Branch Queue" },
+                { value: "MINE", label: "My Queue" },
+              ].map((option) => {
+                const active = queueScope === option.value;
+                return (
+                  <button
+                    key={option.value}
+                    type="button"
+                    onClick={() => setQueueScope(option.value as "BRANCH" | "MINE")}
+                    className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${
+                      active
+                        ? "bg-[#c42924] text-white"
+                        : "text-slate-300 hover:bg-white/[0.05]"
+                    }`}
+                  >
+                    {option.label}
+                  </button>
+                );
+              })}
+            </div>
+            <button
+              type="button"
+              onClick={() => void loadQueue()}
+              className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
+            >
+              Refresh
+            </button>
+          </div>
         }
       >
+        <p className="mb-4 text-xs text-slate-400">
+          {queueScope === "BRANCH"
+            ? "Showing all scheduled follow-ups for the selected branch, including balance-due reminders."
+            : "Showing only follow-ups currently assigned to your staff account."}
+        </p>
         {scheduledQueue.length === 0 ? (
           <p className="text-sm text-gray-500">No follow-ups found.</p>
         ) : (

@@ -719,6 +719,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   const [documentBusyKey, setDocumentBusyKey] = useState<string | null>(null);
   const [membershipLineItems, setMembershipLineItems] = useState<MembershipLineItem[]>([]);
   const membershipTableRef = useRef<HTMLDivElement | null>(null);
+  const previousActivePtSetupVariantIdRef = useRef<string>("");
   const previousAutoReceivedAmountRef = useRef<number>(0);
   const [showPtComposer, setShowPtComposer] = useState(false);
   const [primaryCategoryFilter, setPrimaryCategoryFilter] = useState("");
@@ -1155,6 +1156,9 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     () => addOnVariants.find((variant) => variant.variantId === (ptLineItem?.variantId || draftSelectedAddOnVariant?.variantId)),
     [addOnVariants, draftSelectedAddOnVariant?.variantId, ptLineItem?.variantId],
   );
+  const requiresBundledPtSetup = Boolean(selectedPrimaryVariant && isTransformationVariant(selectedPrimaryVariant));
+  const activePtSetupVariant = requiresBundledPtSetup ? selectedPrimaryVariant : selectedAddOnVariant;
+  const shouldShowPtSetupSection = requiresBundledPtSetup || (canAddPtMembership && showPtComposer);
   const ptEligibleCoaches = useMemo(
     () =>
       branchCoaches.filter((coach) => String(coach.designation || "").toUpperCase() === "PT_COACH"),
@@ -1180,35 +1184,41 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     () =>
       projectMembershipEndDate(
         ptSetupForm.startDate,
-        selectedAddOnVariant?.durationMonths || 0,
-        selectedAddOnVariant?.validityDays || 0,
+        activePtSetupVariant?.durationMonths || 0,
+        activePtSetupVariant?.validityDays || 0,
       ),
-    [ptSetupForm.startDate, selectedAddOnVariant],
+    [activePtSetupVariant, ptSetupForm.startDate],
   );
   const selectedPtSessionCount = useMemo(() => {
     const parsed = Number(ptSetupForm.totalSessions || 0);
     if (Number.isFinite(parsed) && parsed > 0) {
       return Math.trunc(parsed);
     }
-    return Number(selectedAddOnVariant?.includedPtSessions || 0);
-  }, [ptSetupForm.totalSessions, selectedAddOnVariant?.includedPtSessions]);
+    return Number(activePtSetupVariant?.includedPtSessions || 0);
+  }, [activePtSetupVariant?.includedPtSessions, ptSetupForm.totalSessions]);
 
   useEffect(() => {
-    if (!selectedAddOnVariant) {
+    if (!activePtSetupVariant) {
+      previousActivePtSetupVariantIdRef.current = "";
       return;
     }
 
+    const activeVariantId = String(activePtSetupVariant.variantId || "");
     const nextEndDate = ptSetupForm.startDate
-      ? projectMembershipEndDate(ptSetupForm.startDate, selectedAddOnVariant.durationMonths, selectedAddOnVariant.validityDays)
+      ? projectMembershipEndDate(ptSetupForm.startDate, activePtSetupVariant.durationMonths, activePtSetupVariant.validityDays)
       : "";
+    const variantChanged = previousActivePtSetupVariantIdRef.current !== activeVariantId;
+    previousActivePtSetupVariantIdRef.current = activeVariantId;
 
     setPtSetupForm((current) => ({
       ...current,
       endDate: nextEndDate || current.endDate,
-      totalSessions: current.totalSessions || String(selectedAddOnVariant.includedPtSessions || 0),
+      totalSessions: variantChanged || !current.totalSessions
+        ? String(activePtSetupVariant.includedPtSessions || 0)
+        : current.totalSessions,
       startDate: current.startDate || subscriptionForm.startDate || new Date().toISOString().slice(0, 10),
     }));
-  }, [ptSetupForm.startDate, selectedAddOnVariant, subscriptionForm.startDate]);
+  }, [activePtSetupVariant, ptSetupForm.startDate, subscriptionForm.startDate]);
 
   const primaryDraftCommercial = useMemo(
     () => resolveCommercialBreakdown(
@@ -1279,7 +1289,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     const totalPayable = Math.round(rawTotalPayable);
     const enteredReceivedAmount = Math.max(0, Math.round(toNumber(subscriptionForm.receivedAmount) || 0));
     const receivedAmount = Math.max(0, Math.min(totalPayable, enteredReceivedAmount));
-    const submittedReceivedAmount = Math.min(rawTotalPayable, receivedAmount);
+    const submittedReceivedAmount = receivedAmount;
     const balanceAmount = Math.max(0, totalPayable - receivedAmount);
 
     let paymentStatus = "UNPAID";
@@ -1393,8 +1403,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   }, [memberForm.defaultBranchId, token]);
 
   useEffect(() => {
-    // Flagship: auto-assign via load-balancing
-    if (isFlagshipVariant(selectedPrimaryVariant)) {
+    if (needsTrainerAssignment(selectedPrimaryVariant)) {
       if (branchCoaches.length === 0) {
         setAssignedTrainer(null);
         return;
@@ -1405,13 +1414,6 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         .sort((left, right) => left.name.localeCompare(right.name) || left.id.localeCompare(right.id));
       const nextTrainerIndex = branchMembers.length % roundRobinPool.length;
       setAssignedTrainer(roundRobinPool[nextTrainerIndex] || roundRobinPool[0] || null);
-      return;
-    }
-
-    // Transformation: clear auto-assign, trainer is selected manually via dropdown
-    if (isTransformationVariant(selectedPrimaryVariant)) {
-      setAssignedTrainer(null);
-      // Don't clear manualTrainerId — keep user's selection if they already chose one
       return;
     }
 
@@ -1639,6 +1641,404 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     setShowPtComposer(false);
   };
 
+  const renderPtSetupSection = () => {
+    if (!shouldShowPtSetupSection) {
+      return null;
+    }
+
+    return (
+      <div className="mt-5 space-y-4 rounded-[24px] border border-white/8 bg-[#161d28] p-5">
+        <div className="flex items-center gap-3">
+          <Sparkles className="h-5 w-5 text-[#ffb4b1]" />
+          <div>
+            <h4 className="text-sm font-semibold text-white">
+              {requiresBundledPtSetup ? "Transformation PT Setup" : "Add Personal Training"}
+            </h4>
+            <p className="text-xs text-slate-400">
+              {requiresBundledPtSetup
+                ? "Transformation includes bundled PT. Capture the PT coach, schedule, and session setup here."
+                : "Choose the PT package the member is purchasing along with the gym membership."}
+            </p>
+          </div>
+        </div>
+        {!requiresBundledPtSetup ? (
+          <div className="grid gap-4 lg:grid-cols-3">
+            <label className="space-y-2">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Category</span>
+              <select
+                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                value={addOnCategoryFilter}
+                onChange={(event) => {
+                  setAddOnCategoryFilter(event.target.value);
+                  setAddOnProductFilter("");
+                  setSubscriptionForm((current) => ({
+                    ...current,
+                    addOnVariantId: "",
+                    addOnSellingPrice: "",
+                    addOnDiscountPercent: "",
+                  }));
+                }}
+              >
+                <option value="">Select category</option>
+                {addOnCategoryOptions.map((categoryCode) => (
+                  <option key={categoryCode} value={categoryCode}>
+                    {productFamilyLabel(categoryCode)}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-2">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Product</span>
+              <select
+                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                value={addOnProductFilter}
+                disabled={!addOnCategoryFilter}
+                onChange={(event) => {
+                  setAddOnProductFilter(event.target.value);
+                  setSubscriptionForm((current) => ({
+                    ...current,
+                    addOnVariantId: "",
+                    addOnSellingPrice: "",
+                    addOnDiscountPercent: "",
+                  }));
+                }}
+              >
+                <option value="">{addOnCategoryFilter ? "Select product" : "Choose category first"}</option>
+                {filteredAddOnProducts.map((product) => (
+                  <option key={product.productCode} value={product.productCode}>
+                    {product.productName}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <div className="rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Summary</p>
+              <p className="mt-2 text-sm font-semibold text-white">
+                {draftSelectedAddOnVariant ? formatPtProductName(normalizeDisplayVariantName(draftSelectedAddOnVariant.variantName)) : "Choose a PT plan"}
+              </p>
+              <p className="mt-1 text-xs text-slate-400">
+                {draftSelectedAddOnVariant
+                  ? `${draftSelectedAddOnVariant.includedPtSessions} sessions · ${selectedPtCoach?.name || "Choose coach"}`
+                  : "Select a PT category, product, and variant to add it below."}
+              </p>
+            </div>
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3">
+            <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Bundled PT Summary</p>
+            <p className="mt-2 text-sm font-semibold text-white">
+              {activePtSetupVariant ? formatPtProductName(normalizeDisplayVariantName(activePtSetupVariant.variantName)) : "Transformation PT"}
+            </p>
+            <p className="mt-1 text-xs text-slate-400">
+              {activePtSetupVariant
+                ? `${selectedPtSessionCount} sessions · ${selectedPtCoach?.name || "Choose PT coach"}`
+                : "Select the transformation plan to configure the bundled PT setup."}
+            </p>
+          </div>
+        )}
+        {!requiresBundledPtSetup ? (
+          <div className="grid gap-4 lg:grid-cols-4">
+            {filteredAddOnVariants.length === 0 ? (
+              <div className="rounded-[24px] border border-dashed border-white/12 bg-[#101722] p-5 text-sm text-slate-400 lg:col-span-4">
+                No PT variants are configured for this product yet.
+              </div>
+            ) : null}
+            {filteredAddOnVariants.map((variant) => {
+              const active = subscriptionForm.addOnVariantId === variant.variantId;
+              const variantProduct = products.find((product) => product.productCode === variant.productCode);
+              const features = splitFeatures(variant.includedFeatures).filter(shouldShowOnboardingFeatureChip).slice(0, 3);
+              return (
+                <button
+                  key={variant.variantId}
+                  type="button"
+                  onClick={() => {
+                    setAddOnCategoryFilter(variant.categoryCode);
+                    setAddOnProductFilter(variant.productCode);
+                    setSubscriptionForm((current) => ({
+                      ...current,
+                      addOnVariantId: variant.variantId,
+                      addOnSellingPrice: "",
+                      addOnDiscountPercent: "",
+                    }));
+                    setPtSetupForm((current) => ({
+                      ...current,
+                      totalSessions: String(variant.includedPtSessions || 0),
+                      endDate: projectMembershipEndDate(
+                        current.startDate || subscriptionForm.startDate,
+                        variant.durationMonths,
+                        variant.validityDays,
+                      ),
+                    }));
+                  }}
+                  className={`rounded-[20px] border p-4 text-left transition ${active ? "border-[#c42924]/50 bg-[#1b1114] shadow-[0_20px_60px_rgba(196,36,41,0.12)]" : "border-white/10 bg-[#151b26] hover:border-white/20 hover:bg-[#18202c]"}`}
+                >
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">{productFamilyLabel(variant.categoryCode)}</p>
+                      <h5 className="mt-2 text-base font-semibold text-white">{normalizeDisplayVariantName(variant.variantName)}</h5>
+                      {shouldShowVariantSubtitle(variant.variantName, variantProduct?.productName, variant.productCode) ? (
+                        <p className="mt-1 text-xs text-slate-400">{variantProduct?.productName || variant.productCode}</p>
+                      ) : null}
+                    </div>
+                    <span className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] ${statusBadgeClass(active)}`}>
+                      {active ? "Selected" : `${variant.durationMonths} months`}
+                    </span>
+                  </div>
+                  <div className="mt-5 flex items-end justify-between gap-3">
+                    <div>
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Base Price</p>
+                      <p className="mt-1 text-lg font-semibold text-white">{formatCurrency(variant.basePrice)}</p>
+                    </div>
+                    <div className="text-right text-xs text-slate-400">
+                      <p>{variant.includedPtSessions} PT sessions</p>
+                      <p>{variant.validityDays} days validity</p>
+                    </div>
+                  </div>
+                  <div className="mt-4 flex flex-wrap gap-2">
+                    {features.map((feature) => (
+                      <span key={feature} className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
+                        {featurePillLabel(feature)}
+                      </span>
+                    ))}
+                  </div>
+                </button>
+              );
+            })}
+          </div>
+        ) : null}
+        <div className="rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
+          <div className="mb-4 flex items-center gap-3">
+            <UserRound className="h-5 w-5 text-[#ffb4b1]" />
+            <div>
+              <h4 className="text-sm font-semibold text-white">{requiresBundledPtSetup ? "Bundled PT Setup" : "PT Setup"}</h4>
+              <p className="text-xs text-slate-400">
+                {requiresBundledPtSetup
+                  ? "Capture the PT coach, recurring schedule, and sessions included in this transformation package."
+                  : "Capture the same coach, schedule, and session details used in Add PT."}
+              </p>
+            </div>
+          </div>
+          <div className="grid gap-4 lg:grid-cols-3">
+            <label className="space-y-2">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Coach</span>
+              <select
+                className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                value={ptSetupForm.coachId}
+                onChange={(event) => setPtSetupForm((current) => ({ ...current, coachId: event.target.value }))}
+              >
+                <option value="">{ptEligibleCoaches.length > 0 ? "Select coach" : "No PT coach available"}</option>
+                {ptEligibleCoaches.map((coach) => (
+                  <option key={coach.id} value={coach.id}>
+                    {coach.name} · {coach.mobile}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="space-y-2">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Start Date</span>
+              <input
+                type="date"
+                className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                value={ptSetupForm.startDate}
+                onChange={(event) => setPtSetupForm((current) => ({ ...current, startDate: event.target.value }))}
+              />
+            </label>
+            <label className="space-y-2">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Total Sessions</span>
+              <input
+                className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
+                value={ptSetupForm.totalSessions}
+                onChange={(event) => setPtSetupForm((current) => ({ ...current, totalSessions: sanitizeIntegerString(event.target.value) }))}
+                placeholder={activePtSetupVariant ? String(activePtSetupVariant.includedPtSessions || 0) : "0"}
+                inputMode="numeric"
+              />
+            </label>
+          </div>
+          <div className="mt-4 grid gap-4 lg:grid-cols-3">
+            <div className="space-y-2 lg:col-span-2">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Schedule Template</span>
+              <div className="grid grid-cols-2 gap-2">
+                {[
+                  { label: "Everyday", value: "EVERYDAY" },
+                  { label: "Alternate Days", value: "ALTERNATE_DAYS" },
+                ].map((option) => {
+                  const selected = ptSetupForm.scheduleTemplate === option.value;
+                  return (
+                    <button
+                      key={option.value}
+                      type="button"
+                      onClick={() => setPtSetupForm((current) => ({ ...current, scheduleTemplate: option.value as PtScheduleTemplate }))}
+                      className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
+                        selected
+                          ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
+                          : "border-white/10 bg-[#111925] text-slate-300 hover:border-white/20"
+                      }`}
+                    >
+                      {option.label}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
+            <label className="space-y-2">
+              <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Slot</span>
+              <select
+                className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                value={ptSetupForm.slotStartTime}
+                onChange={(event) => setPtSetupForm((current) => ({ ...current, slotStartTime: event.target.value }))}
+              >
+                {ptTimeSlotOptions.map((slot) => (
+                  <option key={slot} value={slot}>
+                    {formatClockTime(slot)} - {formatClockTime(addMinutesToTime(slot, PT_SLOT_DURATION_MINUTES))}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <div className="mt-4 space-y-2">
+            <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Schedule Days</span>
+            <div className="grid grid-cols-3 gap-2 md:grid-cols-6">
+              {PT_WEEKDAY_OPTIONS.map((day) => {
+                const locked = ptSetupForm.scheduleTemplate === "EVERYDAY";
+                const selected = selectedPtDays.includes(day.code);
+                return (
+                  <button
+                    key={day.code}
+                    type="button"
+                    disabled={locked}
+                    onClick={() =>
+                      setPtSetupForm((current) => ({
+                        ...current,
+                        scheduleDays: selected
+                          ? current.scheduleDays.filter((code) => code !== day.code)
+                          : [...current.scheduleDays, day.code],
+                      }))
+                    }
+                    className={`rounded-2xl border px-3 py-3 text-sm font-semibold transition ${
+                      selected
+                        ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
+                        : "border-white/10 bg-[#111925] text-slate-300 hover:border-white/20"
+                    } ${locked ? "cursor-not-allowed opacity-70" : ""}`}
+                  >
+                    {day.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+          <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+            <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Reschedules</p>
+              <p className="mt-2 text-base font-semibold text-white">{activePtSetupVariant ? derivePtRescheduleLimit(activePtSetupVariant.durationMonths) : "-"}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Projected End</p>
+              <p className="mt-2 text-base font-semibold text-white">{projectedPtEndDate || "-"}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Coach</p>
+              <p className="mt-2 text-base font-semibold text-white">{selectedPtCoach?.name || "-"}</p>
+            </div>
+            <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Slot Window</p>
+              <p className="mt-2 text-base font-semibold text-white">{formatClockTime(ptSetupForm.slotStartTime)} - {formatClockTime(ptSlotEndTime)}</p>
+            </div>
+          </div>
+        </div>
+        {!requiresBundledPtSetup ? (
+          <div className="rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
+            <div className="mb-4 flex items-center gap-3">
+              <Sparkles className="h-5 w-5 text-[#ffb4b1]" />
+              <div>
+                <h4 className="text-sm font-semibold text-white">PT Commercials</h4>
+                <p className="text-xs text-slate-400">Set PT selling price and discount before adding the secondary line item.</p>
+              </div>
+            </div>
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="space-y-2">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Selling Price</span>
+                <input
+                  className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
+                  value={subscriptionForm.addOnSellingPrice}
+                  onChange={(event) => {
+                    const value = sanitizeIntegerString(event.target.value);
+                    const baseAmount = draftSelectedAddOnVariant?.basePrice || 0;
+                    const discountPercent =
+                      value === "" || baseAmount <= 0
+                        ? ""
+                        : formatDecimalInput(((baseAmount - Math.min(baseAmount, Number(value))) / baseAmount) * 100);
+                    setSubscriptionForm((current) => ({
+                      ...current,
+                      addOnSellingPrice: value,
+                      addOnDiscountPercent: discountPercent,
+                    }));
+                  }}
+                  placeholder={draftSelectedAddOnVariant ? `Default ${formatCurrency(draftSelectedAddOnVariant.basePrice)}` : "Select PT variant first"}
+                  disabled={!draftSelectedAddOnVariant}
+                />
+              </label>
+              <label className="space-y-2">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Discount Percent</span>
+                <input
+                  className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
+                  value={subscriptionForm.addOnDiscountPercent}
+                  onChange={(event) => {
+                    const value = sanitizeNumericString(event.target.value);
+                    const baseAmount = draftSelectedAddOnVariant?.basePrice || 0;
+                    const normalizedPercent =
+                      value === "" ? undefined : Math.min(100, Math.max(0, Number(value)));
+                    const sellingPrice =
+                      normalizedPercent === undefined || baseAmount <= 0
+                        ? ""
+                        : formatDecimalInput(baseAmount * (1 - normalizedPercent / 100));
+                    setSubscriptionForm((current) => ({
+                      ...current,
+                      addOnDiscountPercent: value,
+                      addOnSellingPrice: sellingPrice,
+                    }));
+                  }}
+                  placeholder="Leave blank for no discount"
+                  disabled={!draftSelectedAddOnVariant}
+                />
+              </label>
+            </div>
+            <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+              <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Plan Price</p>
+                <p className="mt-2 text-base font-semibold text-white">{formatCurrency(addOnDraftCommercial.baseAmount)}</p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Discount</p>
+                <p className="mt-2 text-base font-semibold text-white">{formatCurrency(addOnDraftCommercial.discountAmount)}</p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">CGST / SGST</p>
+                <p className="mt-2 text-base font-semibold text-white">
+                  {formatCurrency(addOnDraftCgst)} / {formatCurrency(addOnDraftSgst)}
+                </p>
+              </div>
+              <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Total Price</p>
+                <p className="mt-2 text-base font-semibold text-white">
+                  {formatCurrency(addOnDraftCommercial.sellingPrice + addOnDraftCgst + addOnDraftSgst)}
+                </p>
+              </div>
+            </div>
+            <div className="mt-4 flex justify-end">
+              <button
+                type="button"
+                onClick={() => addMembershipLineItem()}
+                className="rounded-2xl bg-[#c42924] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#a81f1c]"
+              >
+                Add to Table
+              </button>
+            </div>
+          </div>
+        ) : null}
+      </div>
+    );
+  };
+
   const validateStep = (step: OnboardingStep): boolean => {
     if (step === 1) {
       if (!memberForm.fullName.trim()) {
@@ -1664,9 +2064,9 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         setToast({ kind: "error", message: "Membership start date is required." });
         return false;
       }
-      if (ptLineItem) {
-        if (!selectedAddOnVariant) {
-          setToast({ kind: "error", message: "The PT secondary subscription is incomplete." });
+      if (ptLineItem || requiresBundledPtSetup) {
+        if (!activePtSetupVariant) {
+          setToast({ kind: "error", message: "The PT setup is incomplete for this membership." });
           return false;
         }
         if (!ptSetupForm.coachId) {
@@ -1687,8 +2087,8 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         }
         if (
           selectedPrimaryVariant?.durationMonths &&
-          selectedAddOnVariant?.durationMonths &&
-          selectedAddOnVariant.durationMonths > selectedPrimaryVariant.durationMonths
+          activePtSetupVariant?.durationMonths &&
+          activePtSetupVariant.durationMonths > selectedPrimaryVariant.durationMonths
         ) {
           setToast({ kind: "error", message: "PT duration cannot exceed the primary membership duration." });
           return false;
@@ -1810,11 +2210,9 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         emergencyContactName: toOptionalString(memberForm.emergencyContactName),
         emergencyContactPhone: toOptionalString(memberForm.emergencyContactPhone),
         emergencyContactRelation: toOptionalString(memberForm.emergencyContactRelation),
-        defaultTrainerStaffId: isFlagshipVariant(selectedPrimaryVariant) && assignedTrainer
+        defaultTrainerStaffId: needsTrainerAssignment(selectedPrimaryVariant) && assignedTrainer
           ? assignedTrainer.id
-          : isTransformationVariant(selectedPrimaryVariant) && manualTrainerId
-            ? manualTrainerId
-            : undefined,
+          : undefined,
       };
 
       if (!memberRecord) {
@@ -1883,23 +2281,28 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         }
       }
 
-      if (membershipActivated && selectedAddOnVariant && selectedPtAddOnSubscription?.memberSubscriptionId) {
+      const ptProvisionVariant = requiresBundledPtSetup ? selectedPrimaryVariant : selectedAddOnVariant;
+      const ptProvisionSubscriptionId = requiresBundledPtSetup
+        ? memberSubscriptionId
+        : Number(selectedPtAddOnSubscription?.memberSubscriptionId || 0);
+
+      if (membershipActivated && ptProvisionVariant && ptProvisionSubscriptionId > 0) {
         try {
           const memberEmailForAssignment =
             toOptionalString(memberForm.email) || buildSyntheticInternalEmail(memberForm.mobileNumber.trim(), "members.fomotraining.internal");
           const coachEmailForAssignment =
             selectedPtCoach?.email
             || buildSyntheticInternalEmail(selectedPtCoach?.mobile || selectedPtCoach?.id || ptSetupForm.coachId, "staff.fomotraining.internal");
-          await subscriptionService.provisionPtOperationalSetup(token, selectedPtAddOnSubscription.memberSubscriptionId, {
+          await subscriptionService.provisionPtOperationalSetup(token, ptProvisionSubscriptionId, {
             memberEmail: memberEmailForAssignment,
             coachId: Number(ptSetupForm.coachId),
             coachEmail: coachEmailForAssignment,
             startDate: ptSetupForm.startDate || subscriptionForm.startDate,
             endDate: projectedPtEndDate || undefined,
-            productVariantId: Number(selectedAddOnVariant.variantId),
-            packageName: `${formatPtProductName(selectedAddOnVariant.variantName || selectedAddOnVariant.productCode)} · ${formatPlanDurationLabel(selectedAddOnVariant.durationMonths, selectedAddOnVariant.validityDays)}`,
+            productVariantId: Number(ptProvisionVariant.variantId),
+            packageName: `${formatPtProductName(ptProvisionVariant.variantName || ptProvisionVariant.productCode)} · ${formatPlanDurationLabel(ptProvisionVariant.durationMonths, ptProvisionVariant.validityDays)}`,
             totalSessions: selectedPtSessionCount,
-            rescheduleLimit: derivePtRescheduleLimit(Number(selectedAddOnVariant.durationMonths || 0)),
+            rescheduleLimit: derivePtRescheduleLimit(Number(ptProvisionVariant.durationMonths || 0)),
             slotDurationMinutes: PT_SLOT_DURATION_MINUTES,
             slots: selectedPtDays.map((dayCode) => ({
               dayOfWeek: dayCode,
@@ -1969,7 +2372,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         }
       }
 
-      setCompletedOnboarding({
+      const completionPayload: CompletedOnboardingState = {
         memberId,
         memberSubscriptionId,
         invoiceId,
@@ -1987,7 +2390,13 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         totalPaidAmount: paymentReceipt?.totalPaidAmount || subscriptionResponse.totalPaidAmount || 0,
         balanceAmount: paymentReceipt?.balanceAmount ?? subscriptionResponse.balanceAmount ?? invoiceTotal,
         membershipActivated,
-      });
+      };
+      try {
+        window.sessionStorage.setItem(completionStorageKey, JSON.stringify(completionPayload));
+      } catch {
+        // Ignore storage failures and still show the in-memory completion state.
+      }
+      setCompletedOnboarding(completionPayload);
 
       const enrollmentNote = isGroupClassVariant(selectedPrimaryVariant)
         ? " Group-class program enrollment will sync automatically after activation."
@@ -2054,15 +2463,13 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         : user?.name || "-";
   const trainerAssistLabel = !selectedPrimaryVariant
     ? "Pick a plan to evaluate trainer assignment."
-    : isFlagshipVariant(selectedPrimaryVariant)
+    : needsTrainerAssignment(selectedPrimaryVariant)
       ? assignedTrainer
-        ? `Auto-assigned to ${assignedTrainer.name} using branch round-robin.`
+        ? isTransformationVariant(selectedPrimaryVariant)
+          ? `Default trainer auto-assigned to ${assignedTrainer.name}. Select the bundled PT coach below.`
+          : `Auto-assigned to ${assignedTrainer.name} using branch round-robin.`
         : "No active internal coach available for this branch."
-      : isTransformationVariant(selectedPrimaryVariant)
-        ? selectedManualTrainer
-          ? `Trainer: ${selectedManualTrainer.name}`
-          : "Select a trainer for this transformation program."
-        : "Trainer assignment is not required for this plan family.";
+      : "Trainer assignment is not required for this plan family.";
   const onboardingContext = inquiry
     ? `Convert this enquiry into a member profile, attach memberships, and capture the first invoice against ${selectedBranchName || inquiry.branchCode || "the current branch"}.`
     : "Convert this enquiry into a member profile, attach memberships, and capture the first invoice.";
@@ -2555,6 +2962,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                               );
                             })}
                             </div>
+                            {requiresBundledPtSetup ? renderPtSetupSection() : null}
                             <div className="mt-5 rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
                               <div className="mb-4 flex items-center gap-3">
                                 <Sparkles className="h-5 w-5 text-[#ffb4b1]" />
@@ -2647,376 +3055,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                           ) : null}
                         </div>
 
-                        {canAddPtMembership && showPtComposer ? (
-                          <div className="mt-5 space-y-4 rounded-[24px] border border-white/8 bg-[#161d28] p-5">
-                            <div className="flex items-center gap-3">
-                              <Sparkles className="h-5 w-5 text-[#ffb4b1]" />
-                              <div>
-                                <h4 className="text-sm font-semibold text-white">Add Personal Training</h4>
-                                <p className="text-xs text-slate-400">Choose the PT package the member is purchasing along with the gym membership.</p>
-                              </div>
-                            </div>
-                            <div className="grid gap-4 lg:grid-cols-3">
-                              <label className="space-y-2">
-                                <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Category</span>
-                                <select
-                                  className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
-                                  value={addOnCategoryFilter}
-                                  onChange={(event) => {
-                                    setAddOnCategoryFilter(event.target.value);
-                                    setAddOnProductFilter("");
-                                    setSubscriptionForm((current) => ({
-                                      ...current,
-                                      addOnVariantId: "",
-                                      addOnSellingPrice: "",
-                                      addOnDiscountPercent: "",
-                                    }));
-                                  }}
-                                >
-                                  <option value="">Select category</option>
-                                  {addOnCategoryOptions.map((categoryCode) => (
-                                    <option key={categoryCode} value={categoryCode}>
-                                      {productFamilyLabel(categoryCode)}
-                                    </option>
-                                  ))}
-                                </select>
-                              </label>
-                              <label className="space-y-2">
-                                <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">PT Product</span>
-                                <select
-                                  className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
-                                  value={addOnProductFilter}
-                                  disabled={!addOnCategoryFilter}
-                                  onChange={(event) => {
-                                    setAddOnProductFilter(event.target.value);
-                                    setSubscriptionForm((current) => ({
-                                      ...current,
-                                      addOnVariantId: "",
-                                      addOnSellingPrice: "",
-                                      addOnDiscountPercent: "",
-                                    }));
-                                  }}
-                                >
-                                  <option value="">{addOnCategoryFilter ? "Select product" : "Choose category first"}</option>
-                                  {filteredAddOnProducts.map((product) => (
-                                    <option key={product.productCode} value={product.productCode}>
-                                      {product.productName}
-                                    </option>
-                                  ))}
-                                </select>
-                              </label>
-                              <div className="rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3">
-                                <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Summary</p>
-                                <p className="mt-2 text-sm font-semibold text-white">
-                                  {draftSelectedAddOnVariant ? formatPtProductName(normalizeDisplayVariantName(draftSelectedAddOnVariant.variantName)) : "Choose a PT plan"}
-                                </p>
-                                <p className="mt-1 text-xs text-slate-400">
-                                  {draftSelectedAddOnVariant
-                                    ? `${draftSelectedAddOnVariant.includedPtSessions} sessions · ${selectedPtCoach?.name || "Choose coach"}`
-                                    : "Select a PT category, product, and variant to add it below."}
-                                </p>
-                              </div>
-                            </div>
-                            <div className="grid gap-4 lg:grid-cols-4">
-                              {filteredAddOnVariants.length === 0 ? (
-                                <div className="rounded-[24px] border border-dashed border-white/12 bg-[#101722] p-5 text-sm text-slate-400 lg:col-span-4">
-                                  No PT variants are configured for this product yet.
-                                </div>
-                              ) : null}
-                              {filteredAddOnVariants.map((variant) => {
-                                const active = subscriptionForm.addOnVariantId === variant.variantId;
-                                const variantProduct = products.find((product) => product.productCode === variant.productCode);
-                                const features = splitFeatures(variant.includedFeatures).filter(shouldShowOnboardingFeatureChip).slice(0, 3);
-                                return (
-                                  <button
-                                    key={variant.variantId}
-                                    type="button"
-                                    onClick={() => {
-                                      setAddOnCategoryFilter(variant.categoryCode);
-                                      setAddOnProductFilter(variant.productCode);
-                                      setSubscriptionForm((current) => ({
-                                        ...current,
-                                        addOnVariantId: variant.variantId,
-                                        addOnSellingPrice: "",
-                                        addOnDiscountPercent: "",
-                                      }));
-                                      setPtSetupForm((current) => ({
-                                        ...current,
-                                        totalSessions: String(variant.includedPtSessions || 0),
-                                        endDate: projectMembershipEndDate(
-                                          current.startDate || subscriptionForm.startDate,
-                                          variant.durationMonths,
-                                          variant.validityDays,
-                                        ),
-                                      }));
-                                    }}
-                                    className={`rounded-[20px] border p-4 text-left transition ${active ? "border-[#c42924]/50 bg-[#1b1114] shadow-[0_20px_60px_rgba(196,36,41,0.12)]" : "border-white/10 bg-[#151b26] hover:border-white/20 hover:bg-[#18202c]"}`}
-                                  >
-                                    <div className="flex items-start justify-between gap-3">
-                                      <div>
-                                        <p className="text-xs font-semibold uppercase tracking-[0.24em] text-slate-400">{productFamilyLabel(variant.categoryCode)}</p>
-                                        <h5 className="mt-2 text-base font-semibold text-white">{normalizeDisplayVariantName(variant.variantName)}</h5>
-                                        {shouldShowVariantSubtitle(variant.variantName, variantProduct?.productName, variant.productCode) ? (
-                                          <p className="mt-1 text-xs text-slate-400">{variantProduct?.productName || variant.productCode}</p>
-                                        ) : null}
-                                      </div>
-                                      <span className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] ${statusBadgeClass(active)}`}>
-                                        {active ? "Selected" : `${variant.durationMonths} months`}
-                                      </span>
-                                    </div>
-                                    <div className="mt-5 flex items-end justify-between gap-3">
-                                      <div>
-                                        <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">Base Price</p>
-                                        <p className="mt-1 text-lg font-semibold text-white">{formatCurrency(variant.basePrice)}</p>
-                                      </div>
-                                      <div className="text-right text-xs text-slate-400">
-                                        <p>{variant.includedPtSessions} PT sessions</p>
-                                        <p>{variant.validityDays} days validity</p>
-                                      </div>
-                                    </div>
-                                    <div className="mt-4 flex flex-wrap gap-2">
-                                      {features.map((feature) => (
-                                        <span key={feature} className="rounded-full border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] text-slate-300">
-                                          {featurePillLabel(feature)}
-                                        </span>
-                                      ))}
-                                    </div>
-                                  </button>
-                                );
-                              })}
-                            </div>
-                            <div className="rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
-                              <div className="mb-4 flex items-center gap-3">
-                                <UserRound className="h-5 w-5 text-[#ffb4b1]" />
-                                <div>
-                                  <h4 className="text-sm font-semibold text-white">PT Setup</h4>
-                                  <p className="text-xs text-slate-400">Capture the same coach, schedule, and session details used in Add PT.</p>
-                                </div>
-                              </div>
-                              <div className="grid gap-4 lg:grid-cols-3">
-                                <label className="space-y-2">
-                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Coach</span>
-                                  <select
-                                    className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
-                                    value={ptSetupForm.coachId}
-                                    onChange={(event) => setPtSetupForm((current) => ({ ...current, coachId: event.target.value }))}
-                                  >
-                                    <option value="">{ptEligibleCoaches.length > 0 ? "Select coach" : "No PT coach available"}</option>
-                                    {ptEligibleCoaches.map((coach) => (
-                                      <option key={coach.id} value={coach.id}>
-                                        {coach.name} · {coach.mobile}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </label>
-                                <label className="space-y-2">
-                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Start Date</span>
-                                  <input
-                                    type="date"
-                                    className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
-                                    value={ptSetupForm.startDate}
-                                    onChange={(event) => setPtSetupForm((current) => ({ ...current, startDate: event.target.value }))}
-                                  />
-                                </label>
-                                <label className="space-y-2">
-                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Total Sessions</span>
-                                  <input
-                                    className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
-                                    value={ptSetupForm.totalSessions}
-                                    onChange={(event) => setPtSetupForm((current) => ({ ...current, totalSessions: sanitizeIntegerString(event.target.value) }))}
-                                    placeholder={selectedAddOnVariant ? String(selectedAddOnVariant.includedPtSessions || 0) : "0"}
-                                    inputMode="numeric"
-                                  />
-                                </label>
-                              </div>
-                              <div className="mt-4 grid gap-4 lg:grid-cols-3">
-                                <div className="space-y-2 lg:col-span-2">
-                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Schedule Template</span>
-                                  <div className="grid grid-cols-2 gap-2">
-                                    {[
-                                      { label: "Everyday", value: "EVERYDAY" },
-                                      { label: "Alternate Days", value: "ALTERNATE_DAYS" },
-                                    ].map((option) => {
-                                      const selected = ptSetupForm.scheduleTemplate === option.value;
-                                      return (
-                                        <button
-                                          key={option.value}
-                                          type="button"
-                                          onClick={() => setPtSetupForm((current) => ({ ...current, scheduleTemplate: option.value as PtScheduleTemplate }))}
-                                          className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
-                                            selected
-                                              ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
-                                              : "border-white/10 bg-[#111925] text-slate-300 hover:border-white/20"
-                                          }`}
-                                        >
-                                          {option.label}
-                                        </button>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                                <label className="space-y-2">
-                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Slot</span>
-                                  <select
-                                    className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
-                                    value={ptSetupForm.slotStartTime}
-                                    onChange={(event) => setPtSetupForm((current) => ({ ...current, slotStartTime: event.target.value }))}
-                                  >
-                                    {ptTimeSlotOptions.map((slot) => (
-                                      <option key={slot} value={slot}>
-                                        {formatClockTime(slot)} - {formatClockTime(addMinutesToTime(slot, PT_SLOT_DURATION_MINUTES))}
-                                      </option>
-                                    ))}
-                                  </select>
-                                </label>
-                              </div>
-                              <div className="mt-4 space-y-2">
-                                <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Schedule Days</span>
-                                <div className="grid grid-cols-3 gap-2 md:grid-cols-6">
-                                  {PT_WEEKDAY_OPTIONS.map((day) => {
-                                    const locked = ptSetupForm.scheduleTemplate === "EVERYDAY";
-                                    const selected = selectedPtDays.includes(day.code);
-                                    return (
-                                      <button
-                                        key={day.code}
-                                        type="button"
-                                        disabled={locked}
-                                        onClick={() =>
-                                          setPtSetupForm((current) => ({
-                                            ...current,
-                                            scheduleDays: selected
-                                              ? current.scheduleDays.filter((code) => code !== day.code)
-                                              : [...current.scheduleDays, day.code],
-                                          }))
-                                        }
-                                        className={`rounded-2xl border px-3 py-3 text-sm font-semibold transition ${
-                                          selected
-                                            ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
-                                            : "border-white/10 bg-[#111925] text-slate-300 hover:border-white/20"
-                                        } ${locked ? "cursor-not-allowed opacity-70" : ""}`}
-                                      >
-                                        {day.label}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              </div>
-                              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Reschedules</p>
-                                  <p className="mt-2 text-base font-semibold text-white">{selectedAddOnVariant ? derivePtRescheduleLimit(selectedAddOnVariant.durationMonths) : "-"}</p>
-                                </div>
-                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Projected End</p>
-                                  <p className="mt-2 text-base font-semibold text-white">{projectedPtEndDate || "-"}</p>
-                                </div>
-                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Coach</p>
-                                  <p className="mt-2 text-base font-semibold text-white">{selectedPtCoach?.name || "-"}</p>
-                                </div>
-                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Slot Window</p>
-                                  <p className="mt-2 text-base font-semibold text-white">{formatClockTime(ptSetupForm.slotStartTime)} - {formatClockTime(ptSlotEndTime)}</p>
-                                </div>
-                              </div>
-                            </div>
-                            <div className="rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
-                              <div className="mb-4 flex items-center gap-3">
-                                <Sparkles className="h-5 w-5 text-[#ffb4b1]" />
-                                <div>
-                                  <h4 className="text-sm font-semibold text-white">PT Commercials</h4>
-                                  <p className="text-xs text-slate-400">Set PT selling price and discount before adding the secondary line item.</p>
-                                </div>
-                              </div>
-                              <div className="grid gap-4 md:grid-cols-2">
-                                <label className="space-y-2">
-                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Selling Price</span>
-                                  <input
-                                    className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
-                                    value={subscriptionForm.addOnSellingPrice}
-                                    onChange={(event) => {
-                                      const value = sanitizeIntegerString(event.target.value);
-                                      const baseAmount = draftSelectedAddOnVariant?.basePrice || 0;
-                                      const discountPercent =
-                                        value === "" || baseAmount <= 0
-                                          ? ""
-                                          : formatDecimalInput(((baseAmount - Math.min(baseAmount, Number(value))) / baseAmount) * 100);
-                                      setSubscriptionForm((current) => ({
-                                        ...current,
-                                        addOnSellingPrice: value,
-                                        addOnDiscountPercent: discountPercent,
-                                      }));
-                                    }}
-                                    placeholder={draftSelectedAddOnVariant ? `Default ${formatCurrency(draftSelectedAddOnVariant.basePrice)}` : "Select PT variant first"}
-                                    disabled={!draftSelectedAddOnVariant}
-                                  />
-                                </label>
-                                <label className="space-y-2">
-                                  <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Discount Percent</span>
-                                  <input
-                                    className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
-                                    value={subscriptionForm.addOnDiscountPercent}
-                                    onChange={(event) => {
-                                      const value = sanitizeNumericString(event.target.value);
-                                      const baseAmount = draftSelectedAddOnVariant?.basePrice || 0;
-                                      const normalizedPercent =
-                                        value === "" ? undefined : Math.min(100, Math.max(0, Number(value)));
-                                      const sellingPrice =
-                                        normalizedPercent === undefined || baseAmount <= 0
-                                          ? ""
-                                          : formatDecimalInput(baseAmount * (1 - normalizedPercent / 100));
-                                      setSubscriptionForm((current) => ({
-                                        ...current,
-                                        addOnDiscountPercent: value,
-                                        addOnSellingPrice: sellingPrice,
-                                      }));
-                                    }}
-                                    placeholder="Leave blank for no discount"
-                                    disabled={!draftSelectedAddOnVariant}
-                                  />
-                                </label>
-                              </div>
-                              <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Plan Price</p>
-                                  <p className="mt-2 text-base font-semibold text-white">{formatCurrency(addOnDraftCommercial.baseAmount)}</p>
-                                </div>
-                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Discount</p>
-                                  <p className="mt-2 text-base font-semibold text-white">{formatCurrency(addOnDraftCommercial.discountAmount)}</p>
-                                </div>
-                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">CGST / SGST</p>
-                                  <p className="mt-2 text-base font-semibold text-white">
-                                    {formatCurrency(addOnDraftCgst)} / {formatCurrency(addOnDraftSgst)}
-                                  </p>
-                                </div>
-                                <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
-                                  <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Total Price</p>
-                                  <p className="mt-2 text-base font-semibold text-white">
-                                    {formatCurrency(addOnDraftCommercial.sellingPrice + addOnDraftCgst + addOnDraftSgst)}
-                                  </p>
-                                </div>
-                              </div>
-                              <div className="mt-4 flex items-center justify-between gap-3">
-                                <button
-                                  type="button"
-                                  onClick={() => setShowPtComposer(false)}
-                                  className="rounded-2xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-slate-300 hover:bg-white/[0.04]"
-                                >
-                                  Cancel PT
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={() => addMembershipLineItem()}
-                                  className="rounded-2xl bg-[#c42924] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#a81f1c]"
-                                >
-                                  Add to Table
-                                </button>
-                              </div>
-                            </div>
-                          </div>
-                        ) : null}
+                        {!requiresBundledPtSetup ? renderPtSetupSection() : null}
 
                         <div ref={membershipTableRef} className="mt-5 rounded-[24px] border border-white/10 bg-[#0f141d] p-4">
                             <div className="flex items-center justify-between gap-3">
@@ -3180,41 +3219,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                 <p className="text-xs text-slate-400">Auto-assigned for Flagship. Manual selection for Transformation.</p>
                               </div>
                             </div>
-                            {isTransformationVariant(selectedPrimaryVariant) ? (
-                              <div className="space-y-3">
-                                <div className="rounded-2xl border border-violet-400/20 bg-violet-400/10 p-4">
-                                  <p className="text-sm font-semibold text-violet-100">Select Trainer for Transformation</p>
-                                  <p className="mt-2 text-sm text-violet-50/80">
-                                    Transformation programs require a dedicated trainer. Please select the coach who will conduct this program.
-                                  </p>
-                                </div>
-                                {branchCoaches.length > 0 ? (
-                                  <select
-                                    value={manualTrainerId}
-                                    onChange={(e) => setManualTrainerId(e.target.value)}
-                                    className="w-full rounded-xl border border-white/10 bg-[#111821] px-3 py-2.5 text-sm text-white focus:border-[#c42924] focus:outline-none focus:ring-1 focus:ring-[#c42924]"
-                                  >
-                                    <option value="">Choose a trainer...</option>
-                                    {branchCoaches.map((coach) => (
-                                      <option key={coach.id} value={coach.id}>
-                                        {coach.name} · {coach.mobile}
-                                      </option>
-                                    ))}
-                                  </select>
-                                ) : (
-                                  <div className="rounded-2xl border border-amber-400/20 bg-amber-400/10 p-4">
-                                    <p className="text-sm font-semibold text-amber-100">No coaches available</p>
-                                    <p className="mt-2 text-sm text-amber-50/80">No active internal coach is currently available in this branch.</p>
-                                  </div>
-                                )}
-                                {selectedManualTrainer ? (
-                                  <div className="rounded-2xl border border-emerald-400/20 bg-emerald-400/10 p-4">
-                                    <p className="text-sm font-semibold text-emerald-100">{selectedManualTrainer.name}</p>
-                                    <p className="mt-1 text-sm text-emerald-50/80">{selectedManualTrainer.mobile}</p>
-                                  </div>
-                                ) : null}
-                              </div>
-                            ) : !needsTrainerAssignment(selectedPrimaryVariant) ? (
+                            {!needsTrainerAssignment(selectedPrimaryVariant) ? (
                               <div className="rounded-2xl border border-cyan-400/20 bg-cyan-400/10 p-4">
                                 <p className="text-sm font-semibold text-cyan-100">Trainer not required</p>
                                 <p className="mt-2 text-sm text-cyan-50/80">

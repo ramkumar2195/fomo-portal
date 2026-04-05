@@ -80,6 +80,29 @@ function formatDisplayLabel(value: string): string {
     .replace(/\b\w/g, (match) => match.toUpperCase());
 }
 
+function isMeaningfulDisplayValue(value: string): boolean {
+  const normalized = value.trim().toLowerCase();
+  return !["", "-", "null", "undefined", "n/a", "none"].includes(normalized);
+}
+
+function buildUniqueDisplayValues(values: string[]): string[] {
+  const seen = new Map<string, string>();
+
+  values.forEach((value) => {
+    if (!isMeaningfulDisplayValue(value)) {
+      return;
+    }
+
+    const normalized = value.trim().replace(/\s{2,}/g, " ");
+    const key = normalized.toLowerCase();
+    if (!seen.has(key)) {
+      seen.set(key, normalized);
+    }
+  });
+
+  return Array.from(seen.values()).sort((left, right) => left.localeCompare(right));
+}
+
 function resolveActivePlan(dashboard: unknown, entitlements: unknown): string {
   const dashboardRecord = toRecord(dashboard);
   const entitlementsRecord = toRecord(entitlements);
@@ -224,27 +247,26 @@ async function fetchMemberSummary(
         .map((value) => formatDisplayLabel(value)),
     ),
   );
-  const membershipNames = Array.from(
-    new Set(
-      membershipRecords
-        .map((record) => normalizeDisplayPlanName(getString(record, ["variantName", "productName"])))
-        .filter((value) => value && value !== "No subscription is active"),
-    ),
+  const membershipNames = buildUniqueDisplayValues(
+    [
+      activePlan,
+      ...membershipRecords.flatMap((record) => [
+        normalizeDisplayPlanName(getString(record, ["variantName"])),
+        normalizeDisplayPlanName(getString(record, ["productName"])),
+      ]),
+    ].filter((value) => value && value !== "No subscription is active"),
   );
-  const trainerNames = Array.from(
-    new Set(
-      (Array.isArray(assignments) ? assignments : [])
-        .map((item) => {
-          const record = toRecord(item);
-          const resolved = (
-            getString(record, ["coachName", "trainerName", "assignedCoachName", "assignedTrainerName"]) ||
-            getString(record, ["coachId", "trainerId"])
-          );
-          return staffNameById[resolved] || resolved;
-        })
-        .filter(Boolean)
-        .filter((value) => /[A-Za-z]/.test(value)),
-    ),
+  const trainerNames = buildUniqueDisplayValues(
+    (Array.isArray(assignments) ? assignments : [])
+      .map((item) => {
+        const record = toRecord(item);
+        const resolved = (
+          getString(record, ["coachName", "trainerName", "assignedCoachName", "assignedTrainerName"]) ||
+          getString(record, ["coachId", "trainerId"])
+        );
+        return staffNameById[resolved] || resolved;
+      })
+      .filter((value) => /[A-Za-z]/.test(value)),
   );
   const fallbackTrainerName =
     !trainerNames.length && member.defaultTrainerStaffId
@@ -266,7 +288,7 @@ async function fetchMemberSummary(
         : "-",
     serviceTypes,
     membershipNames,
-    trainerNames: fallbackTrainerName ? [fallbackTrainerName] : trainerNames,
+    trainerNames: fallbackTrainerName && isMeaningfulDisplayValue(fallbackTrainerName) ? [fallbackTrainerName] : trainerNames,
     recordStatus: member.active === false ? "INACTIVE" : "ACTIVE",
     branchCode: inquiry?.branchCode,
     inquiryCreatedAt: inquiry?.createdAt || inquiry?.inquiryAt,
@@ -470,37 +492,30 @@ export default function MembersPage() {
 
   const trainerOptions = useMemo(
     () =>
-      Array.from(
-        new Set(
-          Object.values(detailsByMemberId)
-            .flatMap((details) => details.trainerNames)
-            .filter((value) => Boolean(value) && /[A-Za-z]/.test(value)),
-        ),
-      ).sort((left, right) => left.localeCompare(right)),
+      buildUniqueDisplayValues(
+        Object.values(detailsByMemberId)
+          .flatMap((details) => details.trainerNames)
+          .filter((value) => /[A-Za-z]/.test(value)),
+      ),
     [detailsByMemberId],
   );
 
   const serviceOptions = useMemo(
     () =>
-      Array.from(
-        new Set(
-          Object.values(detailsByMemberId)
-            .flatMap((details) => details.serviceTypes)
-            .filter(Boolean),
-        ),
-      ).sort((left, right) => left.localeCompare(right)),
+      buildUniqueDisplayValues(
+        Object.values(detailsByMemberId)
+          .flatMap((details) => details.serviceTypes),
+      ),
     [detailsByMemberId],
   );
 
   const membershipOptions = useMemo(
     () =>
-      Array.from(
-        new Set(
-          Object.values(detailsByMemberId)
-            .flatMap((details) => details.membershipNames)
-            .filter(Boolean),
-        ),
-      ).sort((left, right) => left.localeCompare(right)),
+      buildUniqueDisplayValues(
+        Object.values(detailsByMemberId)
+          .flatMap((details) => [details.activePlan, ...details.membershipNames])
+          .filter((value) => value !== "No subscription is active"),
+      ),
     [detailsByMemberId],
   );
 
