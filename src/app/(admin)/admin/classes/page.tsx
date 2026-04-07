@@ -10,7 +10,9 @@ import { useBranch } from "@/contexts/branch-context";
 import { ApiError } from "@/lib/api/http-client";
 import { branchService } from "@/lib/api/services/branch-service";
 import { trainingService } from "@/lib/api/services/training-service";
+import { usersService } from "@/lib/api/services/users-service";
 import { ClassScheduleItem } from "@/types/models";
+import { UserDirectoryItem } from "@/types/models";
 
 const CLASS_TYPES = ["ALL", "GROUP", "PROGRAM", "PT", "EVENT"];
 const EDITABLE_CLASS_TYPES = CLASS_TYPES.filter((t) => t !== "ALL");
@@ -21,10 +23,9 @@ const ACTIVE_CLASS_NAMES = new Set([
   "Coreflex",
   "CrossFit",
   "Kickboxing",
-  "Calisthenics Kids",
-  "Calisthenics Self",
   "Calisthenics Adult",
 ]);
+const CLASS_NAME_OPTIONS = Array.from(ACTIVE_CLASS_NAMES);
 
 interface BranchFilterOption {
   label: string;
@@ -62,6 +63,7 @@ export default function ClassesPage() {
   const [branchFilter, setBranchFilter] = useState(selectedBranchCode || "ALL");
   const [classType, setClassType] = useState("ALL");
   const [schedules, setSchedules] = useState<ClassScheduleItem[]>([]);
+  const [coaches, setCoaches] = useState<UserDirectoryItem[]>([]);
   const [branches, setBranches] = useState<BranchFilterOption[]>([{ label: "All Branches", value: "ALL" }]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -93,6 +95,24 @@ export default function ClassesPage() {
         setBranches([{ label: "All Branches", value: "ALL" }, ...next]);
       } catch {
         if (active) setBranches([{ label: "All Branches", value: "ALL" }]);
+      }
+    })();
+    return () => { active = false; };
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    let active = true;
+    (async () => {
+      try {
+        const items = await usersService.searchUsers(token, { role: "COACH", active: true });
+        if (active) {
+          setCoaches(items);
+        }
+      } catch {
+        if (active) {
+          setCoaches([]);
+        }
       }
     })();
     return () => { active = false; };
@@ -137,6 +157,23 @@ export default function ClassesPage() {
       branchCode: branchFilter !== "ALL" ? branchFilter : (selectedBranchCode || ""),
     });
     setShowModal(true);
+  };
+
+  const availableCoaches = useMemo(() => {
+    if (!form.branchCode || form.branchCode === "ALL") {
+      return coaches;
+    }
+    const branchMatches = coaches.filter((coach) => coach.defaultBranchId === form.branchCode);
+    return branchMatches.length > 0 ? branchMatches : coaches;
+  }, [coaches, form.branchCode]);
+
+  const updateTrainer = (value: string) => {
+    const selectedCoach = availableCoaches.find((coach) => coach.id === value) ?? coaches.find((coach) => coach.id === value);
+    setForm((current) => ({
+      ...current,
+      trainerId: value,
+      trainerName: selectedCoach?.name || "",
+    }));
   };
 
   const openEdit = (item: ClassScheduleItem) => {
@@ -297,13 +334,16 @@ export default function ClassesPage() {
       >
         <div className="space-y-4">
           <FormField label="Class Name" required>
-            <input
-              type="text"
+            <select
               value={form.className}
               onChange={(e) => updateField("className", e.target.value)}
-              placeholder="e.g., Morning Yoga"
               className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-            />
+            >
+              <option value="">Select class</option>
+              {CLASS_NAME_OPTIONS.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
           </FormField>
           <div className="grid grid-cols-2 gap-4">
             <FormField label="Class Type" required>
@@ -331,14 +371,19 @@ export default function ClassesPage() {
             </FormField>
           </div>
           <div className="grid grid-cols-2 gap-4">
-            <FormField label="Trainer ID">
-              <input
-                type="number"
+            <FormField label="Coach">
+              <select
                 value={form.trainerId}
-                onChange={(e) => updateField("trainerId", e.target.value)}
-                placeholder="Trainer ID"
+                onChange={(e) => updateTrainer(e.target.value)}
                 className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-              />
+              >
+                <option value="">Select coach</option>
+                {availableCoaches.map((coach) => (
+                  <option key={coach.id} value={coach.id}>
+                    {coach.name}{coach.designation ? ` (${coach.designation.replaceAll("_", " ")})` : ""}
+                  </option>
+                ))}
+              </select>
             </FormField>
             <FormField label="Trainer Name">
               <input

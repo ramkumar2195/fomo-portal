@@ -10,6 +10,7 @@ import { Badge } from "@/components/common/badge";
 import { useAuth } from "@/contexts/auth-context";
 import { useBranch } from "@/contexts/branch-context";
 import { subscriptionService } from "@/lib/api/services/subscription-service";
+import { usersService } from "@/lib/api/services/users-service";
 import { formatCurrency, formatDateTime } from "@/lib/formatters";
 
 type TabKey = "invoices" | "receipts" | "balance" | "subscriptions" | "discounts";
@@ -23,6 +24,17 @@ const TABS: { key: TabKey; label: string }[] = [
 ];
 
 type Row = Record<string, unknown>;
+
+/** Format raw enum values like "PARTIALLY_PAID" → "Partially Paid", "PAUSED" → "Frozen" */
+function formatEnum(val: string): string {
+  if (!val || val === "-") return val;
+  // Map PAUSED to Frozen per business rules
+  if (val.toUpperCase() === "PAUSED") return "Frozen";
+  return val
+    .split("_")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+}
 
 function str(row: Row, ...keys: string[]): string {
   for (const k of keys) {
@@ -76,6 +88,47 @@ export default function BillingPage() {
     from: "",
     to: "",
   });
+  const [memberNames, setMemberNames] = useState<Map<string, string>>(new Map());
+
+  // Resolve member IDs to names from a set of register rows
+  const resolveMemberNames = useCallback(
+    async (allRows: Row[][]) => {
+      if (!token) return;
+      const ids = new Set<string>();
+      for (const rows of allRows) {
+        for (const row of rows) {
+          const mid = row.memberId ?? row.member;
+          if (mid !== undefined && mid !== null) ids.add(String(mid));
+        }
+      }
+      if (ids.size === 0) return;
+
+      try {
+        const members = await usersService.searchUsers(token, { role: "MEMBER" });
+        const nameMap = new Map<string, string>();
+        for (const m of members) {
+          if (m.id && m.name) nameMap.set(String(m.id), m.name);
+        }
+        setMemberNames(nameMap);
+      } catch {
+        // Silently fail — will fall back to showing IDs
+      }
+    },
+    [token],
+  );
+
+  // Enrich rows with resolved member names
+  const enrichRows = useCallback(
+    (rows: Row[]): Row[] => {
+      if (memberNames.size === 0) return rows;
+      return rows.map((row) => {
+        const mid = String(row.memberId ?? row.member ?? "");
+        const resolved = memberNames.get(mid);
+        return resolved ? { ...row, memberName: resolved } : row;
+      });
+    },
+    [memberNames],
+  );
 
   const loadFinance = useCallback(async () => {
     if (!token) return;
@@ -96,20 +149,27 @@ export default function BillingPage() {
           subscriptionService.getSubscriptionRegister(token, query),
           subscriptionService.getDiscountLogs(token, query),
         ]);
+      const inv = invoices as Row[];
+      const rec = receipts as Row[];
+      const bal = balance as Row[];
+      const subs = subscriptions as Row[];
+      const disc = discounts as Row[];
       setState({
         dashboard: dashboard as Record<string, unknown>,
-        invoices: invoices as Row[],
-        receipts: receipts as Row[],
-        balance: balance as Row[],
-        subscriptions: subscriptions as Row[],
-        discounts: discounts as Row[],
+        invoices: inv,
+        receipts: rec,
+        balance: bal,
+        subscriptions: subs,
+        discounts: disc,
       });
+      // Resolve member names after data loads
+      void resolveMemberNames([inv, rec, bal, subs, disc]);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Unable to load finance data");
     } finally {
       setLoading(false);
     }
-  }, [token, dateRange, selectedBranchCode]);
+  }, [token, dateRange, selectedBranchCode, resolveMemberNames]);
 
   useEffect(() => {
     void loadFinance();
@@ -244,10 +304,11 @@ export default function BillingPage() {
                 key: "status",
                 header: "Status",
                 render: (r) => {
-                  const s = str(r, "status", "invoiceStatus");
-                  const variant = s.toLowerCase().includes("paid")
+                  const raw = str(r, "status", "invoiceStatus");
+                  const s = formatEnum(raw);
+                  const variant = raw.toLowerCase().includes("paid")
                     ? "success"
-                    : s.toLowerCase().includes("overdue")
+                    : raw.toLowerCase().includes("overdue")
                       ? "error"
                       : "info";
                   return <Badge variant={variant}>{s}</Badge>;
@@ -264,7 +325,7 @@ export default function BillingPage() {
                 render: (r) => formatDateTime(str(r, "issuedAt", "createdAt", "invoiceDate")),
               },
             ]}
-            data={state.invoices}
+            data={enrichRows(state.invoices)}
             keyExtractor={(r) => str(r, "invoiceNumber", "invoiceId", "id")}
             emptyMessage="No invoices found for the selected period."
           />
@@ -300,7 +361,7 @@ export default function BillingPage() {
                 render: (r) => formatDateTime(str(r, "paidAt", "paymentDate", "createdAt")),
               },
             ]}
-            data={state.receipts}
+            data={enrichRows(state.receipts)}
             keyExtractor={(r) => str(r, "receiptNumber", "receiptId", "id")}
             emptyMessage="No receipts found for the selected period."
           />
@@ -332,7 +393,7 @@ export default function BillingPage() {
                 render: (r) => str(r, "overdueDays", "daysOverdue"),
               },
             ]}
-            data={state.balance}
+            data={enrichRows(state.balance)}
             keyExtractor={(r) => str(r, "memberId", "memberName", "id")}
             emptyMessage="No outstanding balances."
           />
@@ -355,11 +416,12 @@ export default function BillingPage() {
                 key: "status",
                 header: "Status",
                 render: (r) => {
-                  const s = str(r, "status", "subscriptionStatus");
+                  const raw = str(r, "status", "subscriptionStatus");
+                  const s = formatEnum(raw);
                   const variant =
-                    s.toLowerCase() === "active"
+                    raw.toLowerCase() === "active"
                       ? "success"
-                      : s.toLowerCase() === "expired"
+                      : raw.toLowerCase() === "expired"
                         ? "error"
                         : "warning";
                   return <Badge variant={variant}>{s}</Badge>;
@@ -382,7 +444,7 @@ export default function BillingPage() {
                   formatCurrency(num(r, "total", "invoiceTotal", "amount", "totalAmount", "price")),
               },
             ]}
-            data={state.subscriptions}
+            data={enrichRows(state.subscriptions)}
             keyExtractor={(r) => str(r, "subscriptionId", "id", "memberName")}
             emptyMessage="No subscription records found."
           />
@@ -419,7 +481,7 @@ export default function BillingPage() {
                 render: (r) => formatDateTime(str(r, "createdAt", "discountDate")),
               },
             ]}
-            data={state.discounts}
+            data={enrichRows(state.discounts)}
             keyExtractor={(r) => str(r, "id", "memberName", "createdAt") + str(r, "discountAmount")}
             emptyMessage="No discount logs found."
           />

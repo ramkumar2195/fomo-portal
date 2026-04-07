@@ -10,6 +10,7 @@ import { FormField } from "@/components/common/form-field";
 import { ToastBanner } from "@/components/common/toast-banner";
 import { useAuth } from "@/contexts/auth-context";
 import { engagementService } from "@/lib/api/services/engagement-service";
+import { MemberEntitlement, subscriptionService } from "@/lib/api/services/subscription-service";
 
 type Row = Record<string, unknown>;
 
@@ -60,6 +61,25 @@ export default function CreditsPage() {
   const [ledgerLoading, setLedgerLoading] = useState(false);
   const [ledgerPage, setLedgerPage] = useState(0);
   const [ledgerTotal, setLedgerTotal] = useState(0);
+  const [serviceMemberId, setServiceMemberId] = useState("");
+  const [serviceLoading, setServiceLoading] = useState(false);
+  const [serviceEntitlements, setServiceEntitlements] = useState<MemberEntitlement[]>([]);
+  const [serviceModal, setServiceModal] = useState<{
+    open: boolean;
+    mode: "consume" | "topup";
+    entitlement: MemberEntitlement | null;
+  }>({ open: false, mode: "consume", entitlement: null });
+  const [serviceAction, setServiceAction] = useState({ quantity: "1", notes: "" });
+
+  const isServiceEntitlement = (feature: string) =>
+    ["STEAM_ACCESS", "STEAM", "ICE_BATH_ACCESS", "ICE_BATH"].includes(feature.trim().toUpperCase());
+
+  const serviceLabel = (feature?: string) => {
+    const normalized = String(feature || "").trim().toUpperCase();
+    if (normalized === "STEAM" || normalized === "STEAM_ACCESS") return "Steam Bath";
+    if (normalized === "ICE_BATH" || normalized === "ICE_BATH_ACCESS") return "Ice Bath";
+    return normalized || "-";
+  };
 
   const loadRules = useCallback(async () => {
     if (!token) return;
@@ -170,6 +190,59 @@ export default function CreditsPage() {
       setToast({ kind: "error", message: "Unable to load credit ledger" });
     } finally {
       setLedgerLoading(false);
+    }
+  };
+
+  const handleServiceLookup = async () => {
+    if (!token || !serviceMemberId) return;
+    setServiceLoading(true);
+    try {
+      const entitlements = await subscriptionService.getMemberEntitlements(token, serviceMemberId);
+      const filtered = Array.isArray(entitlements)
+        ? (entitlements as MemberEntitlement[]).filter((item) => isServiceEntitlement(String(item.feature || "")))
+        : [];
+      setServiceEntitlements(filtered);
+    } catch {
+      setToast({ kind: "error", message: "Unable to load service entitlements" });
+      setServiceEntitlements([]);
+    } finally {
+      setServiceLoading(false);
+    }
+  };
+
+  const openServiceAction = (mode: "consume" | "topup", entitlement: MemberEntitlement) => {
+    setServiceAction({ quantity: "1", notes: mode === "consume" ? "QR usage" : "Manual top-up" });
+    setServiceModal({ open: true, mode, entitlement });
+  };
+
+  const submitServiceAction = async () => {
+    if (!token || !serviceMemberId || !serviceModal.entitlement) return;
+    setSubmitting(true);
+    try {
+      const quantity = Math.max(Number(serviceAction.quantity) || 1, 1);
+      if (serviceModal.mode === "consume") {
+        await subscriptionService.consumeMemberEntitlement(token, serviceMemberId, serviceModal.entitlement.entitlementId, {
+          quantity,
+          usedOn: new Date().toISOString().slice(0, 10),
+          notes: serviceAction.notes || "QR usage",
+        });
+      } else {
+        await subscriptionService.topUpMemberEntitlement(token, serviceMemberId, serviceModal.entitlement.entitlementId, {
+          quantity,
+          effectiveOn: new Date().toISOString().slice(0, 10),
+          notes: serviceAction.notes || "Manual top-up",
+        });
+      }
+      setToast({
+        kind: "success",
+        message: `${serviceLabel(serviceModal.entitlement.feature)} ${serviceModal.mode === "consume" ? "usage recorded" : "top-up recorded"}`,
+      });
+      setServiceModal({ open: false, mode: "consume", entitlement: null });
+      void handleServiceLookup();
+    } catch {
+      setToast({ kind: "error", message: `Unable to ${serviceModal.mode === "consume" ? "consume" : "top up"} service entitlement` });
+    } finally {
+      setSubmitting(false);
     }
   };
 
@@ -349,6 +422,80 @@ export default function CreditsPage() {
         </SectionCard>
       )}
 
+      <SectionCard
+        title="Recovery Service Entitlements"
+        subtitle="Steam Bath and Ice Bath usage master. QR scans can use the same consume action later."
+      >
+        <div className="mb-4 grid gap-4 lg:grid-cols-[minmax(0,280px)_1fr]">
+          <div className="rounded-2xl border border-white/10 bg-[#171d29] p-4">
+            <p className="text-sm font-semibold text-white">Master Mapping</p>
+            <div className="mt-3 space-y-2 text-sm text-slate-300">
+              <p><span className="font-semibold text-white">Steam Bath</span> {"->"} <code>STEAM_ACCESS</code></p>
+              <p><span className="font-semibold text-white">Ice Bath</span> {"->"} <code>ICE_BATH_ACCESS</code></p>
+              <p className="text-xs text-slate-400">Use <code>Consume</code> for QR usage and <code>Top Up</code> for manual adjustments or pack additions.</p>
+            </div>
+          </div>
+          <div className="rounded-2xl border border-white/10 bg-[#171d29] p-4">
+            <div className="flex items-end gap-3">
+              <div className="flex-1">
+                <label className="mb-1 block text-sm font-medium text-slate-200">Member ID</label>
+                <input
+                  type="number"
+                  value={serviceMemberId}
+                  onChange={(e) => setServiceMemberId(e.target.value)}
+                  placeholder="Enter member ID"
+                  className="w-full rounded-lg border border-white/10 bg-[#121722] px-3 py-2 text-sm text-white"
+                />
+              </div>
+              <button
+                type="button"
+                onClick={() => void handleServiceLookup()}
+                disabled={serviceLoading || !serviceMemberId}
+                className="rounded-lg bg-[#C42429] px-4 py-2 text-sm font-semibold text-white hover:bg-[#ab1e22] disabled:opacity-50"
+              >
+                {serviceLoading ? "Loading..." : "Load Services"}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <DataTable<MemberEntitlement>
+          columns={[
+            { key: "feature", header: "Service", render: (row) => serviceLabel(row.feature) },
+            { key: "includedCount", header: "Included", render: (row) => String(row.includedCount ?? 0) },
+            { key: "remainingCount", header: "Remaining", render: (row) => String(row.remainingCount ?? 0) },
+            { key: "usedCount", header: "Used", render: (row) => String(row.usedCount ?? 0) },
+            { key: "recurrence", header: "Rule", render: (row) => row.recurrence || "FULL_TERM" },
+            { key: "currentCycleEnd", header: "Cycle End", render: (row) => row.currentCycleEnd || row.validUntil || "-" },
+            {
+              key: "actions",
+              header: "Actions",
+              render: (row) => (
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    onClick={() => openServiceAction("consume", row)}
+                    className="text-sm font-medium text-emerald-600 hover:text-emerald-800"
+                  >
+                    Consume
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => openServiceAction("topup", row)}
+                    className="text-sm font-medium text-blue-600 hover:text-blue-800"
+                  >
+                    Top Up
+                  </button>
+                </div>
+              ),
+            },
+          ]}
+          data={serviceEntitlements}
+          keyExtractor={(row) => String(row.entitlementId)}
+          emptyMessage={serviceMemberId ? "No Steam/Ice entitlements for this member." : "Look up a member to manage Steam/Ice entitlements."}
+        />
+      </SectionCard>
+
       {/* Award Credits Modal */}
       <Modal open={showAward} onClose={() => setShowAward(false)} title="Award Credits" size="sm">
         <div className="space-y-4">
@@ -443,6 +590,50 @@ export default function CreditsPage() {
             className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700 disabled:opacity-50"
           >
             {submitting ? "Adjusting..." : "Adjust Credits"}
+          </button>
+        </div>
+      </Modal>
+
+      <Modal
+        open={serviceModal.open}
+        onClose={() => setServiceModal({ open: false, mode: "consume", entitlement: null })}
+        title={`${serviceModal.mode === "consume" ? "Consume" : "Top Up"} ${serviceLabel(serviceModal.entitlement?.feature)}`}
+        size="sm"
+      >
+        <div className="space-y-4">
+          <FormField label="Quantity" required>
+            <input
+              type="number"
+              min={1}
+              value={serviceAction.quantity}
+              onChange={(e) => setServiceAction((current) => ({ ...current, quantity: e.target.value }))}
+              className="w-full rounded-lg border border-white/10 bg-[#121722] px-3 py-2 text-sm text-white"
+            />
+          </FormField>
+          <FormField label="Notes">
+            <input
+              type="text"
+              value={serviceAction.notes}
+              onChange={(e) => setServiceAction((current) => ({ ...current, notes: e.target.value }))}
+              className="w-full rounded-lg border border-white/10 bg-[#121722] px-3 py-2 text-sm text-white"
+            />
+          </FormField>
+        </div>
+        <div className="mt-6 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={() => setServiceModal({ open: false, mode: "consume", entitlement: null })}
+            className="rounded-lg border border-white/10 px-4 py-2 text-sm font-medium text-slate-300"
+          >
+            Cancel
+          </button>
+          <button
+            type="button"
+            onClick={() => void submitServiceAction()}
+            disabled={submitting}
+            className="rounded-lg bg-[#C42429] px-4 py-2 text-sm font-semibold text-white hover:bg-[#ab1e22] disabled:opacity-50"
+          >
+            {submitting ? "Saving..." : serviceModal.mode === "consume" ? "Consume" : "Top Up"}
           </button>
         </div>
       </Modal>

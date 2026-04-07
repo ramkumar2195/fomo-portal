@@ -4,6 +4,37 @@ export type FollowUpChannel = "CALL" | "WHATSAPP" | "SMS" | "EMAIL" | "VISIT";
 
 export type FollowUpStatus = "SCHEDULED" | "COMPLETED" | "MISSED" | "CANCELLED";
 
+export type FollowUpType =
+  | "MEMBERSHIP_RENEWAL"
+  | "MEMBERSHIP_ENQUIRY"
+  | "ENQUIRY"
+  | "IRREGULAR_MEMBER"
+  | "BALANCE_DUE"
+  | "FREEZE"
+  | "ASSIGN_TRIAL"
+  | "FEEDBACK"
+  | "MEASUREMENT"
+  | "PT_RENEWAL"
+  | "PT_TRIAL"
+  | "COMMITMENT"
+  | "ANNIVERSARY"
+  | "BIRTHDAY"
+  | "REFERRAL"
+  | "TRANSFER"
+  | "UPGRADE"
+  | "ONLINE_PROSPECT"
+  | "ONLINE_TRAINING"
+  | "TRIAL_ONLINE_PT"
+  | "TRIAL_ONLINE_PT_FEEDBACK"
+  | "NUTRITION"
+  | "OTHER"
+  | "EX_MEMBER"
+  | "READY_TO_SIGN_UP"
+  | "DEMO_SCHEDULED"
+  | "DEMO_CONDUCTED"
+  | "CONFIRMATION_CALLS"
+  | "GYM_STUDIO_TRIAL";
+
 export interface FollowUpRecord {
   followUpId: number;
   inquiryId: number;
@@ -12,6 +43,7 @@ export interface FollowUpRecord {
   createdByStaffId: number | null;
   channel: FollowUpChannel;
   responseType?: InquiryResponseType;
+  followUpType?: FollowUpType;
   dueAt: string;
   notes: string | null;
   status: FollowUpStatus;
@@ -30,6 +62,7 @@ export interface CreateFollowUpRequest {
   createdByStaffId: number;
   notes?: string;
   responseType?: InquiryResponseType;
+  followUpType?: FollowUpType;
 }
 
 export interface UpdateFollowUpRequest {
@@ -40,6 +73,7 @@ export interface UpdateFollowUpRequest {
   status?: FollowUpStatus;
   completedByStaffId?: number;
   outcomeNotes?: string;
+  followUpType?: FollowUpType;
 }
 
 export interface CompleteFollowUpRequest {
@@ -51,6 +85,8 @@ export interface FollowUpQueueQuery {
   inquiryId?: number;
   memberId?: number;
   assignedToStaffId?: number;
+  createdByStaffId?: number;
+  followUpType?: FollowUpType;
   status?: FollowUpStatus;
   dueFrom?: string;
   dueTo?: string;

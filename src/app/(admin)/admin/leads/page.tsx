@@ -722,6 +722,7 @@ export default function LeadsPage() {
         channel: followUpForm.channel,
         assignedToStaffId,
         createdByStaffId: createdBy,
+        followUpType: "ENQUIRY",
         notes: followUpForm.notes.trim() || undefined,
       });
       setFollowUpInquiry(null);

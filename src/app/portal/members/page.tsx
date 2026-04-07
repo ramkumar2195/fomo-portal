@@ -32,6 +32,7 @@ interface AttendanceSummary {
 interface MemberDetailSummary {
   activePlan: string;
   membershipState: MemberLifecycle;
+  subscriptionState: "ACTIVE" | "PAUSED" | "EXPIRED" | "-";
   memberCode: string;
   addedByLabel: string;
   checkInStatus: string;
@@ -146,6 +147,28 @@ function resolveLifecycle(
   return activePlan === "-" ? "EXPIRED" : "ACTIVE";
 }
 
+function resolveDisplaySubscriptionState(
+  dashboard: unknown,
+  entitlements: unknown,
+  activePlan: string,
+): "ACTIVE" | "PAUSED" | "EXPIRED" | "-" {
+  const normalized = resolveSubscriptionStatus(dashboard, entitlements).toUpperCase();
+
+  if (!normalized) {
+    return activePlan === "-" ? "EXPIRED" : "-";
+  }
+  if (normalized.includes("PAUSED")) {
+    return "PAUSED";
+  }
+  if (normalized.includes("EXPIRED") || normalized.includes("LAPSED") || normalized.includes("INACTIVE") || normalized.includes("CANCELLED")) {
+    return "EXPIRED";
+  }
+  if (normalized.includes("ACTIVE") || normalized.includes("RUNNING") || normalized.includes("VALID")) {
+    return "ACTIVE";
+  }
+  return activePlan === "-" ? "EXPIRED" : "-";
+}
+
 function resolveMemberCode(member: UserDirectoryItem, details?: Pick<MemberDetailSummary, "branchCode" | "inquiryCreatedAt">): string {
   if (!member.sourceInquiryId) {
     return "-";
@@ -207,6 +230,39 @@ function lifecycleClasses(lifecycle: MemberLifecycle): string {
   return "border-amber-200 bg-amber-50 text-amber-700";
 }
 
+function subscriptionStateClasses(state: "ACTIVE" | "PAUSED" | "EXPIRED" | "-"): string {
+  if (state === "ACTIVE") {
+    return "border-emerald-200 bg-emerald-50 text-emerald-700";
+  }
+  if (state === "PAUSED") {
+    return "border-amber-200 bg-amber-50 text-amber-700";
+  }
+  if (state === "EXPIRED") {
+    return "border-rose-200 bg-rose-50 text-rose-700";
+  }
+  return "border-slate-200 bg-slate-50 text-slate-700";
+}
+
+function isOperationalMembershipStatus(value: string): boolean {
+  const normalized = value.trim().toUpperCase();
+  return !["CANCELLED", "INACTIVE"].includes(normalized);
+}
+
+function buildEffectiveMembershipNames(activePlan: string, membershipRecords: JsonRecord[]): string[] {
+  const effectiveRecords = membershipRecords.filter((record) => {
+    const status = getString(record, ["subscriptionStatus", "status"]);
+    return !status || isOperationalMembershipStatus(status);
+  });
+
+  const variantLabels = effectiveRecords
+    .map((record) => normalizeDisplayPlanName(getString(record, ["variantName"])))
+    .filter((value) => value && value !== "No subscription is active");
+
+  return buildUniqueDisplayValues(
+    [activePlan, ...variantLabels].filter((value) => value && value !== "No subscription is active"),
+  );
+}
+
 async function fetchMemberSummary(
   token: string,
   member: UserDirectoryItem,
@@ -247,15 +303,7 @@ async function fetchMemberSummary(
         .map((value) => formatDisplayLabel(value)),
     ),
   );
-  const membershipNames = buildUniqueDisplayValues(
-    [
-      activePlan,
-      ...membershipRecords.flatMap((record) => [
-        normalizeDisplayPlanName(getString(record, ["variantName"])),
-        normalizeDisplayPlanName(getString(record, ["productName"])),
-      ]),
-    ].filter((value) => value && value !== "No subscription is active"),
-  );
+  const membershipNames = buildEffectiveMembershipNames(activePlan, membershipRecords);
   const trainerNames = buildUniqueDisplayValues(
     (Array.isArray(assignments) ? assignments : [])
       .map((item) => {
@@ -276,6 +324,7 @@ async function fetchMemberSummary(
   return {
     activePlan,
     membershipState: resolveLifecycle(dashboard, entitlements, activePlan),
+    subscriptionState: resolveDisplaySubscriptionState(dashboard, entitlements, activePlan),
     memberCode: resolveMemberCode(member, {
       branchCode: inquiry?.branchCode,
       inquiryCreatedAt: inquiry?.createdAt || inquiry?.inquiryAt,
@@ -377,6 +426,7 @@ export default function MembersPage() {
                 {
                   activePlan: "-",
                   membershipState: "ACTIVE" as MemberLifecycle,
+                  subscriptionState: "-" as const,
                   memberCode: resolveMemberCode(member),
                   addedByLabel: "-",
                   checkInStatus: "Not Checked In",
@@ -632,6 +682,7 @@ export default function MembersPage() {
           email: member.email || "-",
           memberCode: details?.memberCode || resolveMemberCode(member, details),
           membershipStatus: details?.membershipState || "ACTIVE",
+          subscriptionState: details?.subscriptionState || "-",
           membership: details?.activePlan || "-",
           gender: details?.gender || "-",
           addedBy: details?.addedByLabel || "-",
@@ -653,6 +704,7 @@ export default function MembersPage() {
       "Email",
       "Member Code",
       "Membership Status",
+      "Subscription Status",
       "Membership",
       "Gender",
       "Added By",
@@ -670,6 +722,7 @@ export default function MembersPage() {
         row.email,
         row.memberCode,
         row.membershipStatus,
+        row.subscriptionState,
         row.membership,
         row.gender,
         row.addedBy,
@@ -708,6 +761,7 @@ export default function MembersPage() {
             <td>${row.mobile}</td>
             <td>${row.memberCode}</td>
             <td>${row.membershipStatus}</td>
+            <td>${row.subscriptionState}</td>
             <td>${row.membership}</td>
             <td>${row.gender}</td>
             <td>${row.addedBy}</td>
@@ -998,6 +1052,7 @@ export default function MembersPage() {
                 paginatedMembers.map((member) => {
                   const details = detailsByMemberId[member.id];
                   const lifecycle = details?.membershipState || "ACTIVE";
+                  const subscriptionState = details?.subscriptionState || "-";
 
                   return (
                     <tr
@@ -1014,9 +1069,9 @@ export default function MembersPage() {
                       <td className="px-4 py-3">
                         <div className="flex flex-col gap-1">
                           <span
-                            className={`inline-flex w-fit rounded-full border px-2 py-0.5 text-xs font-semibold ${lifecycleClasses(lifecycle)}`}
+                            className={`inline-flex w-fit rounded-full border px-2 py-0.5 text-xs font-semibold ${subscriptionStateClasses(subscriptionState)}`}
                           >
-                            {formatDisplayLabel(lifecycle)}
+                            {formatDisplayLabel(subscriptionState)}
                           </span>
                           <span className="text-xs text-slate-400">
                             {details?.activePlan || (loadingSummaries ? "Loading..." : "-")}

@@ -508,6 +508,7 @@ export function CreateInquiryModal({
             channel: followUpPlan.contactType,
             assignedToStaffId,
             createdByStaffId,
+            followUpType: followUpPlan.responseType === "REQUESTED_TRIAL" ? "ASSIGN_TRIAL" : "ENQUIRY",
             notes: toOptionalString(followUpPlan.followUpComment),
             responseType: followUpPlan.responseType,
           });

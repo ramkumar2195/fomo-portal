@@ -108,6 +108,7 @@ type ActionModalKey =
   | "upgrade-billing"
   | "pt-billing"
   | "pt-reschedule"
+  | "pt-cancel"
   | "downgrade"
   | "transfer"
   | "pt"
@@ -201,6 +202,8 @@ interface CompletedBillingState {
 type PtScheduleTemplate = "EVERYDAY" | "ALTERNATE_DAYS";
 
 const PT_SLOT_DURATION_MINUTES = 60;
+const PT_CANCEL_CUTOFF_HOURS = 8;
+const PT_RESCHEDULE_CUTOFF_HOURS = 3;
 const PT_WEEKDAY_OPTIONS = [
   { code: "MONDAY", label: "Mon" },
   { code: "TUESDAY", label: "Tue" },
@@ -284,8 +287,11 @@ function formatPtProductName(value?: string): string {
     .trim();
 }
 
-function derivePtRescheduleLimit(durationMonths: number): number {
-  return Math.max(0, durationMonths) * 2;
+function derivePtRescheduleLimit(durationMonths: number, unlimited = false): number {
+  if (unlimited) {
+    return 0;
+  }
+  return durationMonths > 0 ? 3 : 0;
 }
 
 function addMinutesToTime(timeValue: string, minutesToAdd: number): string {
@@ -318,6 +324,19 @@ function formatClockTime(timeValue?: string): string {
   return `${String(displayHours).padStart(2, "0")}:${String(minutes).padStart(2, "0")} ${meridiem}`;
 }
 
+function parseClockToMinutes(timeValue?: string): number | null {
+  if (!timeValue) {
+    return null;
+  }
+  const [hoursValue, minutesValue] = String(timeValue).split(":");
+  const hours = Number(hoursValue);
+  const minutes = Number(minutesValue);
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return null;
+  }
+  return hours * 60 + minutes;
+}
+
 function parseLocalDateTime(dateValue?: string, timeValue?: string): Date | null {
   if (!dateValue || !timeValue) {
     return null;
@@ -342,6 +361,84 @@ function getPtSessionEndDateTime(session: RecordLike): Date | null {
     pickString(session, ["slotEndTime"])
     || addMinutesToTime(pickString(session, ["slotStartTime", "sessionTime"]) || "", PT_SLOT_DURATION_MINUTES);
   return parseLocalDateTime(pickString(session, ["sessionDate"]), endTime);
+}
+
+function hoursUntilPtSession(session: RecordLike, now = new Date()): number | null {
+  const startAt = getPtSessionStartDateTime(session);
+  if (!startAt) {
+    return null;
+  }
+  return (startAt.getTime() - now.getTime()) / (60 * 60 * 1000);
+}
+
+function canCancelPtSessionInTime(session: RecordLike, now = new Date()): boolean {
+  const hoursRemaining = hoursUntilPtSession(session, now);
+  return hoursRemaining !== null && hoursRemaining >= PT_CANCEL_CUTOFF_HOURS;
+}
+
+function canReschedulePtSessionInTime(session: RecordLike, now = new Date()): boolean {
+  const hoursRemaining = hoursUntilPtSession(session, now);
+  return hoursRemaining !== null && hoursRemaining >= PT_RESCHEDULE_CUTOFF_HOURS;
+}
+
+function isPtCalendarEntryOccupyingSlot(entry: RecordLike): boolean {
+  const status = (pickString(entry, ["status"]) || "SCHEDULED").toUpperCase();
+  return !["CANCELLED", "CANCELED", "RESCHEDULED", "NO_SHOW"].includes(status);
+}
+
+function buildAvailablePtSlotsForDate(params: {
+  dateIso: string;
+  availability: unknown[];
+  calendarEntries: unknown[];
+  excludeSessionId?: string;
+  now?: Date;
+}): string[] {
+  const { dateIso, availability, calendarEntries, excludeSessionId, now = new Date() } = params;
+  if (!dateIso) {
+    return [];
+  }
+  const parsedDate = parseLocalDateTime(dateIso, "00:00");
+  if (!parsedDate) {
+    return [];
+  }
+  const weekday = parsedDate.toLocaleDateString("en-US", { weekday: "long" }).toUpperCase();
+  const occupiedTimes = new Set(
+    calendarEntries
+      .map((entry) => toRecord(entry))
+      .filter((entry) => pickString(entry, ["sessionDate"]) === dateIso)
+      .filter((entry) => {
+        const entryId = pickString(entry, ["id"]);
+        return (!excludeSessionId || entryId !== excludeSessionId) && isPtCalendarEntryOccupyingSlot(entry);
+      })
+      .map((entry) => pickString(entry, ["sessionTime", "slotStartTime"]))
+      .filter((value): value is string => Boolean(value)),
+  );
+
+  return availability
+    .map((slot) => toRecord(slot))
+    .filter((slot) => (pickString(slot, ["dayOfWeek"]) || "").toUpperCase() === weekday)
+    .flatMap((slot) => {
+      const startMinutes = parseClockToMinutes(pickString(slot, ["startTime"]));
+      const endMinutes = parseClockToMinutes(pickString(slot, ["endTime"]));
+      if (startMinutes === null || endMinutes === null || endMinutes <= startMinutes) {
+        return [] as string[];
+      }
+      const slots: string[] = [];
+      for (let minute = startMinutes; minute + PT_SLOT_DURATION_MINUTES <= endMinutes; minute += PT_SLOT_DURATION_MINUTES) {
+        slots.push(`${String(Math.floor(minute / 60)).padStart(2, "0")}:${String(minute % 60).padStart(2, "0")}`);
+      }
+      return slots;
+    })
+    .filter((slot, index, array) => array.indexOf(slot) === index)
+    .filter((slot) => !occupiedTimes.has(slot))
+    .filter((slot) => {
+      if (dateIso !== toLocalIsoDate(now)) {
+        return true;
+      }
+      const slotAt = parseLocalDateTime(dateIso, slot);
+      return slotAt ? slotAt.getTime() > now.getTime() : false;
+    })
+    .sort((left, right) => (parseClockToMinutes(left) || 0) - (parseClockToMinutes(right) || 0));
 }
 
 function getPtSessionSortTimestamp(session: RecordLike): number {
@@ -1547,6 +1644,15 @@ export default function MemberProfilePage() {
     newTime: "",
     reason: "",
   });
+  const [ptCancelForm, setPtCancelForm] = useState({
+    sessionId: "",
+    currentDate: "",
+    currentTime: "",
+    newDate: "",
+    newTime: "",
+    maxDate: "",
+    reason: "",
+  });
   const [ptAvailabilityOptions, setPtAvailabilityOptions] = useState<unknown[]>([]);
   const [ptCalendarEntries, setPtCalendarEntries] = useState<unknown[]>([]);
   const [visitForm, setVisitForm] = useState({
@@ -2391,6 +2497,44 @@ export default function MemberProfilePage() {
     return pickBoolean(record, ["active"]) === true;
   });
   const activePtAssignmentRecord = activePtAssignment ? toRecord(activePtAssignment) : null;
+  const activePtCoachId = pickString(activePtAssignmentRecord, ["coachId"]);
+  const ptAssignmentRescheduleLimit = pickNumber(activePtAssignmentRecord, ["rescheduleLimit"]);
+  const ptUsedReschedules = ptSessions.filter((session) => {
+    const status = pickString(toRecord(session), ["status"])?.toUpperCase();
+    return status === "RESCHEDULED";
+  }).length;
+  const ptHasUnlimitedReschedules = ptAssignmentRescheduleLimit <= 0;
+  const ptRemainingReschedules = ptHasUnlimitedReschedules ? null : Math.max(ptAssignmentRescheduleLimit - ptUsedReschedules, 0);
+  const ptRescheduleSlotOptions = buildAvailablePtSlotsForDate({
+    dateIso: ptRescheduleForm.newDate,
+    availability: ptAvailabilityOptions,
+    calendarEntries: ptCalendarEntries,
+    excludeSessionId: ptRescheduleForm.sessionId,
+  }).filter((slot) => slot !== ptRescheduleForm.currentTime);
+  const ptCancelSlotOptions = buildAvailablePtSlotsForDate({
+    dateIso: ptCancelForm.newDate,
+    availability: ptAvailabilityOptions,
+    calendarEntries: ptCalendarEntries,
+  });
+  const ptCancelDateSummaries = (() => {
+    const summaries: Array<{ date: string; slots: string[] }> = [];
+    if (!ptCancelForm.newDate || !ptCancelForm.maxDate) {
+      return summaries;
+    }
+    let cursor = ptCancelForm.newDate;
+    for (let index = 0; index < 7 && cursor <= ptCancelForm.maxDate; index += 1) {
+      summaries.push({
+        date: cursor,
+        slots: buildAvailablePtSlotsForDate({
+          dateIso: cursor,
+          availability: ptAvailabilityOptions,
+          calendarEntries: ptCalendarEntries,
+        }),
+      });
+      cursor = addDaysToLocalIsoDate(cursor, 1);
+    }
+    return summaries;
+  })();
   const subscriptionsDashboardRecord = toRecord(tabData.subscriptions?.dashboard);
   const entitlementRecords = toArray<RecordLike>(tabData.subscriptions?.entitlements);
   const dashboardMembershipSummaries = toArray(subscriptionsDashboardRecord.memberships)
@@ -2606,6 +2750,10 @@ export default function MemberProfilePage() {
     feature === "PASS_BENEFITS",
   ) || (currentCatalogVariant?.passBenefitDays || 0) > 0;
   const normalizedProductCode = selectedProductCode.toUpperCase();
+  const hasUnlimitedPtReschedules = Boolean(
+    normalizedProductCode.includes("BLACK")
+      || String(portfolioPrimaryMembership?.productCode || "").toUpperCase().includes("BLACK"),
+  );
   const normalizedCategoryCode = selectedProductCategoryCode.toUpperCase();
   const selectedMembershipStatusRaw = String(selectedMembershipRecord?.status || membershipStatus || "").trim().toUpperCase();
   const isSelectedMembershipPaymentPendingPause =
@@ -2728,9 +2876,12 @@ export default function MemberProfilePage() {
     : selectedExpiryDate;
   const freezePreviewRemainingDays = Math.max(freezeMaxDays - freezePreviewDays, 0);
   const canShowFreezeAction = hasPrimaryMembership && canOperateMemberships && hasFreezeEntitlement && !isFlexPlan && !isGroupClassPlan && !isPtPlan;
+  const canCollectOutstandingBalance =
+    canOperateMemberships &&
+    hasOutstandingBalance;
   const canShowBalanceCollectionAction =
     hasPrimaryMembership &&
-    canOperateMemberships &&
+    canCollectOutstandingBalance &&
     isSelectedMembershipPaymentPendingPause;
   const canShowManualUnfreezeAction =
     canShowFreezeAction &&
@@ -3638,6 +3789,7 @@ export default function MemberProfilePage() {
           dueAt: `${lifecycleBillingForm.balanceDueDate}T09:00:00`,
           assignedToStaffId,
           createdByStaffId: operatorId > 0 ? operatorId : undefined,
+          followUpType: "BALANCE_DUE",
           notes: `Collect the remaining renewal balance of ${formatRoundedInr(balanceAmount)} for invoice ${invoiceNumber || invoiceId}.`,
         });
       }
@@ -3761,6 +3913,7 @@ export default function MemberProfilePage() {
           dueAt: `${lifecycleBillingForm.balanceDueDate}T09:00:00`,
           assignedToStaffId,
           createdByStaffId: operatorId > 0 ? operatorId : undefined,
+          followUpType: "BALANCE_DUE",
           notes: `Collect the remaining upgrade balance of ${formatRoundedInr(balanceAmount)} for invoice ${invoiceNumber || invoiceId}.`,
         });
       }
@@ -3868,7 +4021,7 @@ export default function MemberProfilePage() {
     if (!token || !memberId) {
       return;
     }
-    if (canShowBalanceCollectionAction) {
+    if (canCollectOutstandingBalance) {
       setActionBusy(true);
       setActionError(null);
       try {
@@ -3892,7 +4045,7 @@ export default function MemberProfilePage() {
           })[0];
 
         if (!outstandingInvoice) {
-          throw new Error("No outstanding invoice was found for this paused membership.");
+          throw new Error("No outstanding invoice was found for this member.");
         }
 
         const invoiceId = Number(outstandingInvoice.id || 0);
@@ -4046,7 +4199,7 @@ export default function MemberProfilePage() {
       productVariantId: Number(selectedPtVariant.variantId),
       packageName: `${formatPtProductName(selectedPtProduct?.productName || selectedPtVariant.productCode)} · ${formatPlanDuration(selectedPtVariant.durationMonths, selectedPtVariant.validityDays)}`,
       totalSessions: selectedPtSessionCount,
-      rescheduleLimit: derivePtRescheduleLimit(Number(selectedPtVariant.durationMonths || 0)),
+      rescheduleLimit: derivePtRescheduleLimit(Number(selectedPtVariant.durationMonths || 0), hasUnlimitedPtReschedules),
       slotDurationMinutes: PT_SLOT_DURATION_MINUTES,
       slots: selectedPtDays.map((dayCode) => ({
         dayOfWeek: dayCode,
@@ -4057,6 +4210,7 @@ export default function MemberProfilePage() {
     await subscriptionService.provisionPtOperationalSetup(token, subscriptionId, payload);
   }, [
     email,
+    hasUnlimitedPtReschedules,
     memberId,
     phone,
     projectedPtEndDate,
@@ -4207,6 +4361,7 @@ export default function MemberProfilePage() {
           dueAt: `${ptBillingForm.balanceDueDate}T09:00:00`,
           assignedToStaffId,
           createdByStaffId: operatorId > 0 ? operatorId : undefined,
+          followUpType: "BALANCE_DUE",
           notes: `Collect the remaining PT balance of ${formatRoundedInr(balanceAmount)} for invoice ${invoiceNumber || invoiceId}.`,
         });
       }
@@ -4274,11 +4429,24 @@ export default function MemberProfilePage() {
         await trainingService.markSessionNoShow(token, sessionId);
       }
       reloadPtTab();
-      setActionSuccess(`Session ${action === "start" ? "started" : action === "end" ? "ended" : action} successfully.`);
+      setActionSuccess(
+        action === "cancel"
+          ? "Cancellation window was closed, so the session was treated as consumed."
+          : `Session ${action === "start" ? "started" : action === "end" ? "ended" : action} successfully.`,
+      );
     } catch (error) {
       setActionError(error instanceof Error ? error.message : `Failed to ${action} session.`);
     }
   };
+
+  const loadPtSchedulingContext = useCallback(async (coachId: string) => {
+    const [availabilityPage, calendarPage] = await Promise.all([
+      trainingService.getTrainerAvailability(token!, coachId, 0, 100).catch(() => ({ content: [] })),
+      trainingService.getPtCalendar(token!, coachId, 0, 100).catch(() => ({ content: [] })),
+    ]);
+    setPtAvailabilityOptions(Array.isArray(availabilityPage.content) ? availabilityPage.content : []);
+    setPtCalendarEntries(Array.isArray(calendarPage.content) ? calendarPage.content : []);
+  }, [token]);
 
   const openPtRescheduleModal = async (session: RecordLike) => {
     if (!token) {
@@ -4294,18 +4462,13 @@ export default function MemberProfilePage() {
     setActionBusy(true);
     setActionError(null);
     try {
-      const [availabilityPage, calendarPage] = await Promise.all([
-        trainingService.getTrainerAvailability(token, coachId, 0, 100).catch(() => ({ content: [] })),
-        trainingService.getPtCalendar(token, coachId, 0, 100).catch(() => ({ content: [] })),
-      ]);
-      setPtAvailabilityOptions(Array.isArray(availabilityPage.content) ? availabilityPage.content : []);
-      setPtCalendarEntries(Array.isArray(calendarPage.content) ? calendarPage.content : []);
+      await loadPtSchedulingContext(coachId);
       setPtRescheduleForm({
         sessionId,
         currentDate: pickString(session, ["sessionDate"]) || "",
         currentTime: pickString(session, ["sessionTime", "slotStartTime"]) || "",
         newDate: pickString(session, ["sessionDate"]) || "",
-        newTime: pickString(session, ["sessionTime", "slotStartTime"]) || "",
+        newTime: "",
         reason: "",
       });
       setActionModal("pt-reschedule");
@@ -4316,9 +4479,53 @@ export default function MemberProfilePage() {
     }
   };
 
+  const openPtCancelModal = async (session: RecordLike) => {
+    if (!token) {
+      return;
+    }
+    const sessionId = pickString(session, ["id"]);
+    const coachId = pickString(session, ["coachId"]) || pickString(activePtAssignmentRecord, ["coachId"]);
+    const currentDate = pickString(session, ["sessionDate"]) || "";
+    if (!sessionId || !coachId || !currentDate) {
+      setActionError("Coach or session details are missing for cancellation.");
+      return;
+    }
+
+    const assignmentEndDate =
+      pickString(activePtAssignmentRecord, ["endDate"])
+      || pickString(session, ["assignmentEndDate", "endDate"])
+      || "";
+    const minDate = addDaysToLocalIsoDate(currentDate, 1);
+    const maxDate = assignmentEndDate && assignmentEndDate >= minDate ? assignmentEndDate : "";
+    if (!maxDate) {
+      setActionError("PT validity end date is required before assigning a make-up slot.");
+      return;
+    }
+
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await loadPtSchedulingContext(coachId);
+      setPtCancelForm({
+        sessionId,
+        currentDate,
+        currentTime: pickString(session, ["sessionTime", "slotStartTime"]) || "",
+        newDate: minDate,
+        newTime: "",
+        maxDate,
+        reason: "",
+      });
+      setActionModal("pt-cancel");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Unable to load coach calendar.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const handlePtReschedule = async () => {
     if (!token || !ptRescheduleForm.sessionId || !ptRescheduleForm.newDate || !ptRescheduleForm.newTime) {
-      setActionError("Choose the new session date and time.");
+      setActionError("Choose the same-day replacement time.");
       return;
     }
 
@@ -4339,6 +4546,47 @@ export default function MemberProfilePage() {
       setActionBusy(false);
     }
   };
+
+  const handlePtCancelWithMakeup = async () => {
+    if (!token || !ptCancelForm.sessionId || !ptCancelForm.newDate || !ptCancelForm.newTime) {
+      setActionError("Choose the future make-up session date and time.");
+      return;
+    }
+
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await trainingService.cancelPtSessionWithMakeup(token, ptCancelForm.sessionId, {
+        newDate: ptCancelForm.newDate,
+        newTime: ptCancelForm.newTime,
+        reason: ptCancelForm.reason || undefined,
+      });
+      reloadPtTab();
+      setActionSuccess("PT session cancelled and moved into a future make-up slot.");
+      setActionModal(null);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Unable to cancel PT session with make-up slot.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  useEffect(() => {
+    if (activeTab !== "personal-training" || !token || !activePtCoachId) {
+      return;
+    }
+    if (ptAvailabilityOptions.length > 0 || ptCalendarEntries.length > 0) {
+      return;
+    }
+    void loadPtSchedulingContext(activePtCoachId).catch(() => undefined);
+  }, [
+    activePtCoachId,
+    activeTab,
+    loadPtSchedulingContext,
+    ptAvailabilityOptions.length,
+    ptCalendarEntries.length,
+    token,
+  ]);
 
   const handleAccessAction = async (action: string, serialOverride?: string) => {
     if (!token || !memberId) {
@@ -4533,7 +4781,16 @@ export default function MemberProfilePage() {
 
     return (
       <div className="space-y-6">
-        <div className="flex items-center justify-end">
+        <div className="flex items-center justify-end gap-3">
+          {canCollectOutstandingBalance ? (
+            <button
+              type="button"
+              onClick={() => setActionModal("unfreeze-billing")}
+              className="rounded-xl border border-[#c42924]/40 bg-[#c42924] px-4 py-2 text-sm font-semibold text-white hover:bg-[#a81f1c]"
+            >
+              Receive Balance Payment
+            </button>
+          ) : null}
           <button
             type="button"
             onClick={refreshBillingRegister}
@@ -4665,7 +4922,6 @@ export default function MemberProfilePage() {
                 <thead>
                   <tr className="border-b border-white/8 bg-white/[0.03] text-left text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">
                     <th className="px-4 py-3">Receipt</th>
-                    <th className="px-4 py-3">Invoice</th>
                     <th className="px-4 py-3">Amount</th>
                     <th className="px-4 py-3">Mode</th>
                     <th className="px-4 py-3">Paid At</th>
@@ -4676,9 +4932,8 @@ export default function MemberProfilePage() {
                   {receipts.map((receipt) => (
                     <tr key={receipt.id} className="hover:bg-white/[0.02]">
                       <td className="px-4 py-3 font-medium text-white">{receipt.receiptNumber}</td>
-                      <td className="px-4 py-3 text-slate-200">{receipt.invoiceId || "-"}</td>
                       <td className="px-4 py-3 text-slate-200">{formatRoundedInr(receipt.amount)}</td>
-                      <td className="px-4 py-3 text-slate-200">{humanizeLabel(receipt.paymentMode || "-")}</td>
+                      <td className="px-4 py-3 text-slate-200">{String(receipt.paymentMode || "-").toUpperCase()}</td>
                       <td className="px-4 py-3 text-slate-200">{formatDateTime(receipt.paidAt)}</td>
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap gap-2">
@@ -5552,7 +5807,7 @@ export default function MemberProfilePage() {
             <ProfilePanel title="Personal Training Assignment" accent="slate">
               {activePtAssignment ? (
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <StatPill label="Coach" value={pickString(activeAssignRec!, ["coachEmail", "coachId"]) || "-"} />
+                  <StatPill label="Coach" value={pickString(activeAssignRec!, ["coachName", "coachDisplayName", "coachEmail", "coachId"]) || "-"} />
                   <StatPill label="Training Type" value={humanizeLabel(pickString(activeAssignRec!, ["trainingType"]) || "PERSONAL_TRAINING")} />
                   <StatPill label="Start Date" value={formatDateOnly(pickString(activeAssignRec!, ["startDate"]))} />
                   <StatPill label="End Date" value={formatDateOnly(pickString(activeAssignRec!, ["endDate"])) || "Ongoing"} />
@@ -5594,7 +5849,7 @@ export default function MemberProfilePage() {
                           <div>
                             <p className="text-sm font-semibold text-white">{humanizeLabel(pickString(slotRec, ["dayOfWeek"]) || "")}</p>
                             <p className="text-xs text-slate-400">
-                              {pickString(slotRec, ["slotStartTime"]) || ""} — {pickString(slotRec, ["slotEndTime"]) || ""}
+                              {formatClockTime(pickString(slotRec, ["slotStartTime"]) || "")} — {formatClockTime(pickString(slotRec, ["slotEndTime"]) || "")}
                             </p>
                           </div>
                         </div>
@@ -5629,6 +5884,7 @@ export default function MemberProfilePage() {
                   <StatPill label="Client No-Show" value={String(noShowSessions)} />
                   <StatPill label="Remaining Sessions" value={includedPtSessions > 0 ? String(remainingPtSessions) : "-"} />
                   <StatPill label="Cancelled" value={String(cancelledSessions)} />
+                  <StatPill label="Reschedules Used" value={ptHasUnlimitedReschedules ? `${ptUsedReschedules} / Unlimited` : `${ptUsedReschedules} / ${ptAssignmentRescheduleLimit}`} />
                   <StatPill label="Trainer Counted" value={String(trainerCountedSessions)} />
                   <StatPill label="Member Consumed" value={String(memberConsumedSessions)} />
                 </div>
@@ -5671,6 +5927,17 @@ export default function MemberProfilePage() {
                         const dur = pickString(rec, ["durationMinutes"]) || "";
                         const startBy = pickString(rec, ["startedBy"]) || "";
                         const startAllowed = canStartPtSessionNow(rec);
+                        const sameDaySlotOptions = buildAvailablePtSlotsForDate({
+                          dateIso: pickString(rec, ["sessionDate"]) || "",
+                          availability: ptAvailabilityOptions,
+                          calendarEntries: ptCalendarEntries,
+                          excludeSessionId: sessId,
+                        }).filter((slot) => slot !== slotS);
+                        const hasSameDayRescheduleOptions = sameDaySlotOptions.length > 0;
+                        const canReschedule = canReschedulePtSessionInTime(rec)
+                          && (ptHasUnlimitedReschedules || (ptRemainingReschedules || 0) > 0)
+                          && hasSameDayRescheduleOptions;
+                        const canCancel = canCancelPtSessionInTime(rec);
                         return (
                           <tr key={idx} className="border-b border-white/5 hover:bg-white/[0.02]">
                             <td className="px-3 py-2.5 text-white">{formatDateOnly(pickString(rec, ["sessionDate"]))}</td>
@@ -5697,18 +5964,35 @@ export default function MemberProfilePage() {
                                         Start in slot window
                                       </span>
                                     )}
-                                    <button type="button" onClick={() => void openPtRescheduleModal(rec)}
-                                      className="rounded-lg bg-violet-500/20 px-2 py-1 text-xs font-semibold text-violet-200 hover:bg-violet-500/30">
-                                      Reschedule
-                                    </button>
+                                    {canReschedule ? (
+                                      <button type="button" onClick={() => void openPtRescheduleModal(rec)}
+                                        className="rounded-lg bg-violet-500/20 px-2 py-1 text-xs font-semibold text-violet-200 hover:bg-violet-500/30">
+                                        Reschedule
+                                      </button>
+                                    ) : (
+                                      <span className="rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-400">
+                                        {!(ptHasUnlimitedReschedules || (ptRemainingReschedules || 0) > 0)
+                                          ? "Reschedule limit reached"
+                                          : hasSameDayRescheduleOptions
+                                            ? "Reschedule cutoff closed"
+                                            : "No same-day slot"}
+                                      </span>
+                                    )}
                                     <button type="button" onClick={() => void handlePtSessionAction(sessId, "no-show")}
                                       className="rounded-lg bg-rose-500/20 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-500/30">
                                       No Show
                                     </button>
-                                    <button type="button" onClick={() => void handlePtSessionAction(sessId, "cancel")}
-                                      className="rounded-lg bg-orange-500/20 px-2 py-1 text-xs font-semibold text-orange-200 hover:bg-orange-500/30">
-                                      Cancel
-                                    </button>
+                                    {canCancel ? (
+                                      <button type="button" onClick={() => void openPtCancelModal(rec)}
+                                        className="rounded-lg bg-orange-500/20 px-2 py-1 text-xs font-semibold text-orange-200 hover:bg-orange-500/30">
+                                        Cancel
+                                      </button>
+                                    ) : (
+                                      <button type="button" onClick={() => void handlePtSessionAction(sessId, "cancel")}
+                                        className="rounded-lg bg-orange-500/20 px-2 py-1 text-xs font-semibold text-orange-200 hover:bg-orange-500/30">
+                                        Cancel as No Show
+                                      </button>
+                                    )}
                                   </>
                                 ) : sessStatus === "IN_PROGRESS" && sessId ? (
                                   <button type="button" onClick={() => void handlePtSessionAction(sessId, "end")}
@@ -5818,9 +6102,70 @@ export default function MemberProfilePage() {
         );
       }
       case "freeze-history":
+        const freezeHistoryRows = (tabData["freeze-history"] || []).map((entry, index) => {
+          const rawId = String(entry.freezeId || "").trim();
+          const numericIdMatch = rawId.match(/\d+/);
+          const displayFreezeId = numericIdMatch ? `Freeze ${numericIdMatch[0]}` : `Freeze ${index + 1}`;
+          return {
+            freezeId: displayFreezeId,
+            freezeFrom: formatDateOnly(entry.freezeFrom || entry.startDate || entry.freeze_from),
+            freezeTo: formatDateOnly(entry.freezeTo || entry.endDate || entry.freeze_to),
+            days: entry.days ?? "-",
+            reason: entry.reason || "-",
+            status: titleize((entry.status || (entry.resumedAt ? "COMPLETED" : "ACTIVE")).toLowerCase()),
+            resumedAt: entry.resumedAt ? formatDateTime(entry.resumedAt) : "",
+            completion: entry.completionReason ? titleize(entry.completionReason.toLowerCase()) : "",
+            restoredPauseDays: entry.restoredPauseDays ?? 0,
+            requestedAt: formatDateTime(entry.requestedAt || entry.createdAt),
+            approvedAt: formatDateTime(entry.approvedAt || entry.createdAt),
+            createdAt: formatDateTime(entry.createdAt),
+          };
+        });
+        const showResumedAtColumn = freezeHistoryRows.some((entry) => entry.resumedAt);
+        const showCompletionColumn = freezeHistoryRows.some((entry) => entry.completion);
+        const showRestoredColumn = freezeHistoryRows.some((entry) => Number(entry.restoredPauseDays) > 0);
         return (
           <ProfilePanel title="Freeze History" accent="slate">
-            <GenericTable items={tabData["freeze-history"] || []} emptyLabel="No freeze history found." />
+            {freezeHistoryRows.length === 0 ? (
+              <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] px-4 py-6 text-sm text-slate-400">
+                No freeze history found.
+              </div>
+            ) : (
+              <div className="overflow-x-auto rounded-[24px] border border-white/8 bg-[#15181f] shadow-[0_18px_40px_rgba(0,0,0,0.22)]">
+                <table className="min-w-full text-sm">
+                  <thead>
+                    <tr className="border-b border-white/8 bg-white/[0.03] text-left text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">
+                      <th className="px-4 py-3">Freeze ID</th>
+                      <th className="px-4 py-3">Freeze From</th>
+                      <th className="px-4 py-3">Freeze To</th>
+                      <th className="px-4 py-3">Days</th>
+                      <th className="px-4 py-3">Reason</th>
+                      <th className="px-4 py-3">Status</th>
+                      {showResumedAtColumn ? <th className="px-4 py-3">Resumed At</th> : null}
+                      {showCompletionColumn ? <th className="px-4 py-3">Completion</th> : null}
+                      {showRestoredColumn ? <th className="px-4 py-3">Restored Pause Days</th> : null}
+                      <th className="px-4 py-3">Created At</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/6">
+                    {freezeHistoryRows.map((entry) => (
+                      <tr key={`${entry.freezeId}-${entry.createdAt}`} className="hover:bg-white/[0.02]">
+                        <td className="px-4 py-3 text-slate-200">{entry.freezeId}</td>
+                        <td className="px-4 py-3 text-slate-200">{entry.freezeFrom}</td>
+                        <td className="px-4 py-3 text-slate-200">{entry.freezeTo}</td>
+                        <td className="px-4 py-3 text-slate-200">{entry.days}</td>
+                        <td className="px-4 py-3 text-slate-200">{entry.reason}</td>
+                        <td className="px-4 py-3 text-slate-200">{entry.status}</td>
+                        {showResumedAtColumn ? <td className="px-4 py-3 text-slate-200">{entry.resumedAt || "-"}</td> : null}
+                        {showCompletionColumn ? <td className="px-4 py-3 text-slate-200">{entry.completion || "-"}</td> : null}
+                        {showRestoredColumn ? <td className="px-4 py-3 text-slate-200">{entry.restoredPauseDays}</td> : null}
+                        <td className="px-4 py-3 text-slate-200">{entry.createdAt}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )}
           </ProfilePanel>
         );
       case "notes": {
@@ -6371,7 +6716,7 @@ export default function MemberProfilePage() {
           <Modal
             open={actionModal === "unfreeze-billing"}
             onClose={() => setActionModal(null)}
-            title="Collect Remaining Balance"
+            title={isAccountPausedForPayment ? "Collect Remaining Balance" : "Receive Balance Payment"}
             size="lg"
             footer={
               <div className="flex w-full gap-3">
@@ -6384,7 +6729,7 @@ export default function MemberProfilePage() {
                 >
                   <span className="inline-flex items-center gap-2">
                     <Wallet className="h-4 w-4" />
-                    {actionBusy ? "Recording Payment..." : "Record Payment & Unfreeze"}
+                    {actionBusy ? "Recording Payment..." : isAccountPausedForPayment ? "Record Payment & Unfreeze" : "Record Balance Payment"}
                   </span>
                 </button>
               </div>
@@ -6393,7 +6738,9 @@ export default function MemberProfilePage() {
             <div className="space-y-5">
               {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
               <div className="rounded-2xl border border-amber-500/20 bg-amber-500/10 px-4 py-3 text-sm leading-6 text-amber-100">
-                This membership is paused because the invoice is only partially paid. Collect the remaining balance to activate the base membership and linked PT together.
+                {isAccountPausedForPayment
+                  ? "This membership is paused because the invoice is only partially paid. Collect the remaining balance to activate the base membership and linked PT together."
+                  : "This member has an outstanding invoice balance. Record the pending payment here to update the invoice and receipt registers."}
               </div>
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
@@ -7323,7 +7670,16 @@ export default function MemberProfilePage() {
                           placeholder="0"
                         />
                       </label>
-                      <StatPill label="Reschedules" value={selectedPtVariant ? String(derivePtRescheduleLimit(selectedPtVariant.durationMonths)) : "-"} />
+                      <StatPill
+                        label="Reschedules"
+                        value={
+                          selectedPtVariant
+                            ? hasUnlimitedPtReschedules
+                              ? "Unlimited"
+                              : String(derivePtRescheduleLimit(selectedPtVariant.durationMonths, false))
+                            : "-"
+                        }
+                      />
                       <StatPill label="Projected End" value={formatDateOnly(projectedPtEndDate) || "-"} />
                     </div>
                   </div>
@@ -7493,7 +7849,13 @@ export default function MemberProfilePage() {
                     </div>
                     <div className="flex items-center justify-between gap-4">
                       <span className="text-slate-400">Reschedule Limit</span>
-                      <span className="font-semibold text-white">{selectedPtVariant ? String(derivePtRescheduleLimit(selectedPtVariant.durationMonths)) : "-"}</span>
+                      <span className="font-semibold text-white">
+                        {selectedPtVariant
+                          ? hasUnlimitedPtReschedules
+                            ? "Unlimited"
+                            : String(derivePtRescheduleLimit(selectedPtVariant.durationMonths, false))
+                          : "-"}
+                      </span>
                     </div>
                     <div className="flex items-center justify-between gap-4">
                       <span className="text-slate-400">Schedule</span>
@@ -7569,36 +7931,30 @@ export default function MemberProfilePage() {
                     <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">New Slot</p>
                     <div className="mt-3 grid gap-4 sm:grid-cols-2">
                       <label className="space-y-2">
-                        <span className="text-xs font-medium text-slate-300">New Date</span>
-                        <input
-                          type="date"
-                          value={ptRescheduleForm.newDate}
-                          onChange={(event) => setPtRescheduleForm((current) => ({ ...current, newDate: event.target.value }))}
-                          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
-                        />
+                        <span className="text-xs font-medium text-slate-300">Reschedule Date</span>
+                        <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm font-semibold text-white">
+                          {formatDateOnly(ptRescheduleForm.newDate) || "-"}
+                        </div>
                       </label>
                       <label className="space-y-2">
-                        <span className="text-xs font-medium text-slate-300">New Time</span>
+                        <span className="text-xs font-medium text-slate-300">Same-Day Time</span>
                         <select
                           value={ptRescheduleForm.newTime}
                           onChange={(event) => setPtRescheduleForm((current) => ({ ...current, newTime: event.target.value }))}
                           className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
                         >
-                          {ptAvailabilityOptions.length > 0
-                            ? ptAvailabilityOptions.map((slot, index) => {
-                                const record = toRecord(slot);
-                                const startTime = pickString(record, ["startTime"]) || "";
-                                const endTime = pickString(record, ["endTime"]) || "";
-                                return (
-                                  <option key={`${startTime}-${index}`} value={startTime}>
-                                    {humanizeLabel(pickString(record, ["dayOfWeek"]) || "")} · {formatClockTime(startTime)}{endTime ? ` - ${formatClockTime(endTime)}` : ""}
-                                  </option>
-                                );
-                              })
-                            : <option value={ptRescheduleForm.newTime}>{ptRescheduleForm.newTime ? formatClockTime(ptRescheduleForm.newTime) : "Select time"}</option>}
+                          <option value="">Select same-day slot</option>
+                          {ptRescheduleSlotOptions.map((slot) => (
+                            <option key={slot} value={slot}>
+                              {formatClockTime(slot)} - {formatClockTime(addMinutesToTime(slot, PT_SLOT_DURATION_MINUTES))}
+                            </option>
+                          ))}
                         </select>
                       </label>
                     </div>
+                    <p className="mt-3 text-xs text-slate-400">
+                      Reschedule only shifts this session to another slot on the same day. If no same-day slot is free, use cancel to move it into a future make-up slot.
+                    </p>
                     <label className="mt-4 block space-y-2">
                       <span className="text-xs font-medium text-slate-300">Reason</span>
                       <textarea
@@ -7612,20 +7968,158 @@ export default function MemberProfilePage() {
                 </div>
                 <div className="space-y-4">
                   <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Coach Availability</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Same-Day Availability</p>
                     <div className="mt-3 space-y-2">
-                      {ptAvailabilityOptions.length > 0 ? ptAvailabilityOptions.slice(0, 8).map((slot, index) => {
-                        const record = toRecord(slot);
+                      {ptRescheduleSlotOptions.length > 0 ? ptRescheduleSlotOptions.map((slot) => (
+                        <button
+                          key={slot}
+                          type="button"
+                          onClick={() => setPtRescheduleForm((current) => ({ ...current, newTime: slot }))}
+                          className={`flex w-full items-center justify-between rounded-xl border px-3 py-2 text-sm ${
+                            ptRescheduleForm.newTime === slot
+                              ? "border-violet-400/40 bg-violet-500/10 text-violet-100"
+                              : "border-white/8 bg-white/[0.03] text-slate-300"
+                          }`}
+                        >
+                          <span>Same day</span>
+                          <span className="font-semibold">
+                            {formatClockTime(slot)} - {formatClockTime(addMinutesToTime(slot, PT_SLOT_DURATION_MINUTES))}
+                          </span>
+                        </button>
+                      )) : (
+                        <p className="text-sm text-slate-400">No same-day slot is free for this trainer. Use cancel to assign a future make-up slot.</p>
+                      )}
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Coach Calendar Snapshot</p>
+                    <div className="mt-3 space-y-2">
+                      {ptCalendarEntries.length > 0 ? ptCalendarEntries.slice(0, 8).map((entry, index) => {
+                        const record = toRecord(entry);
+                        const status = (pickString(record, ["status"]) || "SCHEDULED").replaceAll("_", " ");
                         return (
-                          <div key={index} className="flex items-center justify-between rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2 text-sm">
-                            <span className="text-slate-300">{humanizeLabel(pickString(record, ["dayOfWeek"]) || "")}</span>
-                            <span className="font-semibold text-white">
-                              {formatClockTime(pickString(record, ["startTime"]) || "")} - {formatClockTime(pickString(record, ["endTime"]) || "")}
-                            </span>
+                          <div key={index} className="rounded-xl border border-white/8 bg-white/[0.03] px-3 py-2">
+                            <div className="flex items-center justify-between gap-3">
+                              <span className="text-sm font-semibold text-white">{formatDateOnly(pickString(record, ["sessionDate"])) || "-"}</span>
+                              <span className="text-xs text-slate-400">{status}</span>
+                            </div>
+                            <p className="mt-1 text-xs text-slate-400">{formatClockTime(pickString(record, ["sessionTime", "slotStartTime"]) || "")}</p>
                           </div>
                         );
                       }) : (
-                        <p className="text-sm text-slate-400">No trainer availability is configured yet.</p>
+                        <p className="text-sm text-slate-400">No booked PT sessions found for this coach.</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </Modal>
+
+          <Modal
+            open={actionModal === "pt-cancel"}
+            onClose={() => setActionModal(null)}
+            title="Cancel PT Session And Assign Make-Up Slot"
+            size="xl"
+            footer={
+              <>
+                <button type="button" onClick={() => setActionModal(null)} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Back</button>
+                <button type="button" onClick={() => void handlePtCancelWithMakeup()} disabled={actionBusy} className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                  {actionBusy ? "Saving..." : "Cancel And Rebook"}
+                </button>
+              </>
+            }
+          >
+            <div className="space-y-5">
+              {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
+              <div className="grid gap-5 lg:grid-cols-[0.92fr_1.08fr]">
+                <div className="space-y-4">
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Cancelled Slot</p>
+                    <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                      <div>
+                        <p className="text-xs text-slate-500">Original Date</p>
+                        <p className="mt-1 text-sm font-semibold text-white">{formatDateOnly(ptCancelForm.currentDate) || "-"}</p>
+                      </div>
+                      <div>
+                        <p className="text-xs text-slate-500">Original Time</p>
+                        <p className="mt-1 text-sm font-semibold text-white">{ptCancelForm.currentTime ? formatClockTime(ptCancelForm.currentTime) : "-"}</p>
+                      </div>
+                    </div>
+                  </div>
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Future Make-Up Slot</p>
+                    <div className="mt-3 grid gap-4 sm:grid-cols-2">
+                      <label className="space-y-2">
+                        <span className="text-xs font-medium text-slate-300">New Date</span>
+                        <input
+                          type="date"
+                          min={addDaysToLocalIsoDate(ptCancelForm.currentDate, 1)}
+                          max={ptCancelForm.maxDate}
+                          value={ptCancelForm.newDate}
+                          onChange={(event) => setPtCancelForm((current) => ({ ...current, newDate: event.target.value, newTime: "" }))}
+                          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                        />
+                      </label>
+                      <label className="space-y-2">
+                        <span className="text-xs font-medium text-slate-300">Available Time</span>
+                        <select
+                          value={ptCancelForm.newTime}
+                          onChange={(event) => setPtCancelForm((current) => ({ ...current, newTime: event.target.value }))}
+                          className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                        >
+                          <option value="">Select make-up slot</option>
+                          {ptCancelSlotOptions.map((slot) => (
+                            <option key={slot} value={slot}>
+                              {formatClockTime(slot)} - {formatClockTime(addMinutesToTime(slot, PT_SLOT_DURATION_MINUTES))}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                    </div>
+                    <p className="mt-3 text-xs text-slate-400">
+                      The cancelled session is not consumed. The replacement slot must stay inside the PT validity window.
+                    </p>
+                    <label className="mt-4 block space-y-2">
+                      <span className="text-xs font-medium text-slate-300">Reason</span>
+                      <textarea
+                        value={ptCancelForm.reason}
+                        onChange={(event) => setPtCancelForm((current) => ({ ...current, reason: event.target.value }))}
+                        placeholder="Reason for cancellation / make-up request"
+                        className="min-h-[88px] w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white placeholder:text-slate-500"
+                      />
+                    </label>
+                  </div>
+                </div>
+                <div className="space-y-4">
+                  <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Next 7 Days Of Available Slots</p>
+                    <div className="mt-3 space-y-2">
+                      {ptCancelDateSummaries.length > 0 ? ptCancelDateSummaries.map((entry) => (
+                        <button
+                          key={entry.date}
+                          type="button"
+                          onClick={() => setPtCancelForm((current) => ({ ...current, newDate: entry.date, newTime: entry.slots[0] || "" }))}
+                          className={`w-full rounded-xl border px-3 py-3 text-left ${
+                            ptCancelForm.newDate === entry.date
+                              ? "border-orange-400/40 bg-orange-500/10"
+                              : "border-white/8 bg-white/[0.03]"
+                          }`}
+                        >
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="text-sm font-semibold text-white">{formatDateOnly(entry.date) || entry.date}</span>
+                            <span className="text-xs text-slate-400">
+                              {entry.slots.length > 0 ? `${entry.slots.length} slot${entry.slots.length > 1 ? "s" : ""}` : "No free slots"}
+                            </span>
+                          </div>
+                          <p className="mt-1 text-xs text-slate-400">
+                            {entry.slots.length > 0
+                              ? entry.slots.slice(0, 3).map((slot) => formatClockTime(slot)).join(" · ")
+                              : "Trainer is unavailable or fully booked"}
+                          </p>
+                        </button>
+                      )) : (
+                        <p className="text-sm text-slate-400">No future slots are available inside the current PT validity window.</p>
                       )}
                     </div>
                   </div>

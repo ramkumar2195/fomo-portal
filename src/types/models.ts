@@ -375,6 +375,10 @@ export interface FreezeHistoryEntry {
   freezeId: string;
   freezeFrom?: string;
   freezeTo?: string;
+  startDate?: string;
+  endDate?: string;
+  freeze_from?: string;
+  freeze_to?: string;
   status?: string;
   reason?: string;
   days?: number;

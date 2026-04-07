@@ -54,6 +54,40 @@ export interface ClientAssignmentRequest {
   slotDurationMinutes?: number;
 }
 
+export interface TrainerLeaveWindow {
+  leaveRequestId?: number;
+  trainerId?: number;
+  leaveType?: string;
+  fromDate?: string;
+  toDate?: string;
+  status?: string;
+  reason?: string;
+}
+
+export interface TrainerScheduleEntry {
+  entryType: string;
+  label: string;
+  referenceId?: number;
+  startAt?: string;
+  endAt?: string;
+  status?: string;
+  memberId?: number;
+  memberName?: string;
+  notes?: string;
+}
+
+export interface TrainerScheduleResponse {
+  trainerId?: number;
+  availabilityCount: number;
+  ptSessionCount: number;
+  classDutyCount: number;
+  leaveCount: number;
+  availability: unknown[];
+  approvedLeaves: TrainerLeaveWindow[];
+  classSchedules: unknown[];
+  entries: TrainerScheduleEntry[];
+}
+
 function toRecord(payload: unknown): JsonRecord {
   return typeof payload === "object" && payload !== null ? (payload as JsonRecord) : {};
 }
@@ -238,6 +272,49 @@ function mapPageRecord<T>(payload: unknown, mapper: (item: unknown, index: numbe
 
 function ensureArray(payload: unknown): unknown[] {
   return Array.isArray(payload) ? payload : [];
+}
+
+function mapTrainerLeaveWindow(payload: unknown): TrainerLeaveWindow {
+  const record = toRecord(payload);
+  return {
+    leaveRequestId: toOptionalNumber(record, ["leaveRequestId"]),
+    trainerId: toOptionalNumber(record, ["trainerId", "staffId"]),
+    leaveType: toOptionalString(record, ["leaveType"]),
+    fromDate: toOptionalString(record, ["fromDate"]),
+    toDate: toOptionalString(record, ["toDate"]),
+    status: toOptionalString(record, ["status"]),
+    reason: toOptionalString(record, ["reason"]),
+  };
+}
+
+function mapTrainerScheduleEntry(payload: unknown): TrainerScheduleEntry {
+  const record = toRecord(payload);
+  return {
+    entryType: toString(record, ["entryType"]) || "ENTRY",
+    label: toString(record, ["label"]) || "Schedule",
+    referenceId: toOptionalNumber(record, ["referenceId"]),
+    startAt: toOptionalString(record, ["startAt"]),
+    endAt: toOptionalString(record, ["endAt"]),
+    status: toOptionalString(record, ["status"]),
+    memberId: toOptionalNumber(record, ["memberId"]),
+    memberName: toOptionalString(record, ["memberName"]),
+    notes: toOptionalString(record, ["notes"]),
+  };
+}
+
+function mapTrainerSchedule(payload: unknown): TrainerScheduleResponse {
+  const record = toRecord(payload);
+  return {
+    trainerId: toOptionalNumber(record, ["trainerId"]),
+    availabilityCount: toNumber(record, ["availabilityCount"]),
+    ptSessionCount: toNumber(record, ["ptSessionCount"]),
+    classDutyCount: toNumber(record, ["classDutyCount"]),
+    leaveCount: toNumber(record, ["leaveCount"]),
+    availability: ensureArray(record.availability),
+    approvedLeaves: ensureArray(record.approvedLeaves).map((item) => mapTrainerLeaveWindow(item)),
+    classSchedules: ensureArray(record.classSchedules),
+    entries: ensureArray(record.entries).map((item) => mapTrainerScheduleEntry(item)),
+  };
 }
 
 export const trainingService = {
@@ -441,6 +518,25 @@ export const trainingService = {
     return mapPageRecord(unwrapData<unknown>(response), (item) => item);
   },
 
+  async getTrainerSchedule(
+    token: string,
+    trainerId: string | number,
+    from?: string,
+    to?: string,
+  ): Promise<TrainerScheduleResponse> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/trainers/${trainerId}/schedule`,
+      token,
+      query: {
+        from,
+        to,
+      },
+    });
+
+    return mapTrainerSchedule(unwrapData<unknown>(response));
+  },
+
   async createTrainerAvailability(
     token: string,
     trainerId: string | number,
@@ -494,6 +590,22 @@ export const trainingService = {
       path: `/api/training/pt-sessions/${sessionId}/cancel`,
       token,
       method: "PATCH",
+    });
+
+    return unwrapData<unknown>(response);
+  },
+
+  async cancelPtSessionWithMakeup(
+    token: string,
+    sessionId: string | number,
+    payload: { newDate: string; newTime: string; reason?: string },
+  ): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/pt-sessions/${sessionId}/cancel-with-makeup`,
+      token,
+      method: "PATCH",
+      body: payload,
     });
 
     return unwrapData<unknown>(response);

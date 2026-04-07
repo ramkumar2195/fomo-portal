@@ -11,7 +11,9 @@ import { useBranch } from "@/contexts/branch-context";
 import { ApiError } from "@/lib/api/http-client";
 import { branchService } from "@/lib/api/services/branch-service";
 import { trainingService } from "@/lib/api/services/training-service";
+import { usersService } from "@/lib/api/services/users-service";
 import { TrainingProgramSummary } from "@/types/admin";
+import { UserDirectoryItem } from "@/types/models";
 
 const STATUS_OPTIONS = ["ALL", "DRAFT", "ACTIVE", "PAUSED", "COMPLETED"];
 const EDITABLE_STATUS_OPTIONS = STATUS_OPTIONS.filter((s) => s !== "ALL");
@@ -22,10 +24,9 @@ const ACTIVE_PROGRAM_NAMES = new Set([
   "Coreflex",
   "CrossFit",
   "Kickboxing",
-  "Calisthenics Kids",
-  "Calisthenics Self",
   "Calisthenics Adult",
 ]);
+const PROGRAM_NAME_OPTIONS = Array.from(ACTIVE_PROGRAM_NAMES);
 
 interface BranchOption {
   label: string;
@@ -76,6 +77,7 @@ export default function ProgramsPage() {
     effectiveBranchId ? String(effectiveBranchId) : "ALL"
   );
   const [programs, setPrograms] = useState<TrainingProgramSummary[]>([]);
+  const [coaches, setCoaches] = useState<UserDirectoryItem[]>([]);
   const [branches, setBranches] = useState<BranchOption[]>([{ label: "All Branches", value: "ALL" }]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -111,6 +113,24 @@ export default function ProgramsPage() {
         setBranches([{ label: "All Branches", value: "ALL" }, ...next]);
       } catch {
         if (active) setBranches([{ label: "All Branches", value: "ALL" }]);
+      }
+    })();
+    return () => { active = false; };
+  }, [token]);
+
+  useEffect(() => {
+    if (!token) return;
+    let active = true;
+    (async () => {
+      try {
+        const items = await usersService.searchUsers(token, { role: "COACH", active: true });
+        if (active) {
+          setCoaches(items);
+        }
+      } catch {
+        if (active) {
+          setCoaches([]);
+        }
       }
     })();
     return () => { active = false; };
@@ -156,6 +176,18 @@ export default function ProgramsPage() {
     if (!bId) return "-";
     const match = branches.find((b) => b.value === String(bId));
     return match ? match.label : String(bId);
+  };
+
+  const availableCoaches = useMemo(() => {
+    if (!form.branchId) {
+      return coaches;
+    }
+    const branchMatches = coaches.filter((coach) => coach.defaultBranchId === form.branchId);
+    return branchMatches.length > 0 ? branchMatches : coaches;
+  }, [coaches, form.branchId]);
+
+  const updateTrainerId = (value: string) => {
+    updateField("trainerId", value);
   };
 
   const openCreate = () => {
@@ -363,13 +395,16 @@ export default function ProgramsPage() {
       >
         <div className="space-y-4">
           <FormField label="Program Name" required>
-            <input
-              type="text"
+            <select
               value={form.name}
               onChange={(e) => updateField("name", e.target.value)}
-              placeholder="e.g., 12-Week Strength Training"
               className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-            />
+            >
+              <option value="">Select program</option>
+              {PROGRAM_NAME_OPTIONS.map((name) => (
+                <option key={name} value={name}>{name}</option>
+              ))}
+            </select>
           </FormField>
 
           <FormField label="Description">
@@ -429,14 +464,19 @@ export default function ProgramsPage() {
             </FormField>
           </div>
 
-          <FormField label="Trainer ID">
-            <input
-              type="number"
+          <FormField label="Assigned Coach">
+            <select
               value={form.trainerId}
-              onChange={(e) => updateField("trainerId", e.target.value)}
-              placeholder="Trainer ID (optional)"
+              onChange={(e) => updateTrainerId(e.target.value)}
               className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
-            />
+            >
+              <option value="">Unassigned</option>
+              {availableCoaches.map((coach) => (
+                <option key={coach.id} value={coach.id}>
+                  {coach.name}{coach.designation ? ` (${coach.designation.replaceAll("_", " ")})` : ""}
+                </option>
+              ))}
+            </select>
           </FormField>
         </div>
 

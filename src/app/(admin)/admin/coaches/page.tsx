@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { Star } from "lucide-react";
 import { AdminPageFrame } from "@/components/admin/page-frame";
 import { useAuth } from "@/contexts/auth-context";
@@ -224,6 +225,15 @@ export default function CoachesPage() {
                 <p className="text-slate-500">Programs</p>
                 <p className="text-sm font-bold text-slate-700">{coach.programs.length}</p>
               </div>
+            </div>
+
+            <div className="mt-4 flex justify-end">
+              <Link
+                href={`/admin/coaches/${coach.user.id}`}
+                className="rounded-lg border border-slate-200 px-3 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Open Schedule Master
+              </Link>
             </div>
           </article>
         ))}

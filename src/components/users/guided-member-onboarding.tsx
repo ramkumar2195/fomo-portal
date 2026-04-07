@@ -21,6 +21,7 @@ import { useBranch } from "@/contexts/branch-context";
 import { hasCapability } from "@/lib/access-policy";
 import { ApiError } from "@/lib/api/http-client";
 import { BillingSettings, CatalogProduct, CatalogVariant, MembershipPolicySettings, subscriptionService } from "@/lib/api/services/subscription-service";
+import { formatDateTime } from "@/lib/formatters";
 import { formatInquiryCode } from "@/lib/inquiry-code";
 import { trainingService } from "@/lib/api/services/training-service";
 import { engagementService } from "@/lib/api/services/engagement-service";
@@ -113,6 +114,8 @@ interface CompletedOnboardingState {
   totalPaidAmount: number;
   balanceAmount: number;
   membershipActivated: boolean;
+  balanceDueFollowUpCreated?: boolean;
+  balanceDueFollowUpDueAt?: string;
 }
 
 interface StepItem {
@@ -574,8 +577,11 @@ function statusBadgeClass(active: boolean): string {
     : "border-white/10 bg-white/[0.04] text-slate-300";
 }
 
-function derivePtRescheduleLimit(durationMonths: number): number {
-  return Math.max(0, durationMonths) * 2;
+function derivePtRescheduleLimit(durationMonths: number, unlimited = false): number {
+  if (unlimited) {
+    return 0;
+  }
+  return durationMonths > 0 ? 3 : 0;
 }
 
 function addMinutesToTime(timeValue: string, minutesToAdd: number): string {
@@ -710,6 +716,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   const [variants, setVariants] = useState<CatalogVariant[]>([]);
   const [branchCoaches, setBranchCoaches] = useState<UserDirectoryItem[]>([]);
   const [branchMembers, setBranchMembers] = useState<UserDirectoryItem[]>([]);
+  const [branchTeamUsers, setBranchTeamUsers] = useState<UserDirectoryItem[]>([]);
   const [assignedTrainer, setAssignedTrainer] = useState<UserDirectoryItem | null>(null);
   const [manualTrainerId, setManualTrainerId] = useState<string>("");
   const [billingSettings, setBillingSettings] = useState<BillingSettings>(defaultBillingSettings);
@@ -1157,6 +1164,10 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     [addOnVariants, draftSelectedAddOnVariant?.variantId, ptLineItem?.variantId],
   );
   const requiresBundledPtSetup = Boolean(selectedPrimaryVariant && isTransformationVariant(selectedPrimaryVariant));
+  const hasUnlimitedPtReschedules = Boolean(
+    String(selectedPrimaryProduct?.productCode || "").toUpperCase().includes("BLACK")
+      || String(selectedPrimaryVariant?.variantName || "").toUpperCase().includes("BLACK"),
+  );
   const activePtSetupVariant = requiresBundledPtSetup ? selectedPrimaryVariant : selectedAddOnVariant;
   const shouldShowPtSetupSection = requiresBundledPtSetup || (canAddPtMembership && showPtComposer);
   const ptEligibleCoaches = useMemo(
@@ -1359,13 +1370,14 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     if (!token || !memberForm.defaultBranchId) {
       setBranchCoaches([]);
       setBranchMembers([]);
+      setBranchTeamUsers([]);
       return;
     }
 
     let active = true;
     (async () => {
       try {
-        const [coaches, members] = await Promise.all([
+        const [coaches, members, users] = await Promise.all([
           usersService.searchUsers(token, {
             role: "COACH",
             active: true,
@@ -1374,6 +1386,10 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
           }),
           usersService.searchUsers(token, {
             role: "MEMBER",
+            defaultBranchId: memberForm.defaultBranchId,
+          }),
+          usersService.searchUsers(token, {
+            active: true,
             defaultBranchId: memberForm.defaultBranchId,
           }),
         ]);
@@ -1388,12 +1404,14 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
             .sort((left, right) => left.name.localeCompare(right.name)),
         );
         setBranchMembers(members);
+        setBranchTeamUsers(users);
       } catch {
         if (!active) {
           return;
         }
         setBranchCoaches([]);
         setBranchMembers([]);
+        setBranchTeamUsers([]);
       }
     })();
 
@@ -1929,7 +1947,13 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
           <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
             <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
               <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Reschedules</p>
-              <p className="mt-2 text-base font-semibold text-white">{activePtSetupVariant ? derivePtRescheduleLimit(activePtSetupVariant.durationMonths) : "-"}</p>
+              <p className="mt-2 text-base font-semibold text-white">
+                {activePtSetupVariant
+                  ? hasUnlimitedPtReschedules
+                    ? "Unlimited"
+                    : String(derivePtRescheduleLimit(activePtSetupVariant.durationMonths, false))
+                  : "-"}
+              </p>
             </div>
             <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
               <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Projected End</p>
@@ -2302,7 +2326,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
             productVariantId: Number(ptProvisionVariant.variantId),
             packageName: `${formatPtProductName(ptProvisionVariant.variantName || ptProvisionVariant.productCode)} · ${formatPlanDurationLabel(ptProvisionVariant.durationMonths, ptProvisionVariant.validityDays)}`,
             totalSessions: selectedPtSessionCount,
-            rescheduleLimit: derivePtRescheduleLimit(Number(ptProvisionVariant.durationMonths || 0)),
+            rescheduleLimit: derivePtRescheduleLimit(Number(ptProvisionVariant.durationMonths || 0), hasUnlimitedPtReschedules),
             slotDurationMinutes: PT_SLOT_DURATION_MINUTES,
             slots: selectedPtDays.map((dayCode) => ({
               dayOfWeek: dayCode,
@@ -2315,14 +2339,19 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         }
       }
 
+      let balanceDueFollowUpCreated = false;
+      let balanceDueFollowUpDueAt: string | undefined;
       if (pricingPreview.balanceAmount > 0 && subscriptionForm.balanceDueDate) {
         try {
           await subscriptionService.createInquiryFollowUp(token, sourceInquiryId, {
             dueAt: `${subscriptionForm.balanceDueDate}T09:00:00`,
             assignedToStaffId: billedByStaffId || inquiry?.clientRepStaffId || undefined,
             createdByStaffId: billedByStaffId || undefined,
+            followUpType: "BALANCE_DUE",
             notes: `Collect the remaining balance of ${formatCurrency(pricingPreview.balanceAmount)} for invoice ${subscriptionResponse.invoiceNumber}.`,
           });
+          balanceDueFollowUpCreated = true;
+          balanceDueFollowUpDueAt = `${subscriptionForm.balanceDueDate}T09:00:00`;
         } catch {
           completionWarnings.push("Balance follow-up could not be created automatically.");
         }
@@ -2390,6 +2419,8 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         totalPaidAmount: paymentReceipt?.totalPaidAmount || subscriptionResponse.totalPaidAmount || 0,
         balanceAmount: paymentReceipt?.balanceAmount ?? subscriptionResponse.balanceAmount ?? invoiceTotal,
         membershipActivated,
+        balanceDueFollowUpCreated,
+        balanceDueFollowUpDueAt,
       };
       try {
         window.sessionStorage.setItem(completionStorageKey, JSON.stringify(completionPayload));
@@ -2455,12 +2486,21 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     : "Pending";
   const selectedFamilyLabel = productFamilyLabel(selectedPrimaryVariant?.categoryCode || selectedPrimaryProduct?.categoryCode);
   const selectedManualTrainer = branchCoaches.find((c) => c.id === manualTrainerId) || null;
+  const branchTeamUserNameById = useMemo(() => {
+    const lookup = new Map<string, string>();
+    branchTeamUsers.forEach((entry) => {
+      if (entry.id && entry.name) {
+        lookup.set(String(entry.id), entry.name);
+      }
+    });
+    return lookup;
+  }, [branchTeamUsers]);
   const clientRepLabel =
-    inquiry?.clientRepStaffId && inquiry.clientRepStaffId === resolveStaffId(user)
-      ? user?.name || `Staff #${inquiry.clientRepStaffId}`
-      : inquiry?.clientRepStaffId
-        ? `Staff #${inquiry.clientRepStaffId}`
-        : user?.name || "-";
+    inquiry?.clientRepStaffId
+      ? branchTeamUserNameById.get(String(inquiry.clientRepStaffId))
+        || (inquiry.clientRepStaffId === resolveStaffId(user) ? user?.name : null)
+        || `Staff #${inquiry.clientRepStaffId}`
+      : user?.name || "-";
   const trainerAssistLabel = !selectedPrimaryVariant
     ? "Pick a plan to evaluate trainer assignment."
     : needsTrainerAssignment(selectedPrimaryVariant)
@@ -3471,7 +3511,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                               <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Receipt Preview</p>
                               <dl className="mt-3 space-y-2 text-sm text-slate-300">
                                 <div className="flex items-center justify-between gap-3"><dt>Receipt Number</dt><dd>{generatedReceiptNumber}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Receipt Date</dt><dd>{completedOnboarding ? new Date().toLocaleDateString("en-IN") : "Generated after payment"}</dd></div>
+                                <div className="flex items-center justify-between gap-3"><dt>Receipt Date</dt><dd>{completedOnboarding ? new Date().toLocaleDateString("en-IN") : new Date().toLocaleDateString("en-IN")}</dd></div>
                                 <div className="flex items-center justify-between gap-3"><dt>Payment Method</dt><dd>{completedOnboarding?.paymentModeLabel || resolvePaymentModeLabel(subscriptionForm.paymentMode, subscriptionForm.paymentCardSubtype, subscriptionForm.paymentUpiVendor)}</dd></div>
                                 <div className="flex items-center justify-between gap-3"><dt>Payment Status</dt><dd>{completedOnboarding ? formatPaymentCollectionStatus(completedOnboarding.totalPaidAmount, completedOnboarding.balanceAmount) : formatPaymentCollectionStatus(pricingPreview.receivedAmount, pricingPreview.balanceAmount)}</dd></div>
                                 <div className="flex items-center justify-between gap-3"><dt>Total Paid</dt><dd>{formatCurrency(completedOnboarding?.totalPaidAmount || pricingPreview.receivedAmount)}</dd></div>
@@ -3549,6 +3589,9 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                   <div className="flex items-center justify-between gap-3"><dt>Invoice Number</dt><dd className="font-semibold text-white">{completedOnboarding.invoiceNumber}</dd></div>
                   <div className="flex items-center justify-between gap-3"><dt>Receipt Number</dt><dd className="font-semibold text-white">{completedOnboarding.receiptNumber || "-"}</dd></div>
                   <div className="flex items-center justify-between gap-3"><dt>Payment Status</dt><dd>{formatPaymentCollectionStatus(completedOnboarding.totalPaidAmount, completedOnboarding.balanceAmount)}</dd></div>
+                  {completedOnboarding.balanceDueFollowUpCreated ? (
+                    <div className="flex items-center justify-between gap-3"><dt>Balance Follow-up</dt><dd className="font-semibold text-white">{formatDateTime(completedOnboarding.balanceDueFollowUpDueAt || "")}</dd></div>
+                  ) : null}
                 </dl>
               </div>
               <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
@@ -3627,11 +3670,27 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
             </div>
 
             <div className="mt-6 flex flex-wrap justify-end gap-3">
-              <button
-                type="button"
-                onClick={() => {
-                  try {
-                    window.sessionStorage.removeItem(completionStorageKey);
+              {completedOnboarding.balanceDueFollowUpCreated ? (
+                <button
+                  type="button"
+                  onClick={() => {
+                    try {
+                      window.sessionStorage.removeItem(completionStorageKey);
+                    } catch {
+                      // ignore
+                    }
+                    router.replace("/portal/follow-ups");
+                  }}
+                  className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
+                >
+                  Open Follow-ups
+                </button>
+              ) : null}
+                <button
+                  type="button"
+                  onClick={() => {
+                    try {
+                      window.sessionStorage.removeItem(completionStorageKey);
                   } catch {
                     // ignore
                   }
@@ -3651,7 +3710,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                   }
                   router.replace(`/admin/members/${completedOnboarding.memberId}`);
                 }}
-                className="rounded-2xl bg-slate-900 px-5 py-3 text-sm font-semibold text-white hover:bg-slate-700"
+                className="rounded-2xl border border-white/10 bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(15,23,42,0.28)] hover:bg-slate-700"
               >
                 Open Member Profile
               </button>

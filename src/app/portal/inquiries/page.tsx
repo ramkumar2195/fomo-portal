@@ -953,6 +953,7 @@ export default function InquiriesPage() {
           channel: quickFollowUpForm.channel,
           assignedToStaffId,
           createdByStaffId,
+          followUpType: quickFollowUpForm.responseType === "REQUESTED_TRIAL" ? "ASSIGN_TRIAL" : "ENQUIRY",
           notes: toOptionalString(quickFollowUpForm.notes),
           responseType: quickFollowUpForm.responseType,
         });
@@ -1081,6 +1082,7 @@ export default function InquiriesPage() {
         channel: "CALL",
         assignedToStaffId,
         createdByStaffId,
+        followUpType: "ENQUIRY",
         notes: closeInquiryForm.closeReason.trim(),
         responseType: "NOT_INTERESTED",
       });

@@ -103,6 +103,25 @@ function toString(payload: JsonRecord, keys: string[]): string {
   return "";
 }
 
+function toBoolean(payload: JsonRecord, keys: string[]): boolean {
+  for (const key of keys) {
+    const value = payload[key];
+    if (typeof value === "boolean") {
+      return value;
+    }
+    if (typeof value === "string") {
+      const normalized = value.trim().toLowerCase();
+      if (normalized === "true") {
+        return true;
+      }
+      if (normalized === "false") {
+        return false;
+      }
+    }
+  }
+  return false;
+}
+
 function mapBiometricDevice(payload: unknown): BiometricDeviceRecord {
   const data = toRecord(payload);
   return {
@@ -156,21 +175,25 @@ function mapFreezeHistory(payload: unknown): FreezeHistoryEntry[] {
 
   return payload
     .map((item) => toRecord(item))
-    .map((entry, index) => ({
+    .map((entry, index) => {
+      const stringFreezeId = toString(entry, ["freezeId", "id", "requestId", "memberFreezeId"]);
+      const numericFreezeId = toNumber(entry, ["freezeId", "id", "requestId", "memberFreezeId"]);
+      return {
       freezeId:
-        toString(entry, ["freezeId", "id", "requestId", "memberFreezeId"]) || `freeze-${index}`,
+        stringFreezeId || (numericFreezeId > 0 ? String(numericFreezeId) : `freeze-${index + 1}`),
       freezeFrom: toString(entry, ["freezeFrom", "startDate", "fromDate", "startAt", "freezeStartAt"]) || undefined,
       freezeTo: toString(entry, ["freezeTo", "endDate", "toDate", "endAt", "freezeEndAt"]) || undefined,
-      status: toString(entry, ["status"]) || undefined,
+      status:
+        toString(entry, ["status"])
+        || (toBoolean(entry, ["active"]) ? "ACTIVE" : toString(entry, ["completionReason"]) ? "COMPLETED" : undefined),
       reason: toString(entry, ["reason", "notes"]) || undefined,
       days: toNumber(entry, ["days", "freezeDays", "durationDays"]) || undefined,
       resumedAt: toString(entry, ["resumedAt"]) || undefined,
       completionReason: toString(entry, ["completionReason"]) || undefined,
       restoredPauseDays: toNumber(entry, ["restoredPauseDays"]) || undefined,
-      requestedAt: toString(entry, ["requestedAt", "createdAt"]) || undefined,
-      approvedAt: toString(entry, ["approvedAt", "updatedAt"]) || undefined,
       createdAt: toString(entry, ["createdAt"]) || undefined,
-    }));
+    };
+    });
 }
 
 function mapAdminOverviewMetrics(payload: unknown): AdminOverviewMetrics {
