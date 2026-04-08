@@ -180,11 +180,11 @@ function HeroStatCard({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">{card.title}</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-200">{card.title}</p>
           <p className="mt-3 text-4xl font-bold tracking-tight text-white">{card.value}</p>
           <p className="mt-2 text-sm text-slate-300">{card.subtitle}</p>
         </div>
-        <div className={`inline-flex shrink-0 rounded-2xl p-3 ${card.iconClass}`}>{card.icon}</div>
+        <div className={`inline-flex shrink-0 rounded-2xl border border-white/10 p-3 shadow-sm [&_svg]:h-5 [&_svg]:w-5 ${card.iconClass}`}>{card.icon}</div>
       </div>
       {badge ? (
         <span className="mt-4 inline-flex rounded-full bg-[#E8F2D7] px-3 py-1 text-xs font-semibold text-[#5B7F2B]">{badge}</span>
@@ -241,11 +241,11 @@ function MetricValueCard({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-semibold text-slate-300">{card.title}</p>
+          <p className="text-sm font-semibold text-slate-100">{card.title}</p>
           <p className="mt-4 text-4xl font-bold tracking-tight text-white">{card.value}</p>
           <p className="mt-2 text-sm text-slate-400">{card.subtitle}</p>
         </div>
-        <div className={`inline-flex shrink-0 rounded-2xl p-3 ${card.iconClass}`}>{card.icon}</div>
+        <div className={`inline-flex shrink-0 rounded-2xl border border-white/10 p-3 shadow-sm [&_svg]:h-5 [&_svg]:w-5 ${card.iconClass}`}>{card.icon}</div>
       </div>
       {badge ? <div className="mt-4">{badge}</div> : null}
     </button>
@@ -267,8 +267,13 @@ function CompactMetricCard({
       onClick={onClick}
       className="rounded-2xl border border-white/10 bg-[#121722] p-4 text-left transition hover:border-[#C42429] hover:bg-[#171d29] hover:shadow-sm"
     >
-      <p className="text-sm font-medium text-slate-400">{card.title}</p>
-      <p className="mt-2 text-3xl font-bold tracking-tight text-white">{card.value}</p>
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <p className="text-sm font-medium text-slate-200">{card.title}</p>
+          <p className="mt-2 text-3xl font-bold tracking-tight text-white">{card.value}</p>
+        </div>
+        <div className={`inline-flex shrink-0 rounded-2xl border border-white/10 p-2.5 shadow-sm [&_svg]:h-4 [&_svg]:w-4 ${card.iconClass}`}>{card.icon}</div>
+      </div>
       {badge ? <div className="mt-3">{badge}</div> : <p className="mt-2 text-xs text-slate-400">{card.subtitle}</p>}
     </button>
   );
@@ -576,7 +581,7 @@ export default function AdminDashboardPage({
         formatCount(summary.members.totalMembers),
         "All registered members",
         <Users className="h-4 w-4" />,
-        "bg-slate-100 text-slate-700",
+        "bg-slate-500/15 text-slate-100",
         "TOTAL_MEMBERS",
       ),
       createMetricCard(
@@ -584,7 +589,7 @@ export default function AdminDashboardPage({
         formatInr(summary.revenue.revenueThisMonth),
         "Current month collection",
         <IndianRupee className="h-4 w-4" />,
-        "bg-rose-100 text-rose-700",
+        "bg-rose-500/15 text-rose-100",
         "REVENUE_THIS_MONTH",
       ),
       createMetricCard(
@@ -592,7 +597,7 @@ export default function AdminDashboardPage({
         formatCount(summary.subscriptions.activeSubscriptions),
         "Live subscription count",
         <Layers3 className="h-4 w-4" />,
-        "bg-indigo-100 text-indigo-700",
+        "bg-indigo-500/15 text-indigo-100",
         "ACTIVE_SUBSCRIPTIONS",
       ),
       createMetricCard(
@@ -600,7 +605,7 @@ export default function AdminDashboardPage({
         formatCount(summary.newMembers.month),
         "Joined this month",
         <UserPlus className="h-4 w-4" />,
-        "bg-violet-100 text-violet-700",
+        "bg-violet-500/15 text-violet-100",
         "NEW_MEMBERS_THIS_MONTH",
       ),
     ];
@@ -614,7 +619,7 @@ export default function AdminDashboardPage({
         formatInr(summary.revenue.revenueToday),
         "Collected today",
         <IndianRupee className="h-4 w-4" />,
-        "bg-emerald-100 text-emerald-700",
+        "bg-emerald-500/15 text-emerald-100",
         "REVENUE_TODAY",
       ),
       createMetricCard(
@@ -622,7 +627,7 @@ export default function AdminDashboardPage({
         formatInr(summary.revenue.revenueThisMonth),
         "Current month collection",
         <IndianRupee className="h-4 w-4" />,
-        "bg-rose-100 text-rose-700",
+        "bg-rose-500/15 text-rose-100",
         "REVENUE_THIS_MONTH",
       ),
       ...(
@@ -634,7 +639,7 @@ export default function AdminDashboardPage({
                 formatInr(summary.revenue.revenueThisYear),
                 "Jan 1 to today",
                 <IndianRupee className="h-4 w-4" />,
-                "bg-violet-100 text-violet-700",
+                "bg-violet-500/15 text-violet-100",
                 "REVENUE_THIS_YEAR",
               ),
               createMetricCard(
@@ -642,7 +647,7 @@ export default function AdminDashboardPage({
                 formatInr(summary.revenue.revenueLifetime),
                 "Platform lifetime collection",
                 <IndianRupee className="h-4 w-4" />,
-                "bg-amber-100 text-amber-700",
+                "bg-amber-500/15 text-amber-100",
                 "REVENUE_LIFETIME",
               ),
             ]
@@ -658,7 +663,7 @@ export default function AdminDashboardPage({
         formatCount(summary.members.activeMembers),
         "Current active memberships",
         <Users className="h-4 w-4" />,
-        "bg-emerald-100 text-emerald-700",
+        "bg-emerald-500/15 text-emerald-100",
         "ACTIVE_MEMBERS",
       ),
       createMetricCard(
@@ -666,7 +671,7 @@ export default function AdminDashboardPage({
         formatCount(summary.members.expiredMembers),
         "Membership expired",
         <Users className="h-4 w-4" />,
-        "bg-rose-100 text-rose-700",
+        "bg-rose-500/15 text-rose-100",
         "EXPIRED_MEMBERS",
       ),
       createMetricCard(
@@ -674,7 +679,7 @@ export default function AdminDashboardPage({
         formatCount(summary.members.irregularMembers),
         "Needs attendance recovery",
         <Activity className="h-4 w-4" />,
-        "bg-amber-100 text-amber-700",
+        "bg-amber-500/15 text-amber-100",
         "IRREGULAR_MEMBERS",
       ),
       createMetricCard(
@@ -682,7 +687,7 @@ export default function AdminDashboardPage({
         formatCount(summary.members.inactiveMembers),
         "Not currently active",
         <Users className="h-4 w-4" />,
-        "bg-slate-100 text-slate-700",
+        "bg-slate-500/15 text-slate-100",
         "INACTIVE_MEMBERS",
       ),
     ];
@@ -696,7 +701,7 @@ export default function AdminDashboardPage({
         formatCount(summary.staff.totalStaff),
         "All staff records",
         <Users className="h-4 w-4" />,
-        "bg-slate-100 text-slate-700",
+        "bg-slate-500/15 text-slate-100",
         "TOTAL_STAFF",
       ),
       createMetricCard(
@@ -704,7 +709,7 @@ export default function AdminDashboardPage({
         formatCount(summary.staff.activeStaff),
         "Currently active staff",
         <Users className="h-4 w-4" />,
-        "bg-emerald-100 text-emerald-700",
+        "bg-emerald-500/15 text-emerald-100",
         "ACTIVE_STAFF",
       ),
       createMetricCard(
@@ -712,7 +717,7 @@ export default function AdminDashboardPage({
         formatCount(summary.coaches.totalCoaches),
         "All coach records",
         <Users className="h-4 w-4" />,
-        "bg-slate-100 text-slate-700",
+        "bg-slate-500/15 text-slate-100",
         "TOTAL_COACHES",
       ),
       createMetricCard(
@@ -720,7 +725,7 @@ export default function AdminDashboardPage({
         formatCount(summary.coaches.activeCoaches),
         "Currently active coach records",
         <Users className="h-4 w-4" />,
-        "bg-violet-100 text-violet-700",
+        "bg-violet-500/15 text-violet-100",
         "ACTIVE_COACHES",
       ),
     ];
@@ -825,24 +830,24 @@ export default function AdminDashboardPage({
       </section>
 
       <section className="grid gap-4 xl:grid-cols-12">
-        <div className="xl:col-span-8">
+        <div className="xl:col-span-12">
           <SurfaceCard title="CRM">
-            <div className="grid items-stretch gap-4 xl:grid-cols-[minmax(0,1.2fr)_minmax(360px,1fr)]">
-              <div className="space-y-4">
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
-                  <SnapshotStat label="Total Enquiries" value={formatCount(inquiryTotal)} subtitle="CRM pipeline volume" tone="blue" />
-                  <SnapshotStat label="Open Enquiries" value={formatCount(openInquiries)} subtitle="Still in progress" tone="neutral" />
-                  <SnapshotStat label="Converted" value={formatCount(convertedTotal)} subtitle="Moved to members" tone="green" />
-                  <SnapshotStat label="Due Today" value={formatCount(resolvedFollowUpsDueToday)} subtitle="Follow-ups scheduled today" tone="amber" />
-                  <SnapshotStat label="Overdue" value={formatCount(resolvedFollowUpsOverdue)} subtitle="Needs immediate action" tone="rose" />
-                  <SnapshotStat label="Conversion Rate" value={`${resolvedConversionRate.toFixed(1)}%`} subtitle="Enquiry to conversion ratio" tone="green" />
-                </div>
-                  <div className="rounded-3xl border border-white/8 bg-white/[0.03] p-5">
-                    <div className="flex items-center justify-between gap-3">
-                      <div>
-                        <p className="text-sm font-semibold text-white">Enquiry Funnel</p>
-                        <p className="text-sm text-slate-400">Current stage distribution across the selected scope.</p>
-                      </div>
+            <div className="space-y-4">
+              <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+                <SnapshotStat label="Total Enquiries" value={formatCount(inquiryTotal)} subtitle="CRM pipeline volume" tone="blue" />
+                <SnapshotStat label="Open Enquiries" value={formatCount(openInquiries)} subtitle="Still in progress" tone="neutral" />
+                <SnapshotStat label="Converted" value={formatCount(convertedTotal)} subtitle="Moved to members" tone="green" />
+                <SnapshotStat label="Due Today" value={formatCount(resolvedFollowUpsDueToday)} subtitle="Follow-ups scheduled today" tone="amber" />
+                <SnapshotStat label="Overdue" value={formatCount(resolvedFollowUpsOverdue)} subtitle="Needs immediate action" tone="rose" />
+                <SnapshotStat label="Conversion Rate" value={`${resolvedConversionRate.toFixed(1)}%`} subtitle="Enquiry to conversion ratio" tone="green" />
+              </div>
+              <div className="grid items-stretch gap-4 xl:grid-cols-2">
+                <div className="rounded-3xl border border-white/8 bg-white/[0.03] p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <p className="text-sm font-semibold text-white">Enquiry Funnel</p>
+                      <p className="text-sm text-slate-400">Current stage distribution across the selected scope.</p>
+                    </div>
                     <DashboardPill
                       label={inquiryTotal > 0 ? `${convertedTotal}/${inquiryTotal} converted` : "No enquiries yet"}
                       tone="green"
@@ -857,30 +862,30 @@ export default function AdminDashboardPage({
                     />
                   </div>
                 </div>
-              </div>
-              <div className="h-full min-h-[420px]">
-                <DonutLegendChart
-                  title="Top Sources"
-                  slices={
-                    sourceSlices.length > 0
-                      ? sourceSlices
-                      : [
-                          {
-                            label: "No source data",
-                            value: 0,
-                            color: "#94a3b8",
-                          },
-                        ]
-                  }
-                />
+                <div className="min-h-[360px]">
+                  <DonutLegendChart
+                    title="Top Sources"
+                    slices={
+                      sourceSlices.length > 0
+                        ? sourceSlices
+                        : [
+                            {
+                              label: "No source data",
+                              value: 0,
+                              color: "#94a3b8",
+                            },
+                          ]
+                    }
+                  />
+                </div>
               </div>
             </div>
           </SurfaceCard>
         </div>
 
-        <div className="xl:col-span-4">
+        <div className="xl:col-span-12">
           <SurfaceCard title="Revenue">
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
               {revenueCards.map((card) => (
                 <MetricValueCard
                   key={card.metricKey}
@@ -893,6 +898,12 @@ export default function AdminDashboardPage({
                   }
                 />
               ))}
+              <SnapshotStat
+                label="Pending Revenue"
+                value={formatInr(resolvedBalanceDueAmount)}
+                subtitle={`${formatCount(resolvedBalanceDueInvoices)} invoice${resolvedBalanceDueInvoices === 1 ? "" : "s"} awaiting collection`}
+                tone="amber"
+              />
             </div>
           </SurfaceCard>
         </div>
@@ -944,7 +955,7 @@ export default function AdminDashboardPage({
                 tone="rose"
               />
               <SnapshotStat
-                label="Balance Due Amount"
+                label="Pending Revenue"
                 value={formatInr(resolvedBalanceDueAmount)}
                 subtitle="Outstanding to be collected"
                 tone="blue"

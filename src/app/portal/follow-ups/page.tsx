@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "next/navigation";
 import { CheckCircle2, MessageCircle, PhoneCall } from "lucide-react";
 import { PageLoader } from "@/components/common/page-loader";
 import { SectionCard } from "@/components/common/section-card";
@@ -98,7 +99,16 @@ function formatFollowUpType(type?: string | null): string {
   return FOLLOW_UP_TYPE_LABELS[type as FollowUpType] || humanizeText(type);
 }
 
-function deriveFollowUpType(item: FollowUpRecord, inquiry?: InquiryRecord): string {
+function deriveFollowUpType(
+  item: {
+    followUpType?: string | null;
+    notes?: string | null;
+    outcomeNotes?: string | null;
+    responseType?: InquiryResponseType;
+    memberId?: number | null;
+  },
+  inquiry?: InquiryRecord,
+): string {
   if (item.followUpType) {
     return item.followUpType;
   }
@@ -198,6 +208,32 @@ function formatLeadStatus(status?: string): string {
   return humanizeText(status);
 }
 
+function formatStaffDisplayName(value?: string, fallbackId?: string): string {
+  if (isMeaningfulValue(value)) {
+    return value!.trim();
+  }
+  if (fallbackId) {
+    return `Staff ${fallbackId}`;
+  }
+  return "Unassigned";
+}
+
+function statusClass(status?: string): string {
+  switch ((status || "").toUpperCase()) {
+    case "COMPLETED":
+      return "border-emerald-400/20 bg-emerald-500/10 text-emerald-100";
+    case "PENDING":
+    case "SCHEDULED":
+      return "border-sky-400/20 bg-sky-500/10 text-sky-100";
+    case "OVERDUE":
+      return "border-rose-400/20 bg-rose-500/10 text-rose-100";
+    case "CANCELLED":
+      return "border-slate-400/20 bg-slate-500/10 text-slate-200";
+    default:
+      return "border-white/10 bg-white/[0.04] text-slate-200";
+  }
+}
+
 function buildUniqueOptions(values: Array<string | null | undefined>): string[] {
   const seen = new Map<string, string>();
   values.forEach((value) => {
@@ -214,8 +250,11 @@ function buildUniqueOptions(values: Array<string | null | undefined>): string[] 
 }
 
 export default function FollowUpsPage() {
+  const searchParams = useSearchParams();
   const { token, user } = useAuth();
   const { selectedBranchCode, effectiveBranchId } = useBranch();
+  const focusInquiryId = Number(searchParams.get("inquiryId") || 0) || null;
+  const focusFollowUpType = searchParams.get("followUpType");
 
   const [queueScope, setQueueScope] = useState<QueueScope>("BRANCH");
   const [dashboardView, setDashboardView] = useState<DashboardView>("EXPECTED");
@@ -252,16 +291,21 @@ export default function FollowUpsPage() {
     try {
       const staffId = resolveStaffId(user);
       const queueBaseQuery =
-        queueScope === "MINE" && staffId
+        focusInquiryId
           ? {
-              assignedToStaffId: staffId,
-              branchId: effectiveBranchId,
-              branchCode: selectedBranchCode || undefined,
+              inquiryId: focusInquiryId,
+              ...(queueScope === "MINE" && staffId ? { assignedToStaffId: staffId } : {}),
             }
-          : {
-              branchId: effectiveBranchId,
-              branchCode: selectedBranchCode || undefined,
-            };
+          : queueScope === "MINE" && staffId
+            ? {
+                assignedToStaffId: staffId,
+                branchId: effectiveBranchId,
+                branchCode: selectedBranchCode || undefined,
+              }
+            : {
+                branchId: effectiveBranchId,
+                branchCode: selectedBranchCode || undefined,
+              };
 
       const [branchUsers, admins] = await Promise.all([
         usersService.searchUsers(token, {
@@ -362,7 +406,7 @@ export default function FollowUpsPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, user, queueScope, effectiveBranchId, selectedBranchCode]);
+  }, [token, user, queueScope, effectiveBranchId, selectedBranchCode, focusInquiryId]);
 
   useEffect(() => {
     void loadQueue();
@@ -385,6 +429,8 @@ export default function FollowUpsPage() {
     clientRepFilter,
     fromDate,
     toDate,
+    focusInquiryId,
+    focusFollowUpType,
   ]);
 
   const enrichedFollowUps = useMemo(
@@ -405,11 +451,11 @@ export default function FollowUpsPage() {
           clientName: inquiry?.fullName || `Client #${item.memberId || item.inquiryId}`,
           mobileNumber: inquiry?.mobileNumber || "-",
           clientRepId,
-          clientRepName: staffById[clientRepId] || (clientRepId ? `Staff #${clientRepId}` : "-"),
+          clientRepName: formatStaffDisplayName(staffById[clientRepId], clientRepId),
           assignedToId,
-          assignedToName: staffById[assignedToId] || (assignedToId ? `Staff #${assignedToId}` : "-"),
+          assignedToName: formatStaffDisplayName(staffById[assignedToId], assignedToId),
           scheduledById,
-          scheduledByName: staffById[scheduledById] || (scheduledById ? `Staff #${scheduledById}` : "-"),
+          scheduledByName: formatStaffDisplayName(staffById[scheduledById], scheduledById),
           leadStatus: inquiry?.status || "-",
           convertibility: inquiry?.convertibility || "-",
           gender: inquiry?.gender || "-",
@@ -446,6 +492,12 @@ export default function FollowUpsPage() {
           return false;
         }
         if (dashboardView === "DONE" && item.status !== "COMPLETED") {
+          return false;
+        }
+        if (focusInquiryId && item.inquiryId !== focusInquiryId) {
+          return false;
+        }
+        if (focusFollowUpType && String(deriveFollowUpType(item, item.inquiry)).toUpperCase() !== focusFollowUpType.toUpperCase()) {
           return false;
         }
 
@@ -534,6 +586,8 @@ export default function FollowUpsPage() {
     toDate,
     searchTerm,
     selectedBranchCode,
+    focusInquiryId,
+    focusFollowUpType,
   ]);
 
   const counts = useMemo(() => {
@@ -891,7 +945,7 @@ export default function FollowUpsPage() {
                         <td className="px-4 py-4 text-slate-300">
                           <div className="space-y-1">
                             <p>{item.clientRepName}</p>
-                            <p className="text-xs text-slate-500">{formatLeadStatus(item.leadStatus)} • {formatLeadStatus(item.convertibility)}</p>
+                            <p className="text-xs text-slate-400">{formatLeadStatus(item.leadStatus)} • {formatLeadStatus(item.convertibility)}</p>
                             <p className="text-xs text-slate-500">{formatLeadStatus(item.gender)}</p>
                           </div>
                         </td>
@@ -918,7 +972,9 @@ export default function FollowUpsPage() {
                         </td>
                         <td className="px-4 py-4 text-slate-300">
                           <div className="space-y-1">
-                            <p>{humanizeText(item.status)}</p>
+                            <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${statusClass(item.overdue ? "OVERDUE" : item.status)}`}>
+                              {humanizeText(item.overdue ? "OVERDUE" : item.status)}
+                            </span>
                             {item.completedAt ? <p className="text-xs text-slate-500">Completed {formatDateTime(item.completedAt)}</p> : null}
                           </div>
                         </td>

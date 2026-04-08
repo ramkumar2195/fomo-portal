@@ -14,6 +14,7 @@ import {
   UserRound,
   Wallet,
 } from "lucide-react";
+import { BillingWorkflowTemplate } from "@/components/billing/billing-workflow-template";
 import { SectionCard } from "@/components/common/section-card";
 import { ToastBanner } from "@/components/common/toast-banner";
 import { useAuth } from "@/contexts/auth-context";
@@ -1293,11 +1294,11 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     const effectiveDiscountPercent =
       baseAmount > 0 ? Number(((discountAmount / baseAmount) * 100).toFixed(2)) : 0;
     const gstRate = billingSettings.gstPercentage || 0;
-    const cgstAmount = Number(((netSaleAmount * gstRate) / 200).toFixed(2));
-    const sgstAmount = Number(((netSaleAmount * gstRate) / 200).toFixed(2));
-    const gstAmount = Number((cgstAmount + sgstAmount).toFixed(2));
-    const rawTotalPayable = Number((netSaleAmount + gstAmount).toFixed(2));
-    const totalPayable = Math.round(rawTotalPayable);
+    const cgstAmount = Math.round((netSaleAmount * gstRate) / 200);
+    const sgstAmount = Math.round((netSaleAmount * gstRate) / 200);
+    const gstAmount = cgstAmount + sgstAmount;
+    const rawTotalPayable = netSaleAmount + gstAmount;
+    const totalPayable = rawTotalPayable;
     const enteredReceivedAmount = Math.max(0, Math.round(toNumber(subscriptionForm.receivedAmount) || 0));
     const receivedAmount = Math.max(0, Math.min(totalPayable, enteredReceivedAmount));
     const submittedReceivedAmount = receivedAmount;
@@ -1353,16 +1354,17 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       return;
     }
     setSubscriptionForm((current) => {
+      const roundedTotalPayable = Math.round(pricingPreview.totalPayable || 0);
       const currentAmount = Number(current.receivedAmount || 0);
       const shouldAutofill =
         !current.receivedAmount.trim() ||
         currentAmount === previousAutoReceivedAmountRef.current;
       if (!shouldAutofill) {
-        previousAutoReceivedAmountRef.current = pricingPreview.totalPayable;
+        previousAutoReceivedAmountRef.current = roundedTotalPayable;
         return current;
       }
-      previousAutoReceivedAmountRef.current = pricingPreview.totalPayable;
-      return { ...current, receivedAmount: String(pricingPreview.totalPayable) };
+      previousAutoReceivedAmountRef.current = roundedTotalPayable;
+      return { ...current, receivedAmount: String(roundedTotalPayable) };
     });
   }, [completedOnboarding, pricingPreview.totalPayable]);
 
@@ -2240,7 +2242,19 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       };
 
       if (!memberRecord) {
-        memberRecord = await usersService.registerUser(token, registerPayload);
+        try {
+          memberRecord = await usersService.registerUser(token, registerPayload);
+        } catch (registerError) {
+          // Handle 409 Conflict (member already created, e.g. from a token-refresh race condition)
+          if (registerError instanceof ApiError && registerError.status === 409) {
+            memberRecord = await findRecoverableMember();
+            if (!memberRecord) {
+              throw new Error("Member registration returned 409 Conflict but the existing record could not be found. Please try again.");
+            }
+          } else {
+            throw registerError;
+          }
+        }
       }
 
       const memberId = resolveMemberId(memberRecord);
@@ -3317,210 +3331,88 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                         </div>
                       ) : null}
 
-                      <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
-                        <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
-	                          <div className="mb-4 flex items-center gap-3">
-	                            <CreditCard className="h-5 w-5 text-[#ffb4b1]" />
-	                            <div>
-	                              <h4 className="text-sm font-semibold text-white">Invoice Summary</h4>
-	                            </div>
-	                          </div>
-                          <div className="grid gap-3 md:grid-cols-2">
-                            <div className="rounded-2xl border border-white/10 bg-[#0f141d] p-4">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Billing Context</p>
-                              <dl className="mt-3 space-y-2 text-sm text-slate-300">
-                                <div className="flex items-center justify-between gap-3"><dt>Invoice Number</dt><dd className="font-semibold text-white">{generatedInvoiceNumber}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Invoice Date</dt><dd>{new Date().toLocaleDateString("en-IN")}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Start Date</dt><dd>{pricingPreview.startDate || "-"}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>End Date</dt><dd>{pricingPreview.endDate || "-"}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Billing Representative</dt><dd>{user?.name || "-"}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Invoice Status</dt><dd>{completedOnboarding ? formatInvoiceLifecycleStatus(completedOnboarding.invoiceStatus, true) : "Issued on completion"}</dd></div>
-                              </dl>
-                            </div>
-                            <div className="rounded-2xl border border-white/10 bg-[#0f141d] p-4">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Commercial Breakdown</p>
-                              <div className="mt-3 overflow-hidden rounded-2xl border border-white/10">
-                                <table className="min-w-full divide-y divide-white/10 text-sm text-slate-300">
-                                  <thead className="bg-white/[0.03] text-xs uppercase tracking-[0.18em] text-slate-400">
-                                    <tr>
-                                      <th className="px-4 py-3 text-left font-semibold">Line Item</th>
-                                      <th className="px-4 py-3 text-right font-semibold">Plan Price</th>
-                                      <th className="px-4 py-3 text-right font-semibold">Selling Price</th>
-                                      <th className="px-4 py-3 text-right font-semibold">Discount</th>
-                                    </tr>
-                                  </thead>
-                                  <tbody className="divide-y divide-white/10">
-                                    <tr className="bg-[#101722]">
-                                      <td className="px-4 py-3 text-white">Primary Membership</td>
-                                      <td className="px-4 py-3 text-right">{formatCurrency(pricingPreview.primaryCommercial.baseAmount)}</td>
-                                      <td className="px-4 py-3 text-right">{formatCurrency(pricingPreview.primaryCommercial.sellingPrice)}</td>
-                                      <td className="px-4 py-3 text-right">{Math.round(pricingPreview.primaryCommercial.discountPercent)}%</td>
-                                    </tr>
-                                    {selectedAddOnVariant ? (
-                                      <tr className="bg-[#101722]">
-                                        <td className="px-4 py-3 text-white">PT Add-on</td>
-                                        <td className="px-4 py-3 text-right">{formatCurrency(pricingPreview.addOnCommercial.baseAmount)}</td>
-                                        <td className="px-4 py-3 text-right">{formatCurrency(pricingPreview.addOnCommercial.sellingPrice)}</td>
-                                        <td className="px-4 py-3 text-right">{Math.round(pricingPreview.addOnCommercial.discountPercent)}%</td>
-                                      </tr>
-                                    ) : null}
-                                  </tbody>
-                                  <tfoot className="divide-y divide-white/10 bg-black/10">
-                                    <tr>
-                                      <td className="px-4 py-3 font-semibold text-white">Total Plan Price</td>
-                                      <td className="px-4 py-3 text-right font-semibold text-white">{formatCurrency(pricingPreview.baseAmount)}</td>
-                                      <td className="px-4 py-3 text-right font-semibold text-white">{formatCurrency(pricingPreview.netSaleAmount)}</td>
-                                      <td className="px-4 py-3 text-right font-semibold text-white">{formatCurrency(pricingPreview.discountAmount)}</td>
-                                    </tr>
-                                    <tr>
-                                      <td className="px-4 py-3">CGST @ {pricingPreview.gstPercentage / 2}%</td>
-                                      <td className="px-4 py-3" />
-                                      <td className="px-4 py-3 text-right">{formatCurrency(pricingPreview.cgstAmount)}</td>
-                                      <td className="px-4 py-3" />
-                                    </tr>
-                                    <tr>
-                                      <td className="px-4 py-3">SGST @ {pricingPreview.gstPercentage / 2}%</td>
-                                      <td className="px-4 py-3" />
-                                      <td className="px-4 py-3 text-right">{formatCurrency(pricingPreview.sgstAmount)}</td>
-                                      <td className="px-4 py-3" />
-                                    </tr>
-                                    <tr className="text-base">
-                                      <td className="px-4 py-3 font-semibold text-white">Total Payable</td>
-                                      <td className="px-4 py-3" />
-                                      <td className="px-4 py-3 text-right font-semibold text-white">{formatCurrency(pricingPreview.totalPayable)}</td>
-                                      <td className="px-4 py-3" />
-                                    </tr>
-                                  </tfoot>
-                                </table>
-                              </div>
-                            </div>
-                          </div>
-                        </div>
-
-                        <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
-	                          <div className="mb-4 flex items-center gap-3">
-	                            <Wallet className="h-5 w-5 text-[#ffb4b1]" />
-	                            <div>
-	                              <h4 className="text-sm font-semibold text-white">Payment Collection</h4>
-	                            </div>
-	                          </div>
-
-                          <div className="space-y-4">
-                            <label className="space-y-2">
-                              <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Received Amount</span>
-                              <input
-                                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
-                                value={subscriptionForm.receivedAmount}
-                                onChange={(event) =>
-                                  setSubscriptionForm((current) => ({
-                                    ...current,
-                                    receivedAmount: sanitizeIntegerString(event.target.value),
-                                  }))
-                                }
-                                placeholder="Enter collected amount"
-                                disabled={Boolean(completedOnboarding)}
-                              />
-                            </label>
-
-                            <div className="space-y-2">
-                              <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Payment Mode</span>
-                              <div className="grid grid-cols-3 gap-2">
-                                {String(billingSettings?.paymentModesEnabled || "UPI,CARD,CASH")
-                                  .split(",")
-                                  .map((mode) => mode.trim().toUpperCase())
-                                  .filter((mode) => ["UPI", "CARD", "CASH"].includes(mode))
-                                  .map((mode) => {
-                                    const selected = subscriptionForm.paymentMode === mode;
-                                    return (
-                                      <button
-                                        key={mode}
-                                        type="button"
-                                        disabled={Boolean(completedOnboarding)}
-                                        onClick={() => setSubscriptionForm((current) => ({ ...current, paymentMode: mode }))}
-                                        className={`rounded-2xl border px-4 py-4 text-sm font-semibold uppercase tracking-[0.18em] transition ${
-                                          selected
-                                            ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
-                                            : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20"
-                                        } ${completedOnboarding ? "cursor-not-allowed opacity-60" : ""}`}
-                                      >
-                                        {mode === "UPI" ? "UPI" : mode === "CARD" ? "Card" : "Cash"}
-                                      </button>
-                                    );
-                                  })}
-                              </div>
-                              {subscriptionForm.paymentMode === "CARD" ? (
-                                <div className="grid grid-cols-2 gap-2">
-                                  {PAYMENT_CARD_OPTIONS.map((option) => {
-                                    const selected = subscriptionForm.paymentCardSubtype === option.value;
-                                    return (
-                                      <button
-                                        key={option.value}
-                                        type="button"
-                                        disabled={Boolean(completedOnboarding)}
-                                        onClick={() => setSubscriptionForm((current) => ({ ...current, paymentCardSubtype: option.value }))}
-                                        className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
-                                          selected
-                                            ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
-                                            : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20"
-                                        } ${completedOnboarding ? "cursor-not-allowed opacity-60" : ""}`}
-                                      >
-                                        {option.label}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              ) : null}
-                              {subscriptionForm.paymentMode === "UPI" ? (
-                                <div className="grid grid-cols-2 gap-2">
-                                  {PAYMENT_UPI_OPTIONS.map((option) => {
-                                    const selected = subscriptionForm.paymentUpiVendor === option.value;
-                                    return (
-                                      <button
-                                        key={option.value}
-                                        type="button"
-                                        disabled={Boolean(completedOnboarding)}
-                                        onClick={() => setSubscriptionForm((current) => ({ ...current, paymentUpiVendor: option.value }))}
-                                        className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
-                                          selected
-                                            ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
-                                            : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20"
-                                        } ${completedOnboarding ? "cursor-not-allowed opacity-60" : ""}`}
-                                      >
-                                        {option.label}
-                                      </button>
-                                    );
-                                  })}
-                                </div>
-                              ) : null}
-                            </div>
-
-                            {pricingPreview.balanceAmount > 0 ? (
-                              <label className="space-y-2">
-                                <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Balance Due Date</span>
-                                <input
-                                  type="date"
-                                  className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
-                                  value={subscriptionForm.balanceDueDate}
-                                  onChange={(event) => setSubscriptionForm((current) => ({ ...current, balanceDueDate: event.target.value }))}
-                                  disabled={Boolean(completedOnboarding)}
-                                />
-                              </label>
-                            ) : null}
-
-                            <div className="rounded-2xl border border-white/10 bg-[#0f141d] p-4">
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Receipt Preview</p>
-                              <dl className="mt-3 space-y-2 text-sm text-slate-300">
-                                <div className="flex items-center justify-between gap-3"><dt>Receipt Number</dt><dd>{generatedReceiptNumber}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Receipt Date</dt><dd>{completedOnboarding ? new Date().toLocaleDateString("en-IN") : new Date().toLocaleDateString("en-IN")}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Payment Method</dt><dd>{completedOnboarding?.paymentModeLabel || resolvePaymentModeLabel(subscriptionForm.paymentMode, subscriptionForm.paymentCardSubtype, subscriptionForm.paymentUpiVendor)}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Payment Status</dt><dd>{completedOnboarding ? formatPaymentCollectionStatus(completedOnboarding.totalPaidAmount, completedOnboarding.balanceAmount) : formatPaymentCollectionStatus(pricingPreview.receivedAmount, pricingPreview.balanceAmount)}</dd></div>
-                                <div className="flex items-center justify-between gap-3"><dt>Total Paid</dt><dd>{formatCurrency(completedOnboarding?.totalPaidAmount || pricingPreview.receivedAmount)}</dd></div>
-                                <div className="flex items-center justify-between gap-3 border-t border-white/10 pt-2 text-base font-semibold text-white"><dt>Balance Due</dt><dd>{formatCurrency(completedOnboarding?.balanceAmount ?? pricingPreview.balanceAmount)}</dd></div>
-                              </dl>
-                            </div>
-                          </div>
-	                        </div>
-	                      </div>
+                      <BillingWorkflowTemplate
+                        infoRows={[
+                          { label: "Invoice Number", value: generatedInvoiceNumber },
+                          { label: "Invoice Date", value: new Date().toLocaleDateString("en-IN") },
+                          { label: "Start Date", value: pricingPreview.startDate || "-" },
+                          { label: "End Date", value: pricingPreview.endDate || "-" },
+                          { label: "Billing Representative", value: user?.name || "-" },
+                          { label: "Invoice Status", value: completedOnboarding ? formatInvoiceLifecycleStatus(completedOnboarding.invoiceStatus, true) : "Issued on completion" },
+                        ]}
+                        lineItems={[
+                          {
+                            label: "Primary Membership",
+                            subtitle: selectedPrimaryMembershipLabel,
+                            baseAmount: formatCurrency(pricingPreview.primaryCommercial.baseAmount),
+                            sellingPrice: formatCurrency(pricingPreview.primaryCommercial.sellingPrice),
+                            discount: `${Math.round(pricingPreview.primaryCommercial.discountPercent)}%`,
+                          },
+                          ...(selectedAddOnVariant
+                            ? [{
+                                label: "PT Add-on",
+                                subtitle: sanitizeMembershipLabel(selectedAddOnVariant.variantName || "PT Add-on"),
+                                baseAmount: formatCurrency(pricingPreview.addOnCommercial.baseAmount),
+                                sellingPrice: formatCurrency(pricingPreview.addOnCommercial.sellingPrice),
+                                discount: `${Math.round(pricingPreview.addOnCommercial.discountPercent)}%`,
+                              }]
+                            : []),
+                        ]}
+                        totalLabel="Total Plan Price"
+                        totalBaseAmount={formatCurrency(pricingPreview.baseAmount)}
+                        totalSellingPrice={formatCurrency(pricingPreview.netSaleAmount)}
+                        totalDiscount={formatCurrency(pricingPreview.discountAmount)}
+                        finalPayable={formatCurrency(pricingPreview.totalPayable)}
+                        taxRows={[
+                          { label: `CGST @ ${pricingPreview.gstPercentage / 2}%`, value: formatCurrency(pricingPreview.cgstAmount) },
+                          { label: `SGST @ ${pricingPreview.gstPercentage / 2}%`, value: formatCurrency(pricingPreview.sgstAmount) },
+                        ]}
+                        receivedAmount={subscriptionForm.receivedAmount}
+                        onReceivedAmountChange={(value) =>
+                          setSubscriptionForm((current) => ({
+                            ...current,
+                            receivedAmount: sanitizeIntegerString(value),
+                          }))
+                        }
+                        paymentMode={subscriptionForm.paymentMode}
+                        paymentModeOptions={String(billingSettings?.paymentModesEnabled || "UPI,CARD,CASH")
+                          .split(",")
+                          .map((mode) => mode.trim().toUpperCase())
+                          .filter((mode) => ["UPI", "CARD", "CASH"].includes(mode))
+                          .map((mode) => ({
+                            value: mode,
+                            label: mode === "UPI" ? "UPI" : mode === "CARD" ? "Card" : "Cash",
+                          }))}
+                        onPaymentModeChange={(value) => setSubscriptionForm((current) => ({ ...current, paymentMode: value }))}
+                        secondaryModeLabel={subscriptionForm.paymentMode === "CARD" ? "Card Type" : subscriptionForm.paymentMode === "UPI" ? "UPI App" : undefined}
+                        secondaryModeValue={subscriptionForm.paymentMode === "CARD" ? subscriptionForm.paymentCardSubtype : subscriptionForm.paymentUpiVendor}
+                        secondaryModeOptions={
+                          subscriptionForm.paymentMode === "CARD"
+                            ? PAYMENT_CARD_OPTIONS
+                            : subscriptionForm.paymentMode === "UPI"
+                              ? PAYMENT_UPI_OPTIONS
+                              : []
+                        }
+                        onSecondaryModeChange={(value) =>
+                          setSubscriptionForm((current) => (
+                            subscriptionForm.paymentMode === "CARD"
+                              ? { ...current, paymentCardSubtype: value as "DEBIT_CARD" | "CREDIT_CARD" }
+                              : { ...current, paymentUpiVendor: value as typeof current.paymentUpiVendor }
+                          ))
+                        }
+                        showBalanceDueDate={pricingPreview.balanceAmount > 0}
+                        balanceDueDate={subscriptionForm.balanceDueDate}
+                        onBalanceDueDateChange={(value) => setSubscriptionForm((current) => ({ ...current, balanceDueDate: value }))}
+                        receiptRows={[
+                          { label: "Receipt Number", value: generatedReceiptNumber },
+                          { label: "Receipt Date", value: new Date().toLocaleDateString("en-IN") },
+                          { label: "Payment Method", value: completedOnboarding?.paymentModeLabel || resolvePaymentModeLabel(subscriptionForm.paymentMode, subscriptionForm.paymentCardSubtype, subscriptionForm.paymentUpiVendor) },
+                          { label: "Payment Status", value: completedOnboarding ? formatPaymentCollectionStatus(completedOnboarding.totalPaidAmount, completedOnboarding.balanceAmount) : formatPaymentCollectionStatus(pricingPreview.receivedAmount, pricingPreview.balanceAmount) },
+                          { label: "Total Paid", value: formatCurrency(completedOnboarding?.totalPaidAmount || pricingPreview.receivedAmount) },
+                          { label: "Balance Due", value: formatCurrency(completedOnboarding?.balanceAmount ?? pricingPreview.balanceAmount), fullWidth: true },
+                        ]}
+                        disabled={Boolean(completedOnboarding)}
+                      />
 	                    </div>
 	                  </SectionCard>
 	                ) : null}
@@ -3679,7 +3571,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                     } catch {
                       // ignore
                     }
-                    router.replace("/portal/follow-ups");
+                    router.replace(`/portal/follow-ups?inquiryId=${sourceInquiryId}&followUpType=BALANCE_DUE`);
                   }}
                   className="rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
                 >

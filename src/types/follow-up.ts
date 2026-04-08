@@ -39,6 +39,8 @@ export interface FollowUpRecord {
   followUpId: number;
   inquiryId: number;
   memberId: number | null;
+  branchId?: number | null;
+  branchCode?: string | null;
   assignedToStaffId: number | null;
   createdByStaffId: number | null;
   channel: FollowUpChannel;

@@ -1,7 +1,7 @@
 "use client";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { AlertTriangle, MoreHorizontal, ShieldCheck, Users, XCircle } from "lucide-react";
+import { AlertTriangle, ChevronDown, ChevronUp, MoreHorizontal, Settings2, ShieldCheck, Users, XCircle } from "lucide-react";
 import { PageLoader } from "@/components/common/page-loader";
 import { SectionCard } from "@/components/common/section-card";
 import { useAuth } from "@/contexts/auth-context";
@@ -366,6 +366,7 @@ export default function MembersPage() {
   const [staffNameById, setStaffNameById] = useState<Record<string, string>>({});
   const [currentPage, setCurrentPage] = useState(1);
   const [openMenuMemberId, setOpenMenuMemberId] = useState<string | null>(null);
+  const [filtersOpen, setFiltersOpen] = useState(false);
   const pageSize = 10;
   const dateRangeError = useMemo(() => {
     if (!fromDate || !toDate) {
@@ -408,15 +409,18 @@ export default function MembersPage() {
   const hydrateMemberSummaries = useCallback(
     async (list: UserDirectoryItem[]) => {
       if (!token || list.length === 0) {
-        setDetailsByMemberId({});
         return;
       }
+
+      // Only hydrate members we haven't already fetched (incremental)
+      const toFetch = list.filter((m) => !detailsByMemberId[m.id]);
+      if (toFetch.length === 0) return;
 
       setLoadingSummaries(true);
 
       try {
         const entries = await Promise.all(
-          list.map(async (member) => {
+          toFetch.map(async (member) => {
             try {
               const summary = await fetchMemberSummary(token, member, staffNameById);
               return [member.id, summary] as const;
@@ -441,16 +445,18 @@ export default function MembersPage() {
           }),
         );
 
-        const next: Record<string, MemberDetailSummary> = {};
-        entries.forEach(([memberId, summary]) => {
-          next[memberId] = summary;
+        setDetailsByMemberId((prev) => {
+          const next = { ...prev };
+          entries.forEach(([memberId, summary]) => {
+            next[memberId] = summary;
+          });
+          return next;
         });
-        setDetailsByMemberId(next);
       } finally {
         setLoadingSummaries(false);
       }
     },
-    [token, staffNameById],
+    [token, staffNameById, detailsByMemberId],
   );
 
   useEffect(() => {
@@ -500,14 +506,11 @@ export default function MembersPage() {
     })();
   }, [token, canViewMembers, effectiveBranchId]);
 
+  // Reset details when member list changes entirely (e.g. branch switch)
+  const memberListKey = useMemo(() => members.map((m) => m.id).join(","), [members]);
   useEffect(() => {
-    if (members.length === 0) {
-      setDetailsByMemberId({});
-      return;
-    }
-
-    void hydrateMemberSummaries(members);
-  }, [members, hydrateMemberSummaries]);
+    setDetailsByMemberId({});
+  }, [memberListKey]);
 
   const summaryStats = useMemo(() => {
     let active = 0;
@@ -644,6 +647,14 @@ export default function MembersPage() {
     const start = (currentPage - 1) * pageSize;
     return filteredMembers.slice(start, start + pageSize);
   }, [currentPage, filteredMembers]);
+
+  // Only hydrate the currently paginated (visible) members — fixes N+1 problem
+  // Details accumulate as users paginate, so previously loaded data is preserved
+  useEffect(() => {
+    if (paginatedMembers.length === 0) return;
+    void hydrateMemberSummaries(paginatedMembers);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [paginatedMembers, token, staffNameById]);
 
   useEffect(() => {
     setCurrentPage(1);
@@ -891,6 +902,15 @@ export default function MembersPage() {
           <div className="flex flex-wrap items-center gap-2">
             <button
               type="button"
+              onClick={() => setFiltersOpen((current) => !current)}
+              className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
+            >
+              <Settings2 className="h-4 w-4" />
+              Filters
+              {filtersOpen ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+            </button>
+            <button
+              type="button"
               onClick={handleExportCsv}
               className="rounded-2xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
             >
@@ -924,102 +944,106 @@ export default function MembersPage() {
             onChange={(event) => setSearchTerm(event.target.value)}
           />
 
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Member Status
-              <select
-                value={memberFilter}
-                onChange={(event) => setMemberFilter(event.target.value as MemberFilter)}
-                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
-              >
-                <option value="ALL">All Members ({filterCounts.ALL})</option>
-                <option value="ACTIVE">Active ({filterCounts.ACTIVE})</option>
-                <option value="EXPIRED">Expired ({filterCounts.EXPIRED})</option>
-                <option value="IRREGULAR">Irregular ({filterCounts.IRREGULAR})</option>
-              </select>
-            </label>
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Gender
-              <select
-                value={genderFilter}
-                onChange={(event) => setGenderFilter(event.target.value as GenderFilter)}
-                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
-              >
-                <option value="ALL">All Genders</option>
-                <option value="MALE">Male</option>
-                <option value="FEMALE">Female</option>
-                <option value="OTHER">Other</option>
-              </select>
-            </label>
-          </div>
+          {filtersOpen ? (
+            <div className="rounded-[24px] border border-white/8 bg-white/[0.03] p-4">
+              <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
+                <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  Member Status
+                  <select
+                    value={memberFilter}
+                    onChange={(event) => setMemberFilter(event.target.value as MemberFilter)}
+                    className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
+                  >
+                    <option value="ALL">All Members ({filterCounts.ALL})</option>
+                    <option value="ACTIVE">Active ({filterCounts.ACTIVE})</option>
+                    <option value="EXPIRED">Expired ({filterCounts.EXPIRED})</option>
+                    <option value="IRREGULAR">Irregular ({filterCounts.IRREGULAR})</option>
+                  </select>
+                </label>
+                <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  Gender
+                  <select
+                    value={genderFilter}
+                    onChange={(event) => setGenderFilter(event.target.value as GenderFilter)}
+                    className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
+                  >
+                    <option value="ALL">All Genders</option>
+                    <option value="MALE">Male</option>
+                    <option value="FEMALE">Female</option>
+                    <option value="OTHER">Other</option>
+                  </select>
+                </label>
+                <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  From Date
+                  <input
+                    type="date"
+                    value={fromDate}
+                    onChange={(event) => setFromDate(event.target.value)}
+                    max={toDate || undefined}
+                    className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
+                  />
+                </label>
+                <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  To Date
+                  <input
+                    type="date"
+                    value={toDate}
+                    onChange={(event) => setToDate(event.target.value)}
+                    min={fromDate || undefined}
+                    className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
+                  />
+                </label>
+              </div>
 
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              From Date
-              <input
-                type="date"
-                value={fromDate}
-                onChange={(event) => setFromDate(event.target.value)}
-                max={toDate || undefined}
-                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
-              />
-            </label>
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              To Date
-              <input
-                type="date"
-                value={toDate}
-                onChange={(event) => setToDate(event.target.value)}
-                min={fromDate || undefined}
-                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
-              />
-            </label>
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Assigned Trainer
-              <select
-                value={trainerFilter}
-                onChange={(event) => setTrainerFilter(event.target.value)}
-                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
-              >
-                <option value="ALL">All Trainers</option>
-                {trainerOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Service Type
-              <select
-                value={serviceFilter}
-                onChange={(event) => setServiceFilter(event.target.value)}
-                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
-              >
-                <option value="ALL">All Services</option>
-                {serviceOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Membership
-              <select
-                value={membershipFilter}
-                onChange={(event) => setMembershipFilter(event.target.value)}
-                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
-              >
-                <option value="ALL">All Memberships</option>
-                {membershipOptions.map((option) => (
-                  <option key={option} value={option}>
-                    {option}
-                  </option>
-                ))}
-              </select>
-            </label>
-          </div>
+              <div className="mt-3 grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-3">
+                <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  Assigned Trainer
+                  <select
+                    value={trainerFilter}
+                    onChange={(event) => setTrainerFilter(event.target.value)}
+                    className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
+                  >
+                    <option value="ALL">All Trainers</option>
+                    {trainerOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  Service Type
+                  <select
+                    value={serviceFilter}
+                    onChange={(event) => setServiceFilter(event.target.value)}
+                    className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
+                  >
+                    <option value="ALL">All Services</option>
+                    {serviceOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+                  Membership
+                  <select
+                    value={membershipFilter}
+                    onChange={(event) => setMembershipFilter(event.target.value)}
+                    className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm font-medium normal-case tracking-normal text-white outline-none focus:border-[#c42924]/60"
+                  >
+                    <option value="ALL">All Memberships</option>
+                    {membershipOptions.map((option) => (
+                      <option key={option} value={option}>
+                        {option}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {error ? <p className="mt-3 rounded-2xl border border-rose-400/20 bg-rose-400/10 px-4 py-3 text-sm text-rose-100">{error}</p> : null}

@@ -10,6 +10,7 @@ import {
   CalendarDays,
   CreditCard,
   Download,
+  ExternalLink,
   Loader2,
   MoreHorizontal,
   Pencil,
@@ -20,6 +21,7 @@ import {
   UserRound,
   Wallet,
 } from "lucide-react";
+import { BillingWorkflowTemplate } from "@/components/billing/billing-workflow-template";
 import { Modal } from "@/components/common/modal";
 import { useAuth } from "@/contexts/auth-context";
 import { ApiError } from "@/lib/api/http-client";
@@ -107,6 +109,7 @@ type ActionModalKey =
   | "upgrade"
   | "upgrade-billing"
   | "pt-billing"
+  | "pt-session-count"
   | "pt-reschedule"
   | "pt-cancel"
   | "downgrade"
@@ -213,6 +216,16 @@ const PT_WEEKDAY_OPTIONS = [
   { code: "SATURDAY", label: "Sat" },
 ] as const;
 const PT_EVERYDAY_DAY_CODES = PT_WEEKDAY_OPTIONS.map((day) => day.code);
+const PAYMENT_CARD_OPTIONS = [
+  { value: "DEBIT_CARD", label: "Debit Card" },
+  { value: "CREDIT_CARD", label: "Credit Card" },
+] as const;
+const PAYMENT_UPI_OPTIONS = [
+  { value: "GOOGLE_PAY", label: "Google Pay" },
+  { value: "PHONEPE", label: "PhonePe" },
+  { value: "PAYTM", label: "Paytm" },
+  { value: "OTHER", label: "Other UPI" },
+] as const;
 
 interface LifecycleBillingTabState {
   invoices: InvoiceSummary[];
@@ -228,6 +241,21 @@ function titleize(value: string): string {
     .replace(/([a-z0-9])([A-Z])/g, "$1 $2")
     .replace(/[_-]+/g, " ")
     .replace(/\b\w/g, (character) => character.toUpperCase());
+}
+
+function resolveBillingPaymentModeLabel(
+  paymentMode: string,
+  paymentCardSubtype: "DEBIT_CARD" | "CREDIT_CARD",
+  paymentUpiVendor: "GOOGLE_PAY" | "PHONEPE" | "PAYTM" | "OTHER",
+): string {
+  const normalizedMode = String(paymentMode || "").trim().toUpperCase();
+  if (normalizedMode === "CARD") {
+    return PAYMENT_CARD_OPTIONS.find((option) => option.value === paymentCardSubtype)?.label || "Card";
+  }
+  if (normalizedMode === "UPI") {
+    return PAYMENT_UPI_OPTIONS.find((option) => option.value === paymentUpiVendor)?.label || "UPI";
+  }
+  return normalizedMode ? humanizeLabel(normalizedMode) : "-";
 }
 
 function normalizeDisplayPlanName(value: string): string {
@@ -379,6 +407,101 @@ function canCancelPtSessionInTime(session: RecordLike, now = new Date()): boolea
 function canReschedulePtSessionInTime(session: RecordLike, now = new Date()): boolean {
   const hoursRemaining = hoursUntilPtSession(session, now);
   return hoursRemaining !== null && hoursRemaining >= PT_RESCHEDULE_CUTOFF_HOURS;
+}
+
+function describePtHoursRemaining(session: RecordLike, now = new Date()): string {
+  const hoursRemaining = hoursUntilPtSession(session, now);
+  if (hoursRemaining === null) {
+    return "Timing unavailable";
+  }
+  if (hoursRemaining <= 0) {
+    return "Slot time is already live or passed";
+  }
+  if (hoursRemaining < 1) {
+    return `${Math.max(1, Math.round(hoursRemaining * 60))} min left`;
+  }
+  return `${hoursRemaining.toFixed(1).replace(/\.0$/, "")} hrs left`;
+}
+
+function getPtRescheduleAvailabilityMessage(params: {
+  session: RecordLike;
+  hasUnlimitedReschedules: boolean;
+  remainingReschedules: number;
+  hasSameDayRescheduleOptions: boolean;
+  now?: Date;
+}): string {
+  const {
+    session,
+    hasUnlimitedReschedules,
+    remainingReschedules,
+    hasSameDayRescheduleOptions,
+    now = new Date(),
+  } = params;
+
+  if (!(hasUnlimitedReschedules || remainingReschedules > 0)) {
+    return "Reschedule limit reached";
+  }
+  if (!hasSameDayRescheduleOptions) {
+    return "No same-day free slot for this coach";
+  }
+  if (!canReschedulePtSessionInTime(session, now)) {
+    return `Reschedule closes ${PT_RESCHEDULE_CUTOFF_HOURS}h before slot`;
+  }
+  return "Same-day reschedule available";
+}
+
+function getPtCancelAvailabilityMessage(session: RecordLike, now = new Date()): string {
+  if (canCancelPtSessionInTime(session, now)) {
+    return `Cancel allowed until ${PT_CANCEL_CUTOFF_HOURS}h before slot`;
+  }
+  if (canReschedulePtSessionInTime(session, now)) {
+    return `Cancel closed. Only same-day reschedule is allowed until ${PT_RESCHEDULE_CUTOFF_HOURS}h before slot`;
+  }
+  return "Late cancellation will consume the session";
+}
+
+function parseAuditDetails(details?: string): Record<string, string> {
+  if (!details) {
+    return {};
+  }
+  return details.split(";").reduce<Record<string, string>>((accumulator, segment) => {
+    const [key, ...rest] = segment.split("=");
+    if (!key || rest.length === 0) {
+      return accumulator;
+    }
+    accumulator[key.trim()] = rest.join("=").trim();
+    return accumulator;
+  }, {});
+}
+
+function formatAuditDetailsSummary(entry: MemberProfileAuditEntry): string {
+  const details = parseAuditDetails(entry.changesJson);
+  const parts: string[] = [];
+  if (details.freezeStartDate || details.freezeEndDate) {
+    parts.push(`Freeze ${formatDateOnly(details.freezeStartDate || undefined)} to ${formatDateOnly(details.freezeEndDate || undefined)}`);
+  }
+  if (details.freezeDays) {
+    parts.push(`${details.freezeDays} days`);
+  }
+  if (details.reason && details.reason !== "-") {
+    parts.push(`Reason: ${details.reason}`);
+  }
+  if (details.status) {
+    parts.push(`Status: ${humanizeLabel(details.status)}`);
+  }
+  if (details.resumedOn) {
+    parts.push(`Resumed: ${formatDateOnly(details.resumedOn)}`);
+  }
+  if (details.restoredPauseBenefitDays && Number(details.restoredPauseBenefitDays) > 0) {
+    parts.push(`Restored pause days: ${details.restoredPauseBenefitDays}`);
+  }
+  if (details.invoiceNumber) {
+    parts.push(`Invoice: ${details.invoiceNumber}`);
+  }
+  if (details.variantName) {
+    parts.push(details.variantName);
+  }
+  return parts.join(" · ");
 }
 
 function isPtCalendarEntryOccupyingSlot(entry: RecordLike): boolean {
@@ -1242,6 +1365,19 @@ function extractInvoiceStats(invoices: InvoiceSummary[]) {
   );
 }
 
+function pickOutstandingInvoice(invoices: InvoiceSummary[]): InvoiceSummary | null {
+  return [...invoices]
+    .filter((invoice) => roundAmount(invoice.balanceAmount || 0) > 0)
+    .sort((left, right) => {
+      const leftTime = left.issuedAt ? new Date(left.issuedAt).getTime() : 0;
+      const rightTime = right.issuedAt ? new Date(right.issuedAt).getTime() : 0;
+      if (leftTime !== rightTime) {
+        return leftTime - rightTime;
+      }
+      return Number(left.id || 0) - Number(right.id || 0);
+    })[0] || null;
+}
+
 function derivePaymentStatus(currentStatus: string, paidAmount: number, balanceAmount: number): string {
   if (paidAmount > 0 && Math.round(balanceAmount) === 0) {
     return "PAID";
@@ -1375,7 +1511,7 @@ function membershipPanelSubtitle(family: MembershipFamily): string {
     case "TRANSFORMATION":
       return "Bundled gym access, PT sessions, and entitlements managed as one membership.";
     case "PT":
-      return "Personal training membership and operational coaching context.";
+      return "";
     case "GROUP_CLASS":
       return "Class-only membership with class-specific access and schedule entitlements.";
     case "FLEX":
@@ -1389,6 +1525,8 @@ function membershipPanelSubtitle(family: MembershipFamily): string {
 
 function trimMembershipCardTitle(title: string): string {
   return title
+    .replace(/^personal training\s+/i, "")
+    .replace(/^pt\s+/i, "")
     .replace(/\bTransform\b/gi, "Transformation")
     .replace(/\s*-\s*\d+\s*M(?:ONTHS?)?$/i, "")
     .trim();
@@ -1604,6 +1742,7 @@ export default function MemberProfilePage() {
     balanceDueDate: "",
   });
   const [renewCardSubtype, setRenewCardSubtype] = useState<"DEBIT_CARD" | "CREDIT_CARD">("DEBIT_CARD");
+  const [lifecycleUpiVendor, setLifecycleUpiVendor] = useState<"GOOGLE_PAY" | "PHONEPE" | "PAYTM" | "OTHER">("GOOGLE_PAY");
   const [freezeForm, setFreezeForm] = useState({
     freezeDays: "7",
     reason: "",
@@ -1633,8 +1772,15 @@ export default function MemberProfilePage() {
     receivedAmount: "",
     balanceDueDate: "",
   });
+  const [ptCardSubtype, setPtCardSubtype] = useState<"DEBIT_CARD" | "CREDIT_CARD">("DEBIT_CARD");
+  const [ptUpiVendor, setPtUpiVendor] = useState<"GOOGLE_PAY" | "PHONEPE" | "PAYTM" | "OTHER">("GOOGLE_PAY");
+  const [ptSessionCountForm, setPtSessionCountForm] = useState({
+    assignmentId: "",
+    totalSessions: "",
+  });
   const [resumeBillingForm, setResumeBillingForm] = useState({
     paymentMode: "UPI",
+    invoiceId: "",
   });
   const [ptRescheduleForm, setPtRescheduleForm] = useState({
     sessionId: "",
@@ -2118,6 +2264,68 @@ export default function MemberProfilePage() {
     }));
   }, [shell]);
 
+  const reloadBillingTab = useCallback(async (): Promise<LifecycleBillingTabState | null> => {
+    if (!token || !memberId) {
+      return null;
+    }
+    setLoadingTabs((current) => ({ ...current, billing: true }));
+    setTabErrors((current) => ({ ...current, billing: undefined }));
+    try {
+      const [invoices, receipts] = await Promise.all([
+        subscriptionService.getMemberBillingInvoices(token, memberId),
+        subscriptionService.getMemberBillingReceipts(token, memberId),
+      ]);
+      const payload = { invoices, receipts };
+      setTabData((current) => ({ ...current, billing: payload }));
+      return payload;
+    } catch (error) {
+      setTabErrors((current) => ({
+        ...current,
+        billing: error instanceof ApiError ? error.message : "Unable to refresh billing.",
+      }));
+      return null;
+    } finally {
+      setLoadingTabs((current) => ({ ...current, billing: false }));
+    }
+  }, [memberId, token]);
+
+  const reloadPtTab = useCallback(async () => {
+    if (!token || !memberId) {
+      return;
+    }
+    setLoadingTabs((current) => ({ ...current, "personal-training": true }));
+    setTabErrors((current) => ({ ...current, "personal-training": undefined }));
+    try {
+      const ptAssignmentsData = await withTabTimeout(trainingService.getMemberAssignments(token, memberId), "personal training");
+      const ptArr = Array.isArray(ptAssignmentsData) ? ptAssignmentsData : [];
+      let ptSessions: unknown[] = [];
+      let ptSlots: unknown[] = [];
+      const activeAssign = ptArr.find((assignment) => pickBoolean(toRecord(assignment), ["active"]) === true);
+      if (activeAssign) {
+        const assignId = pickString(toRecord(activeAssign), ["id", "assignmentId"]);
+        if (assignId) {
+          const [sessionsResult, slotsResult] = await Promise.all([
+            trainingService.getPtSessionsByAssignment(token, assignId).catch(() => []),
+            trainingService.getSlotsByAssignment(token, assignId).catch(() => []),
+          ]);
+          ptSessions = Array.isArray(sessionsResult) ? sessionsResult : [];
+          ptSlots = Array.isArray(slotsResult) ? slotsResult : [];
+        }
+      }
+      setTabData((current) => ({
+        ...current,
+        "personal-training": { assignments: ptArr, sessions: ptSessions, slots: ptSlots },
+      }));
+    } catch (error) {
+      setTabErrors((current) => ({
+        ...current,
+        "personal-training": error instanceof ApiError ? error.message : "Unable to refresh personal training.",
+      }));
+    } finally {
+      setLoadingTabs((current) => ({ ...current, "personal-training": false }));
+    }
+  }, [memberId, token]);
+
   const reloadFitnessAssessment = async () => {
     if (!token || !memberId) {
       return;
@@ -2323,7 +2531,6 @@ export default function MemberProfilePage() {
     "assignedTrainerName",
     "groupClassTrainerName",
     "trainerName",
-    "coachName",
     "defaultTrainerName",
   ]) || "-";
   const expiryDate = pickFromSourcesString(shellSources, ["expiryDate", "endDate", "subscriptionEnd", "activeTill", "membershipEndDate"]);
@@ -2398,17 +2605,34 @@ export default function MemberProfilePage() {
     ].filter(Boolean),
   );
   const normalizedBranchCode = String(branchCode || "").trim().toUpperCase();
-  const availableBiometricDevices = biometricDeviceRecords.filter((device) => {
-    const serial = pickString(device, ["serialNumber"]);
-    if (serial && visibleBiometricSerials.has(serial)) {
-      return true;
-    }
-    const deviceBranchCode = String(pickString(device, ["branchCode"]) || "").trim().toUpperCase();
-    if (!normalizedBranchCode || !deviceBranchCode) {
-      return true;
-    }
-    return deviceBranchCode === normalizedBranchCode;
-  });
+  const availableBiometricDevices = biometricDeviceRecords
+    .filter((device) => {
+      const serial = pickString(device, ["serialNumber"]);
+      if (serial && visibleBiometricSerials.has(serial)) {
+        return true;
+      }
+      const deviceBranchCode = String(pickString(device, ["branchCode"]) || "").trim().toUpperCase();
+      if (!normalizedBranchCode || !deviceBranchCode) {
+        return true;
+      }
+      if (deviceBranchCode === normalizedBranchCode) {
+        return true;
+      }
+      return biometricDeviceRecords.length <= 2;
+    })
+    .sort((left, right) => {
+      const leftSerial = pickString(left, ["serialNumber"]);
+      const rightSerial = pickString(right, ["serialNumber"]);
+      const leftBranch = String(pickString(left, ["branchCode"]) || "").trim().toUpperCase();
+      const rightBranch = String(pickString(right, ["branchCode"]) || "").trim().toUpperCase();
+      const leftPriority =
+        (leftSerial && visibleBiometricSerials.has(leftSerial) ? 0 : 1) +
+        (leftBranch === normalizedBranchCode ? 0 : 2);
+      const rightPriority =
+        (rightSerial && visibleBiometricSerials.has(rightSerial) ? 0 : 1) +
+        (rightBranch === normalizedBranchCode ? 0 : 2);
+      return leftPriority - rightPriority;
+    });
   const enrollmentByDeviceSerial = new Map(
     enrollmentRecords.map((entry) => [
       pickString(entry, ["deviceSerialNumber"]),
@@ -2455,6 +2679,24 @@ export default function MemberProfilePage() {
   const checkInRows = attendanceLogRows.filter((entry) => entry.eventLabel.toUpperCase().includes("CHECK-IN"));
 
   const overviewBilling = (tabData.billing as LifecycleBillingTabState | undefined)?.invoices || [];
+  const outstandingBillingInvoices = useMemo(
+    () =>
+      [...overviewBilling]
+        .filter((invoice) => roundAmount(invoice.balanceAmount || 0) > 0)
+        .sort((left, right) => {
+          const leftTime = left.issuedAt ? new Date(left.issuedAt).getTime() : 0;
+          const rightTime = right.issuedAt ? new Date(right.issuedAt).getTime() : 0;
+          if (leftTime !== rightTime) {
+            return leftTime - rightTime;
+          }
+          return Number(left.id || 0) - Number(right.id || 0);
+        }),
+    [overviewBilling],
+  );
+  const selectedOutstandingInvoice = useMemo(
+    () => pickOutstandingInvoice(outstandingBillingInvoices),
+    [outstandingBillingInvoices],
+  );
   const invoiceStats = extractInvoiceStats(overviewBilling);
   const displayInvoiceStats = overviewBilling.length
     ? invoiceStats
@@ -2482,7 +2724,32 @@ export default function MemberProfilePage() {
   );
   const balanceDue = roundedInvoiceStats.balance;
   const roundedBalanceDue = roundedInvoiceStats.balance;
+  const selectedOutstandingInvoiceNumber = selectedOutstandingInvoice?.invoiceNumber || roundedInvoiceStats.latestInvoice;
+  const selectedOutstandingInvoiceBalance = selectedOutstandingInvoice
+    ? roundAmount(selectedOutstandingInvoice.balanceAmount || 0)
+    : roundedBalanceDue;
   const normalizedPaymentStatus = String(paymentStatus || "").trim().toUpperCase();
+  useEffect(() => {
+    if (actionModal !== "unfreeze-billing") {
+      return;
+    }
+
+    if (overviewBilling.length > 0 || loadingTabs.billing) {
+      return;
+    }
+
+    void reloadBillingTab();
+  }, [actionModal, loadingTabs.billing, overviewBilling.length, reloadBillingTab]);
+
+  useEffect(() => {
+    if (actionModal !== "unfreeze-billing" || !selectedOutstandingInvoice || resumeBillingForm.invoiceId) {
+      return;
+    }
+    setResumeBillingForm((current) => ({
+      ...current,
+      invoiceId: String(selectedOutstandingInvoice.id || ""),
+    }));
+  }, [actionModal, resumeBillingForm.invoiceId, selectedOutstandingInvoice]);
   const normalizedMembershipStatus = String(membershipStatus || "").trim().toUpperCase();
   const hasOutstandingBalance = roundedBalanceDue > 0;
   const isAccountPausedForPayment =
@@ -2498,6 +2765,11 @@ export default function MemberProfilePage() {
   });
   const activePtAssignmentRecord = activePtAssignment ? toRecord(activePtAssignment) : null;
   const activePtCoachId = pickString(activePtAssignmentRecord, ["coachId"]);
+  const activePtCoachName =
+    pickString(activePtAssignmentRecord, ["coachName", "coachDisplayName"])
+    || coaches.find((coach) => String(coach.id) === String(activePtCoachId || ""))?.name
+    || pickString(activePtAssignmentRecord, ["coachEmail", "coachId"])
+    || "-";
   const ptAssignmentRescheduleLimit = pickNumber(activePtAssignmentRecord, ["rescheduleLimit"]);
   const ptUsedReschedules = ptSessions.filter((session) => {
     const status = pickString(toRecord(session), ["status"])?.toUpperCase();
@@ -2925,6 +3197,9 @@ export default function MemberProfilePage() {
     if (canShowBalanceCollectionAction) {
       return [{ key: "unfreeze", label: "Unfreeze", enabled: true }];
     }
+    if (isSelectedMembershipOperationalFreeze) {
+      return canShowManualUnfreezeAction ? [{ key: "unfreeze", label: "Unfreeze", enabled: true }] : [];
+    }
     const actions: MembershipActionState[] = [];
     if (canRenewMembership) {
       actions.push({ key: "renew", label: "Renew", enabled: true });
@@ -2971,12 +3246,9 @@ export default function MemberProfilePage() {
     canShowManualUnfreezeAction,
     canTransferMembership,
     canShowUpgradeMembershipAction,
+    isSelectedMembershipOperationalFreeze,
     isAdminOperator,
   ]);
-  const primaryMembershipDurationLimit = Math.max(
-    0,
-    portfolioPrimaryMembership?.family !== "PT" ? Number(portfolioPrimaryMembership?.durationMonths || 0) : 0,
-  );
   const filteredLifecycleProducts = useMemo(
     () =>
       catalogProducts.filter((product) => {
@@ -3235,7 +3507,7 @@ export default function MemberProfilePage() {
     return lookup;
   }, [coaches, memberRecord, members, staffMembers, user]);
   const resolveAuditActorLabel = useCallback(
-    (entry: MemberProfileAuditEntry) => entry.actorName || (entry.actorId ? auditActorDirectory.get(String(entry.actorId)) : undefined) || entry.actorId || "-",
+    (entry: MemberProfileAuditEntry) => entry.actorName || (entry.actorId ? auditActorDirectory.get(String(entry.actorId)) : undefined) || entry.actorId || "System",
     [auditActorDirectory],
   );
   const isRenewLifecycleModal = actionModal === "renew";
@@ -3362,12 +3634,9 @@ export default function MemberProfilePage() {
         if (ptForm.productCode && variant.productCode !== ptForm.productCode) {
           return false;
         }
-        if (primaryMembershipDurationLimit > 0 && variant.durationMonths > 0 && variant.durationMonths > primaryMembershipDurationLimit) {
-          return false;
-        }
         return true;
       }),
-    [primaryMembershipDurationLimit, ptForm.productCode, ptVariants],
+    [ptForm.productCode, ptVariants],
   );
   const ptTimeSlotOptions = useMemo(() => buildPtTimeSlotOptions(), []);
   const selectedPtCoach = useMemo(
@@ -3509,6 +3778,7 @@ export default function MemberProfilePage() {
     if (modal === "unfreeze" && canShowBalanceCollectionAction) {
       setResumeBillingForm({
         paymentMode: "UPI",
+        invoiceId: selectedOutstandingInvoice ? String(selectedOutstandingInvoice.id || "") : "",
       });
       setRenewCardSubtype("DEBIT_CARD");
       setActionModal("unfreeze-billing");
@@ -4025,24 +4295,16 @@ export default function MemberProfilePage() {
       setActionBusy(true);
       setActionError(null);
       try {
-        let invoices = (tabData.billing as LifecycleBillingTabState | undefined)?.invoices || [];
-
-        if (invoices.length === 0) {
-          const billingPayload = await Promise.all([
-            subscriptionService.getMemberBillingInvoices(token, memberId),
-            subscriptionService.getMemberBillingReceipts(token, memberId),
-          ]).then(([loadedInvoices, loadedReceipts]) => ({ invoices: loadedInvoices, receipts: loadedReceipts }));
-          invoices = billingPayload.invoices;
-          setTabData((current) => ({ ...current, billing: billingPayload }));
+        let billingPayload = tabData.billing as LifecycleBillingTabState | undefined;
+        if (!billingPayload?.invoices?.length) {
+          billingPayload = await reloadBillingTab() || undefined;
         }
 
-        const outstandingInvoice = [...invoices]
-          .filter((invoice) => roundAmount(invoice.balanceAmount || 0) > 0)
-          .sort((left, right) => {
-            const leftTime = left.issuedAt ? new Date(left.issuedAt).getTime() : 0;
-            const rightTime = right.issuedAt ? new Date(right.issuedAt).getTime() : 0;
-            return rightTime - leftTime;
-          })[0];
+        const invoices = billingPayload?.invoices || [];
+        const selectedInvoiceId = Number(resumeBillingForm.invoiceId || 0);
+        const outstandingInvoice =
+          invoices.find((invoice) => Number(invoice.id || 0) === selectedInvoiceId && roundAmount(invoice.balanceAmount || 0) > 0)
+          || pickOutstandingInvoice(invoices);
 
         if (!outstandingInvoice) {
           throw new Error("No outstanding invoice was found for this member.");
@@ -4250,10 +4512,6 @@ export default function MemberProfilePage() {
       setActionError("Select at least one PT day.");
       return;
     }
-    if (selectedPtVariant && primaryMembershipDurationLimit > 0 && selectedPtVariant.durationMonths > primaryMembershipDurationLimit) {
-      setActionError(`PT duration cannot be greater than the primary membership duration of ${primaryMembershipDurationLimit} month${primaryMembershipDurationLimit === 1 ? "" : "s"}.`);
-      return;
-    }
     if (!Number.isFinite(selectedPtSessionCount) || selectedPtSessionCount <= 0) {
       setActionError("Enter the total PT sessions before continuing.");
       return;
@@ -4404,11 +4662,6 @@ export default function MemberProfilePage() {
     }
   };
 
-  const reloadPtTab = () => {
-    setTabData((current) => ({ ...current, "personal-training": undefined }));
-    setLoadingTabs((current) => ({ ...current, "personal-training": false }));
-  };
-
   const handlePtSessionAction = async (
     sessionId: string,
     action: "start" | "end" | "complete" | "cancel" | "no-show",
@@ -4428,7 +4681,7 @@ export default function MemberProfilePage() {
       } else if (action === "no-show") {
         await trainingService.markSessionNoShow(token, sessionId);
       }
-      reloadPtTab();
+      await reloadPtTab();
       setActionSuccess(
         action === "cancel"
           ? "Cancellation window was closed, so the session was treated as consumed."
@@ -4537,7 +4790,7 @@ export default function MemberProfilePage() {
         newTime: ptRescheduleForm.newTime,
         reason: ptRescheduleForm.reason || undefined,
       });
-      reloadPtTab();
+      await reloadPtTab();
       setActionSuccess("PT session rescheduled.");
       setActionModal(null);
     } catch (error) {
@@ -4561,11 +4814,35 @@ export default function MemberProfilePage() {
         newTime: ptCancelForm.newTime,
         reason: ptCancelForm.reason || undefined,
       });
-      reloadPtTab();
+      await reloadPtTab();
       setActionSuccess("PT session cancelled and moved into a future make-up slot.");
       setActionModal(null);
     } catch (error) {
       setActionError(error instanceof Error ? error.message : "Unable to cancel PT session with make-up slot.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleUpdatePtSessionCount = async () => {
+    if (!token || !ptSessionCountForm.assignmentId) {
+      return;
+    }
+    const totalSessions = Number(ptSessionCountForm.totalSessions || 0);
+    if (!Number.isFinite(totalSessions) || totalSessions < 0) {
+      setActionError("Enter a valid total PT session count.");
+      return;
+    }
+
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await trainingService.updateAssignmentSessionCount(token, ptSessionCountForm.assignmentId, Math.round(totalSessions));
+      await reloadPtTab();
+      setActionSuccess("PT session count updated.");
+      setActionModal(null);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Unable to update PT session count.");
     } finally {
       setActionBusy(false);
     }
@@ -4710,7 +4987,7 @@ export default function MemberProfilePage() {
                     membership.family === "GROUP_CLASS" ? "Group Class Trainer" : membership.family === "PT" ? "Coach" : trainerLabel;
                   const overviewTrainerValue =
                     membership.family === "PT"
-                      ? assignedTrainer
+                      ? activePtCoachName
                       : membership.family === "GROUP_CLASS"
                         ? assignedTrainer
                         : assignedTrainer;
@@ -4785,7 +5062,13 @@ export default function MemberProfilePage() {
           {canCollectOutstandingBalance ? (
             <button
               type="button"
-              onClick={() => setActionModal("unfreeze-billing")}
+              onClick={() => {
+                setResumeBillingForm({
+                  paymentMode: "UPI",
+                  invoiceId: selectedOutstandingInvoice ? String(selectedOutstandingInvoice.id || "") : "",
+                });
+                setActionModal("unfreeze-billing");
+              }}
               className="rounded-xl border border-[#c42924]/40 bg-[#c42924] px-4 py-2 text-sm font-semibold text-white hover:bg-[#a81f1c]"
             >
               Receive Balance Payment
@@ -4816,7 +5099,7 @@ export default function MemberProfilePage() {
         </div>
 
         <div className="grid gap-6">
-          <ProfilePanel title="Billing Contacts" subtitle="Commercial ownership and last issued references" accent="slate">
+          <ProfilePanel title="Billing Contacts" accent="slate">
             <div className="grid gap-3 sm:grid-cols-2">
               <StatPill label="Billing Representative" value={billingRepName} />
               <StatPill label="Client Representative" value={clientRepName} />
@@ -4826,7 +5109,7 @@ export default function MemberProfilePage() {
           </ProfilePanel>
         </div>
 
-        <ProfilePanel title="Invoice Register" subtitle="Latest invoices issued for this member" accent="slate">
+        <ProfilePanel title="Invoice Register" accent="slate">
           {invoices.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] px-4 py-6 text-sm text-slate-400">
               No invoices available.
@@ -4911,7 +5194,7 @@ export default function MemberProfilePage() {
           )}
         </ProfilePanel>
 
-        <ProfilePanel title="Receipt Register" subtitle="Latest recorded collections for this member" accent="cyan">
+        <ProfilePanel title="Receipt Register" accent="cyan">
           {receipts.length === 0 ? (
             <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] px-4 py-6 text-sm text-slate-400">
               No receipts available.
@@ -5283,7 +5566,7 @@ export default function MemberProfilePage() {
                       <div className="flex flex-wrap items-start gap-3">
                         <div className="space-y-2">
                           <p className="text-3xl font-semibold tracking-tight text-white">{cardTitle}</p>
-                          <p className="text-sm text-slate-300">Category: {humanizeLabel(membership.categoryCode)}</p>
+                          <p className="text-sm text-slate-300">Category: {String(membership.categoryCode || "").toUpperCase() === "PT" ? "PT" : humanizeLabel(membership.categoryCode)}</p>
                         </div>
                         {isPrimaryCard ? (
                           <span className="rounded-full border border-lime-400/30 bg-lime-500/15 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-lime-100">
@@ -5411,7 +5694,7 @@ export default function MemberProfilePage() {
                         <StatPill label="Expiry Date" value={formatDateOnly(membership.expiryDate || undefined)} />
                         {membership.family === "PT" ? (
                           <>
-                            <StatPill label="Coach" value={pickString(activePtAssignmentRecord, ["coachEmail", "coachId"]) || assignedTrainer || "-"} />
+                            <StatPill label="Coach" value={activePtCoachName} />
                             <StatPill label="Sessions" value={ptTotalSessions ? `${ptUsedSessions} / ${ptTotalSessions}` : String(ptCompletedSessions)} />
                           </>
                         ) : null}
@@ -5696,11 +5979,11 @@ export default function MemberProfilePage() {
           commercialPtRecord?.variantName
           || commercialPtRecord?.productName
           || (isTransformationPlan ? "Transformation PT Bundle" : "Personal Training");
-        const includedPtSessions =
-          commercialPtRecord?.includedPtSessions
-          || commercialPtCatalogVariant?.includedPtSessions
-          || pickNumber(activeAssignRec, ["sessionCount", "includedSessions", "totalSessions"])
-          || 0;
+        const includedPtSessions = Math.max(
+          Number(commercialPtRecord?.includedPtSessions || 0),
+          Number(commercialPtCatalogVariant?.includedPtSessions || 0),
+          Number(pickNumber(activeAssignRec, ["sessionCount", "includedSessions", "totalSessions"]) || 0),
+        );
         const actionableStatuses = new Set(["SCHEDULED", "UPCOMING", "PENDING", "IN_PROGRESS"]);
         const recordedSessionsCount = ptSessions.filter((session) => {
           const status = pickString(toRecord(session), ["status"])?.toUpperCase();
@@ -5758,26 +6041,6 @@ export default function MemberProfilePage() {
           return dayA - dayB;
         });
 
-        const handleGenerateSessions = async () => {
-          if (!token || !activeAssignId) return;
-          const fromDate = new Date().toISOString().split("T")[0];
-          const toDateObj = new Date();
-          toDateObj.setDate(toDateObj.getDate() + 30);
-          const toDate = toDateObj.toISOString().split("T")[0];
-          try {
-            await trainingService.generateSessionsFromSlots(token, {
-              assignmentId: Number(activeAssignId),
-              fromDate,
-              toDate,
-            });
-            setTabData((current) => ({ ...current, "personal-training": undefined }));
-            setLoadingTabs((current) => ({ ...current, "personal-training": false }));
-            setActionSuccess("Sessions generated from slot schedule for the next 30 days.");
-          } catch (err) {
-            setActionError(err instanceof Error ? err.message : "Failed to generate sessions.");
-          }
-        };
-
         const statusBadge = (status: string) => {
           const s = status?.toUpperCase();
           const map: Record<string, string> = {
@@ -5807,7 +6070,7 @@ export default function MemberProfilePage() {
             <ProfilePanel title="Personal Training Assignment" accent="slate">
               {activePtAssignment ? (
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <StatPill label="Coach" value={pickString(activeAssignRec!, ["coachName", "coachDisplayName", "coachEmail", "coachId"]) || "-"} />
+                  <StatPill label="Coach" value={activePtCoachName} />
                   <StatPill label="Training Type" value={humanizeLabel(pickString(activeAssignRec!, ["trainingType"]) || "PERSONAL_TRAINING")} />
                   <StatPill label="Start Date" value={formatDateOnly(pickString(activeAssignRec!, ["startDate"]))} />
                   <StatPill label="End Date" value={formatDateOnly(pickString(activeAssignRec!, ["endDate"])) || "Ongoing"} />
@@ -5859,23 +6122,35 @@ export default function MemberProfilePage() {
                 ) : (
                   <p className="text-sm text-slate-400">No slot schedule configured yet. Add time slots for automatic session generation.</p>
                 )}
-                {sortedSlots.length > 0 ? (
-                  <div className="mt-4">
-                    <button
-                      type="button"
-                      onClick={() => void handleGenerateSessions()}
-                      className="rounded-xl border border-cyan-400/30 bg-cyan-500/10 px-4 py-2 text-sm font-semibold text-cyan-200 hover:bg-cyan-500/20"
-                    >
-                      Generate Sessions (Next 30 Days)
-                    </button>
-                  </div>
-                ) : null}
               </ProfilePanel>
             ) : null}
 
             {/* Session Summary */}
             {totalSessions > 0 ? (
               <ProfilePanel title="Session Tracker" subtitle="Session counts — NO_SHOW counts as consumed for member but NOT for trainer payment" accent="lime">
+                {activeAssignId ? (
+                  <div className="mb-4 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setPtSessionCountForm({
+                          assignmentId: activeAssignId,
+                          totalSessions: String(
+                            Math.max(
+                              includedPtSessions,
+                              Number(pickNumber(activeAssignRec!, ["totalSessions", "sessionCount", "includedSessions"]) || 0),
+                            ),
+                          ),
+                        });
+                        setActionError(null);
+                        setActionModal("pt-session-count");
+                      }}
+                      className="rounded-xl border border-lime-400/30 bg-lime-500/10 px-4 py-2 text-sm font-semibold text-lime-100 hover:bg-lime-500/20"
+                    >
+                      Edit Total PT Sessions
+                    </button>
+                  </div>
+                ) : null}
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   <StatPill label="Total PT Sessions" value={includedPtSessions > 0 ? String(includedPtSessions) : String(totalSessions)} />
                   <StatPill label="Total Recorded Sessions" value={String(recordedSessionsCount)} />
@@ -5904,6 +6179,23 @@ export default function MemberProfilePage() {
             {sessionRegisterRows.length > 0 ? (
               <div ref={sessionRegisterRef}>
               <ProfilePanel title="Session Register" subtitle="Only due or currently actionable PT sessions are shown here. Older and completed items move to history." accent="slate">
+                <div className="mb-4 grid gap-3 lg:grid-cols-3">
+                  <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Cancel Policy</p>
+                    <p className="mt-2 text-sm text-white">Cancel is allowed until {PT_CANCEL_CUTOFF_HOURS} hours before the booked slot.</p>
+                    <p className="mt-1 text-xs text-slate-500">Valid cancel keeps the member session available for a future make-up slot.</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Reschedule Policy</p>
+                    <p className="mt-2 text-sm text-white">Reschedule is same-day only and closes {PT_RESCHEDULE_CUTOFF_HOURS} hours before the original slot.</p>
+                    <p className="mt-1 text-xs text-slate-500">If no same-day slot is free, use cancel while the 8-hour window is still open.</p>
+                  </div>
+                  <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Late Window</p>
+                    <p className="mt-2 text-sm text-white">After the cutoffs, unattended or late-cancelled sessions are treated as consumed.</p>
+                    <p className="mt-1 text-xs text-slate-500">No Show consumes the member session but does not count for trainer payout.</p>
+                  </div>
+                </div>
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm">
                     <thead>
@@ -5934,6 +6226,13 @@ export default function MemberProfilePage() {
                           excludeSessionId: sessId,
                         }).filter((slot) => slot !== slotS);
                         const hasSameDayRescheduleOptions = sameDaySlotOptions.length > 0;
+                        const rescheduleMessage = getPtRescheduleAvailabilityMessage({
+                          session: rec,
+                          hasUnlimitedReschedules: ptHasUnlimitedReschedules,
+                          remainingReschedules: ptRemainingReschedules || 0,
+                          hasSameDayRescheduleOptions,
+                        });
+                        const cancelMessage = getPtCancelAvailabilityMessage(rec);
                         const canReschedule = canReschedulePtSessionInTime(rec)
                           && (ptHasUnlimitedReschedules || (ptRemainingReschedules || 0) > 0)
                           && hasSameDayRescheduleOptions;
@@ -5951,7 +6250,7 @@ export default function MemberProfilePage() {
                             <td className="px-3 py-2.5 text-slate-300">{dur ? `${dur} min` : "-"}</td>
                             <td className="px-3 py-2.5 text-slate-400">{startBy || "-"}</td>
                             <td className="px-3 py-2.5">
-                              <div className="flex gap-1">
+                              <div className="flex flex-wrap gap-1">
                                 {["SCHEDULED", "UPCOMING", "PENDING"].includes(sessStatus) && sessId ? (
                                   <>
                                     {startAllowed ? (
@@ -5971,11 +6270,7 @@ export default function MemberProfilePage() {
                                       </button>
                                     ) : (
                                       <span className="rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-400">
-                                        {!(ptHasUnlimitedReschedules || (ptRemainingReschedules || 0) > 0)
-                                          ? "Reschedule limit reached"
-                                          : hasSameDayRescheduleOptions
-                                            ? "Reschedule cutoff closed"
-                                            : "No same-day slot"}
+                                        {rescheduleMessage}
                                       </span>
                                     )}
                                     <button type="button" onClick={() => void handlePtSessionAction(sessId, "no-show")}
@@ -5990,9 +6285,13 @@ export default function MemberProfilePage() {
                                     ) : (
                                       <button type="button" onClick={() => void handlePtSessionAction(sessId, "cancel")}
                                         className="rounded-lg bg-orange-500/20 px-2 py-1 text-xs font-semibold text-orange-200 hover:bg-orange-500/30">
-                                        Cancel as No Show
+                                        Late Cancel
                                       </button>
                                     )}
+                                    <div className="basis-full pt-1 text-[11px] text-slate-500">
+                                      <span>{describePtHoursRemaining(rec)}.</span>{" "}
+                                      <span>{cancelMessage}.</span>
+                                    </div>
                                   </>
                                 ) : sessStatus === "IN_PROGRESS" && sessId ? (
                                   <button type="button" onClick={() => void handlePtSessionAction(sessId, "end")}
@@ -6221,13 +6520,14 @@ export default function MemberProfilePage() {
         const auditEntries = [...(tabData["audit-trail"] || []), ...lifecycleAuditEntries]
           .sort((left, right) => Date.parse(String(right.createdAt || "")) - Date.parse(String(left.createdAt || "")));
         return (
-          <ProfilePanel title="Audit Trail" accent="slate">
+          <ProfilePanel title="Audit Trail" subtitle="Who changed what, when, and the key values involved." accent="slate">
             <GenericTable
               items={auditEntries.map((entry) => ({
                 createdAt: formatDateTime(entry.createdAt),
-                action: entry.action || "-",
+                action: humanizeLabel(entry.action || "-"),
                 actor: resolveAuditActorLabel(entry),
                 summary: entry.summary || "-",
+                details: formatAuditDetailsSummary(entry) || "-",
               }))}
               emptyLabel="No member audit entries available."
             />
@@ -6300,64 +6600,70 @@ export default function MemberProfilePage() {
               <div className="rounded-2xl border border-white/10 bg-black/10 p-4">
                 <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Document Actions</p>
                 <div className="mt-3 space-y-3">
-                  <div className="flex flex-wrap gap-2">
-                    <button
-                      type="button"
-                      onClick={() => void viewDocumentPdf("invoice", completedBilling.invoiceId)}
-                      disabled={documentBusyKey === `invoice-view-${completedBilling.invoiceId}`}
-                      className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
-                    >
-                      <Printer className="h-4 w-4" />
-                      View Invoice
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void downloadDocumentPdf("invoice", completedBilling.invoiceId, completedBilling.invoiceNumber)}
-                      disabled={documentBusyKey === `invoice-download-${completedBilling.invoiceId}`}
-                      className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
-                    >
-                      <Download className="h-4 w-4" />
-                      Download Invoice
-                    </button>
-                    <button
-                      type="button"
-                      onClick={() => void shareDocumentPdf("invoice", completedBilling.invoiceId, completedBilling.invoiceNumber, `Invoice ${completedBilling.invoiceNumber}`)}
-                      disabled={documentBusyKey === `invoice-share-${completedBilling.invoiceId}`}
-                      className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
-                    >
-                      <Share2 className="h-4 w-4" />
-                      Share Invoice
-                    </button>
-                  </div>
-                  {completedBilling.receiptId ? (
+                  <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                    <span className="text-sm font-semibold text-white">Invoice</span>
                     <div className="flex flex-wrap gap-2">
                       <button
                         type="button"
-                        onClick={() => void viewDocumentPdf("receipt", completedBilling.receiptId!)}
-                        disabled={documentBusyKey === `receipt-view-${completedBilling.receiptId}`}
-                        className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                        onClick={() => void viewDocumentPdf("invoice", completedBilling.invoiceId)}
+                        disabled={documentBusyKey === `invoice-view-${completedBilling.invoiceId}`}
+                        className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                        title="View Invoice"
                       >
-                        <Printer className="h-4 w-4" />
-                        View Receipt
+                        <ExternalLink className="h-4 w-4" />
                       </button>
                       <button
                         type="button"
-                        onClick={() => void downloadDocumentPdf("receipt", completedBilling.receiptId!, completedBilling.receiptNumber || `receipt-${completedBilling.receiptId}`)}
-                        disabled={documentBusyKey === `receipt-download-${completedBilling.receiptId}`}
-                        className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                        onClick={() => void downloadDocumentPdf("invoice", completedBilling.invoiceId, completedBilling.invoiceNumber)}
+                        disabled={documentBusyKey === `invoice-download-${completedBilling.invoiceId}`}
+                        className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                        title="Download Invoice"
                       >
                         <Download className="h-4 w-4" />
-                        Download Receipt
                       </button>
                       <button
                         type="button"
-                        onClick={() => void shareDocumentPdf("receipt", completedBilling.receiptId!, completedBilling.receiptNumber || `receipt-${completedBilling.receiptId}`, `Receipt ${completedBilling.receiptNumber || completedBilling.receiptId}`)}
-                        disabled={documentBusyKey === `receipt-share-${completedBilling.receiptId}`}
-                        className="inline-flex items-center gap-2 rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                        onClick={() => void shareDocumentPdf("invoice", completedBilling.invoiceId, completedBilling.invoiceNumber, `Invoice ${completedBilling.invoiceNumber}`)}
+                        disabled={documentBusyKey === `invoice-share-${completedBilling.invoiceId}`}
+                        className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                        title="Share Invoice"
                       >
                         <Share2 className="h-4 w-4" />
-                        Share Receipt
                       </button>
+                    </div>
+                  </div>
+                  {completedBilling.receiptId ? (
+                    <div className="flex items-center justify-between gap-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
+                      <span className="text-sm font-semibold text-white">Receipt</span>
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => void viewDocumentPdf("receipt", completedBilling.receiptId!)}
+                          disabled={documentBusyKey === `receipt-view-${completedBilling.receiptId}`}
+                          className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                          title="View Receipt"
+                        >
+                          <ExternalLink className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void downloadDocumentPdf("receipt", completedBilling.receiptId!, completedBilling.receiptNumber || `receipt-${completedBilling.receiptId}`)}
+                          disabled={documentBusyKey === `receipt-download-${completedBilling.receiptId}`}
+                          className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                          title="Download Receipt"
+                        >
+                          <Download className="h-4 w-4" />
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => void shareDocumentPdf("receipt", completedBilling.receiptId!, completedBilling.receiptNumber || `receipt-${completedBilling.receiptId}`, `Receipt ${completedBilling.receiptNumber || completedBilling.receiptId}`)}
+                          disabled={documentBusyKey === `receipt-share-${completedBilling.receiptId}`}
+                          className="inline-flex h-10 w-10 items-center justify-center rounded-2xl border border-white/10 bg-white/[0.04] text-slate-100 hover:bg-white/[0.08] disabled:opacity-60"
+                          title="Share Receipt"
+                        >
+                          <Share2 className="h-4 w-4" />
+                        </button>
+                      </div>
                     </div>
                   ) : (
                     <p className="text-sm text-slate-400">No receipt was generated because no payment was collected.</p>
@@ -6623,6 +6929,7 @@ export default function MemberProfilePage() {
             onClose={() => setActionModal(null)}
             title="Freeze membership"
             size="md"
+            closeOnOverlayClick={false}
             footer={
               <div className="flex w-full gap-3">
                 <button type="button" onClick={() => setActionModal(null)} className="flex-1 rounded-xl border border-white/10 px-4 py-2.5 text-sm font-semibold text-slate-200">Cancel</button>
@@ -6745,17 +7052,33 @@ export default function MemberProfilePage() {
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Current Invoice</p>
-                  <p className="mt-1.5 text-base font-semibold text-white">{roundedInvoiceStats.latestInvoice || "-"}</p>
+                  <p className="mt-1.5 text-base font-semibold text-white">{selectedOutstandingInvoiceNumber || "-"}</p>
                 </div>
                 <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Outstanding Balance</p>
-                  <p className="mt-1.5 text-base font-semibold text-white">{formatRoundedInr(roundedBalanceDue)}</p>
+                  <p className="mt-1.5 text-base font-semibold text-white">{formatRoundedInr(selectedOutstandingInvoiceBalance)}</p>
                 </div>
               </div>
+              {outstandingBillingInvoices.length > 1 ? (
+                <label className="block space-y-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Outstanding Invoice</span>
+                  <select
+                    value={resumeBillingForm.invoiceId}
+                    onChange={(event) => setResumeBillingForm((current) => ({ ...current, invoiceId: event.target.value }))}
+                    className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white"
+                  >
+                    {outstandingBillingInvoices.map((invoice) => (
+                      <option key={invoice.id} value={String(invoice.id)}>
+                        {invoice.invoiceNumber || `Invoice ${invoice.id}`} · {formatRoundedInr(roundAmount(invoice.balanceAmount || 0))}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              ) : null}
               <div className="space-y-3 rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-4">
                 <div>
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Received Amount</p>
-                  <p className="mt-1 text-base font-semibold text-white">{formatRoundedInr(roundedBalanceDue)}</p>
+                  <p className="mt-1 text-base font-semibold text-white">{formatRoundedInr(selectedOutstandingInvoiceBalance)}</p>
                 </div>
                 <div className="space-y-2">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Payment Mode</p>
@@ -7338,194 +7661,82 @@ export default function MemberProfilePage() {
           >
             <div className="space-y-4">
               {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
-              <div className="space-y-5">
-                <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
-                  <div className="mb-4 flex items-center gap-3">
-                    <CreditCard className="h-5 w-5 text-[#ffb4b1]" />
-                    <div>
-                      <h4 className="text-sm font-semibold text-white">Invoice Summary</h4>
-                    </div>
-                  </div>
-                  <div className="rounded-2xl border border-white/10 bg-[#0f141d] p-4">
-                    <dl className="grid gap-x-8 gap-y-3 text-sm text-slate-300 sm:grid-cols-2">
-                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Number</dt><dd className="text-right font-semibold text-white">Generated on submit</dd></div>
-                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Date</dt><dd className="text-right">{currentPreviewDate}</dd></div>
-                      <div className="flex items-start justify-between gap-4">
-                        <dt className="text-slate-400">{isUpgradeBillingModal ? "Target Membership" : "Membership"}</dt>
-                        <dd className="text-right font-medium text-white">
-                          <div>{selectedLifecycleVariant ? selectedLifecycleVariantTitle : currentLifecycleVariantTitle}</div>
-                          <div className="mt-1 text-xs text-slate-400">{selectedLifecycleVariant ? selectedLifecycleDurationLabel : currentLifecycleDurationLabel}</div>
-                        </dd>
-                      </div>
-                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Status</dt><dd className="text-right font-medium text-white">{lifecycleBillingPreviewStatus}</dd></div>
-                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Start Date</dt><dd className="text-right">{formatDateOnly(lifecycleForm.startDate)}</dd></div>
-                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">End Date</dt><dd className="text-right">{formatDateOnly(projectedRenewalEndDate)}</dd></div>
-                      <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Membership Duration</dt><dd className="text-right">{selectedLifecycleVariant ? selectedLifecycleDurationLabel : currentLifecycleDurationLabel}</dd></div>
-                      <div className="flex items-center justify-between gap-4 sm:col-span-2"><dt className="text-slate-400">Billing Representative</dt><dd className="font-medium text-white">{user?.name || "-"}</dd></div>
-                    </dl>
-                  </div>
-                </div>
-
-                <div className="grid gap-5 xl:grid-cols-[minmax(0,1.12fr)_380px]">
-                  <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
-                    <div className="mb-4 flex items-center gap-3">
-                      <CreditCard className="h-5 w-5 text-[#ffb4b1]" />
+              <BillingWorkflowTemplate
+                infoRows={[
+                  { label: "Invoice Number", value: "Generated on submit" },
+                  { label: "Invoice Date", value: currentPreviewDate },
+                  {
+                    label: isUpgradeBillingModal ? "Target Membership" : "Membership",
+                    value: (
                       <div>
-                        <h4 className="text-sm font-semibold text-white">Commercial Breakdown</h4>
+                        <div>{selectedLifecycleVariant ? selectedLifecycleVariantTitle : currentLifecycleVariantTitle}</div>
+                        <div className="mt-1 text-xs text-slate-400">{selectedLifecycleVariant ? selectedLifecycleDurationLabel : currentLifecycleDurationLabel}</div>
                       </div>
-                    </div>
-                    <div className="overflow-hidden rounded-2xl border border-white/10 bg-[#0f141d]">
-                      <table className="min-w-full table-fixed divide-y divide-white/10 text-sm text-slate-300">
-                        <thead className="bg-white/[0.03] text-xs uppercase tracking-[0.18em] text-slate-400">
-                          <tr>
-                            <th className="w-[48%] px-4 py-3 text-left font-semibold">Description</th>
-                            <th className="w-[17%] px-4 py-3 text-right font-semibold">Plan Price</th>
-                            <th className="w-[18%] px-4 py-3 text-right font-semibold">Selling Price</th>
-                            <th className="w-[17%] px-4 py-3 text-right font-semibold">Discount</th>
-                          </tr>
-                        </thead>
-                        <tbody className="divide-y divide-white/10">
-                          <tr className="bg-[#101722]">
-                            <td className="px-4 py-3 text-white">
-                              {isUpgradeBillingModal
-                                ? `Upgrade to ${selectedLifecycleVariant ? selectedLifecycleVariantTitle : currentLifecycleVariantTitle}`
-                                : selectedLifecycleVariant ? selectedLifecycleVariantTitle : currentLifecycleVariantTitle}
-                              <div className="mt-1 text-xs text-slate-400">
-                                {selectedLifecycleVariant ? selectedLifecycleDurationLabel : currentLifecycleDurationLabel}
-                              </div>
-                            </td>
-                            <td className="px-4 py-3 text-right">{formatRoundedInr(lifecycleBillingBaseAmount)}</td>
-                            <td className="px-4 py-3 text-right">{formatRoundedInr(lifecycleBillingSellingPrice)}</td>
-                            <td className="px-4 py-3 text-right">{formatRoundedInr(lifecycleBillingDiscountAmount)}</td>
-                          </tr>
-                        </tbody>
-                        <tfoot className="divide-y divide-white/10 bg-black/10">
-                          <tr>
-                            <td className="px-4 py-3 font-semibold text-white">{isUpgradeBillingModal ? "Total Upgrade Value" : "Total Plan Price"}</td>
-                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(lifecycleBillingBaseAmount)}</td>
-                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(lifecycleBillingSellingPrice)}</td>
-                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(lifecycleBillingDiscountAmount)}</td>
-                          </tr>
-                          <tr>
-                            <td className="px-4 py-3">CGST @ {commercialTaxRate / 2}%</td>
-                            <td className="px-4 py-3" />
-                            <td className="px-4 py-3 text-right">{formatRoundedInr(lifecycleBillingHalfTaxAmount)}</td>
-                            <td className="px-4 py-3" />
-                          </tr>
-                          <tr>
-                            <td className="px-4 py-3">SGST @ {commercialTaxRate / 2}%</td>
-                            <td className="px-4 py-3" />
-                            <td className="px-4 py-3 text-right">{formatRoundedInr(lifecycleBillingHalfTaxAmount)}</td>
-                            <td className="px-4 py-3" />
-                          </tr>
-                          <tr className="text-base">
-                            <td className="px-4 py-3 font-semibold text-white">Total Payable</td>
-                            <td className="px-4 py-3" />
-                            <td className="px-4 py-3 text-right font-semibold text-white">{formatRoundedInr(lifecycleBillingInvoiceTotal)}</td>
-                            <td className="px-4 py-3" />
-                          </tr>
-                        </tfoot>
-                      </table>
-                    </div>
-                  </div>
-
-                  <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
-                    <div className="mb-4 flex items-center gap-3">
-                      <Wallet className="h-5 w-5 text-[#ffb4b1]" />
-                      <div>
-                        <h4 className="text-sm font-semibold text-white">Payment Collection</h4>
-                      </div>
-                    </div>
-                    <div className="space-y-4">
-                    <label className="space-y-2">
-                      <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Received Amount</span>
-                      <input
-                        className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
-                        value={lifecycleBillingForm.receivedAmount}
-                        onChange={(event) => setLifecycleBillingForm((current) => ({ ...current, receivedAmount: sanitizeIntegerString(event.target.value) }))}
-                        placeholder="Enter collected amount"
-                        inputMode="numeric"
-                      />
-                    </label>
-
-                    <div className="space-y-2">
-                      <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Payment Mode</span>
-                      <div className="grid grid-cols-3 gap-2">
-                        {String(billingSettings?.paymentModesEnabled || "UPI,CARD,CASH")
-                          .split(",")
-                          .map((mode) => mode.trim())
-                          .filter((mode) => ["UPI", "CARD", "CASH"].includes(mode.toUpperCase()))
-                          .map((mode) => {
-                            const selected = lifecycleBillingForm.paymentMode === mode;
-                            return (
-                              <button
-                                key={mode}
-                                type="button"
-                                onClick={() => setLifecycleBillingForm((current) => ({ ...current, paymentMode: mode }))}
-                                className={`rounded-2xl border px-4 py-4 text-sm font-semibold uppercase tracking-[0.18em] transition ${
-                                  selected
-                                    ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
-                                    : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20"
-                                }`}
-                              >
-                                {humanizeLabel(mode)}
-                              </button>
-                            );
-                          })}
-                      </div>
-                      {lifecycleBillingForm.paymentMode === "CARD" ? (
-                        <div className="grid grid-cols-2 gap-2">
-                          {[
-                            { value: "DEBIT_CARD", label: "Debit Card" },
-                            { value: "CREDIT_CARD", label: "Credit Card" },
-                          ].map((option) => {
-                            const selected = renewCardSubtype === option.value;
-                            return (
-                              <button
-                                key={option.value}
-                                type="button"
-                                onClick={() => setRenewCardSubtype(option.value as "DEBIT_CARD" | "CREDIT_CARD")}
-                                className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
-                                  selected
-                                    ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
-                                    : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20"
-                                }`}
-                              >
-                                {option.label}
-                              </button>
-                            );
-                          })}
-                        </div>
-                      ) : null}
-                    </div>
-
-                    {Number(lifecycleBillingForm.receivedAmount || 0) < lifecycleBillingInvoiceTotal ? (
-                      <label className="space-y-2">
-                        <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Balance Due Date</span>
-                        <input
-                          type="date"
-                          className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
-                          value={lifecycleBillingForm.balanceDueDate}
-                          onChange={(event) => setLifecycleBillingForm((current) => ({ ...current, balanceDueDate: event.target.value }))}
-                        />
-                      </label>
-                    ) : null}
-
-                    <div className="rounded-2xl border border-white/10 bg-[#0f141d] p-4">
-                      <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Receipt Preview</p>
-                      <dl className="mt-3 space-y-2 text-sm text-slate-300">
-                        <div className="flex items-center justify-between gap-3"><dt>Receipt Number</dt><dd>Generated after payment</dd></div>
-                        <div className="flex items-center justify-between gap-3"><dt>Receipt Date</dt><dd>{currentPreviewDate}</dd></div>
-                        <div className="flex items-center justify-between gap-3"><dt>Payment Method</dt><dd>{lifecycleBillingForm.paymentMode === "CARD" ? (renewCardSubtype === "DEBIT_CARD" ? "Debit Card" : "Credit Card") : lifecycleBillingForm.paymentMode || "-"}</dd></div>
-                        <div className="flex items-center justify-between gap-3"><dt>Payment Status</dt><dd>{lifecycleBillingPreviewStatus}</dd></div>
-                        <div className="flex items-center justify-between gap-3"><dt>Total Paid</dt><dd>{formatRoundedInr(lifecycleBillingReceivedAmount)}</dd></div>
-                        <div className="flex items-center justify-between gap-3 border-t border-white/10 pt-2 text-base font-semibold text-white"><dt>Balance Due</dt><dd>{formatRoundedInr(lifecycleBillingBalanceAmount)}</dd></div>
-                      </dl>
-                    </div>
-                  </div>
-                </div>
-                </div>
-              </div>
+                    ),
+                  },
+                  { label: "Invoice Status", value: lifecycleBillingPreviewStatus },
+                  { label: "Start Date", value: formatDateOnly(lifecycleForm.startDate) },
+                  { label: "End Date", value: formatDateOnly(projectedRenewalEndDate) },
+                  { label: "Membership Duration", value: selectedLifecycleVariant ? selectedLifecycleDurationLabel : currentLifecycleDurationLabel },
+                  { label: "Billing Representative", value: user?.name || "-", fullWidth: true },
+                ]}
+                lineItems={[
+                  {
+                    label: isUpgradeBillingModal
+                      ? `Upgrade to ${selectedLifecycleVariant ? selectedLifecycleVariantTitle : currentLifecycleVariantTitle}`
+                      : selectedLifecycleVariant ? selectedLifecycleVariantTitle : currentLifecycleVariantTitle,
+                    subtitle: selectedLifecycleVariant ? selectedLifecycleDurationLabel : currentLifecycleDurationLabel,
+                    baseAmount: formatRoundedInr(lifecycleBillingBaseAmount),
+                    sellingPrice: formatRoundedInr(lifecycleBillingSellingPrice),
+                    discount: formatRoundedInr(lifecycleBillingDiscountAmount),
+                  },
+                ]}
+                totalLabel={isUpgradeBillingModal ? "Total Upgrade Value" : "Total Plan Price"}
+                totalBaseAmount={formatRoundedInr(lifecycleBillingBaseAmount)}
+                totalSellingPrice={formatRoundedInr(lifecycleBillingSellingPrice)}
+                totalDiscount={formatRoundedInr(lifecycleBillingDiscountAmount)}
+                finalPayable={formatRoundedInr(lifecycleBillingInvoiceTotal)}
+                taxRows={[
+                  { label: `CGST @ ${commercialTaxRate / 2}%`, value: formatRoundedInr(lifecycleBillingHalfTaxAmount) },
+                  { label: `SGST @ ${commercialTaxRate / 2}%`, value: formatRoundedInr(lifecycleBillingHalfTaxAmount) },
+                ]}
+                receivedAmount={lifecycleBillingForm.receivedAmount}
+                onReceivedAmountChange={(value) => setLifecycleBillingForm((current) => ({ ...current, receivedAmount: sanitizeIntegerString(value) }))}
+                paymentMode={lifecycleBillingForm.paymentMode}
+                paymentModeOptions={String(billingSettings?.paymentModesEnabled || "UPI,CARD,CASH")
+                  .split(",")
+                  .map((mode) => mode.trim())
+                  .filter((mode) => ["UPI", "CARD", "CASH"].includes(mode.toUpperCase()))
+                  .map((mode) => ({ value: mode, label: humanizeLabel(mode) }))}
+                onPaymentModeChange={(value) => setLifecycleBillingForm((current) => ({ ...current, paymentMode: value }))}
+                secondaryModeLabel={lifecycleBillingForm.paymentMode === "CARD" ? "Card Type" : lifecycleBillingForm.paymentMode === "UPI" ? "UPI App" : undefined}
+                secondaryModeValue={lifecycleBillingForm.paymentMode === "CARD" ? renewCardSubtype : lifecycleUpiVendor}
+                secondaryModeOptions={
+                  lifecycleBillingForm.paymentMode === "CARD"
+                    ? PAYMENT_CARD_OPTIONS
+                    : lifecycleBillingForm.paymentMode === "UPI"
+                      ? PAYMENT_UPI_OPTIONS
+                    : []
+                }
+                onSecondaryModeChange={(value) => {
+                  if (lifecycleBillingForm.paymentMode === "CARD") {
+                    setRenewCardSubtype(value as "DEBIT_CARD" | "CREDIT_CARD");
+                    return;
+                  }
+                  setLifecycleUpiVendor(value as "GOOGLE_PAY" | "PHONEPE" | "PAYTM" | "OTHER");
+                }}
+                showBalanceDueDate={Number(lifecycleBillingForm.receivedAmount || 0) < lifecycleBillingInvoiceTotal}
+                balanceDueDate={lifecycleBillingForm.balanceDueDate}
+                onBalanceDueDateChange={(value) => setLifecycleBillingForm((current) => ({ ...current, balanceDueDate: value }))}
+                receiptRows={[
+                  { label: "Receipt Number", value: "Generated after payment" },
+                  { label: "Receipt Date", value: currentPreviewDate },
+                  { label: "Payment Method", value: resolveBillingPaymentModeLabel(lifecycleBillingForm.paymentMode, renewCardSubtype, lifecycleUpiVendor) },
+                  { label: "Payment Status", value: lifecycleBillingPreviewStatus },
+                  { label: "Total Paid", value: formatRoundedInr(lifecycleBillingReceivedAmount) },
+                  { label: "Balance Due", value: formatRoundedInr(lifecycleBillingBalanceAmount), fullWidth: true },
+                ]}
+              />
             </div>
           </Modal>
 
@@ -7897,6 +8108,40 @@ export default function MemberProfilePage() {
           </Modal>
 
           <Modal
+            open={actionModal === "pt-session-count"}
+            onClose={() => setActionModal(null)}
+            title="Edit Total PT Sessions"
+            size="md"
+            footer={
+              <>
+                <button type="button" onClick={() => setActionModal(null)} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Cancel</button>
+                <button type="button" onClick={() => void handleUpdatePtSessionCount()} disabled={actionBusy} className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                  {actionBusy ? "Saving..." : "Update Sessions"}
+                </button>
+              </>
+            }
+          >
+            <div className="space-y-4">
+              {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
+                <p className="text-sm text-slate-300">
+                  Update the member&apos;s total PT entitlement. This cannot be lower than the sessions already consumed.
+                </p>
+                <label className="mt-4 block space-y-2">
+                  <span className="text-xs font-medium text-slate-300">Total PT Sessions</span>
+                  <input
+                    value={ptSessionCountForm.totalSessions}
+                    onChange={(event) => setPtSessionCountForm((current) => ({ ...current, totalSessions: sanitizeIntegerString(event.target.value) }))}
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                    inputMode="numeric"
+                    placeholder="0"
+                  />
+                </label>
+              </div>
+            </div>
+          </Modal>
+
+          <Modal
             open={actionModal === "pt-reschedule"}
             onClose={() => setActionModal(null)}
             title="Reschedule PT Session"
@@ -7929,6 +8174,9 @@ export default function MemberProfilePage() {
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
                     <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">New Slot</p>
+                    <div className="mt-3 rounded-xl border border-violet-400/20 bg-violet-500/10 px-3 py-3 text-xs text-violet-100">
+                      Same-day only. This option stays open until {PT_RESCHEDULE_CUTOFF_HOURS} hours before the original session.
+                    </div>
                     <div className="mt-3 grid gap-4 sm:grid-cols-2">
                       <label className="space-y-2">
                         <span className="text-xs font-medium text-slate-300">Reschedule Date</span>
@@ -8049,6 +8297,9 @@ export default function MemberProfilePage() {
                   </div>
                   <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
                     <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Future Make-Up Slot</p>
+                    <div className="mt-3 rounded-xl border border-orange-400/20 bg-orange-500/10 px-3 py-3 text-xs text-orange-100">
+                      Valid cancellation keeps the member session available. Rebook the replacement slot within the current PT validity only.
+                    </div>
                     <div className="mt-3 grid gap-4 sm:grid-cols-2">
                       <label className="space-y-2">
                         <span className="text-xs font-medium text-slate-300">New Date</span>
@@ -8078,7 +8329,7 @@ export default function MemberProfilePage() {
                       </label>
                     </div>
                     <p className="mt-3 text-xs text-slate-400">
-                      The cancelled session is not consumed. The replacement slot must stay inside the PT validity window.
+                      Cancel closes {PT_CANCEL_CUTOFF_HOURS} hours before the slot. Late cancellation is treated as consumed and should use the register action instead.
                     </p>
                     <label className="mt-4 block space-y-2">
                       <span className="text-xs font-medium text-slate-300">Reason</span>
@@ -8164,134 +8415,73 @@ export default function MemberProfilePage() {
           >
             <div className="space-y-4">
               {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
-              <div className="grid gap-5 xl:grid-cols-[minmax(0,1fr)_340px]">
-                <div className="space-y-5">
-                  <div className="rounded-[24px] border border-white/8 bg-[#161d28] p-5">
-                    <div className="mb-4 flex items-center gap-3">
-                      <CreditCard className="h-5 w-5 text-[#ffb4b1]" />
-                      <div>
-                        <h4 className="text-sm font-semibold text-white">Invoice Summary</h4>
-                      </div>
-                    </div>
-                    <div className="rounded-2xl border border-white/10 bg-[#0f141d] p-4">
-                      <dl className="grid gap-x-8 gap-y-3 text-sm text-slate-300 sm:grid-cols-2">
-                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Number</dt><dd className="text-right font-semibold text-white">Generated on submit</dd></div>
-                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Date</dt><dd className="text-right">{currentPreviewDate}</dd></div>
-                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Invoice Status</dt><dd className="text-right">{ptPreviewStatus}</dd></div>
-                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">PT Package</dt><dd className="text-right font-semibold text-white">{formatPtProductName(selectedPtProduct?.productName || selectedPtVariant?.productCode)}</dd></div>
-                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Membership Duration</dt><dd className="text-right">{formatPlanDuration(selectedPtVariant?.durationMonths || 0, selectedPtVariant?.validityDays || 0)}</dd></div>
-                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Coach</dt><dd className="text-right">{selectedPtCoach?.name || "-"}</dd></div>
-                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Total Sessions</dt><dd className="text-right">{selectedPtSessionCount > 0 ? selectedPtSessionCount : "-"}</dd></div>
-                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Schedule</dt><dd className="text-right">{selectedPtDays.map((day) => formatPtDayLabel(day)).join(", ")}</dd></div>
-                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Slot</dt><dd className="text-right">{formatClockTime(ptForm.slotStartTime)} - {formatClockTime(ptSlotEndTime)}</dd></div>
-                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Billing Representative</dt><dd className="text-right">{billingRepName || clientRepName}</dd></div>
-                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Base Amount</dt><dd className="text-right">{formatRoundedInr(ptCommercial.baseAmount)}</dd></div>
-                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Selling Price</dt><dd className="text-right">{formatRoundedInr(ptCommercial.sellingPrice)}</dd></div>
-                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">Discount</dt><dd className="text-right">{formatRoundedInr(ptCommercial.discountAmount)}</dd></div>
-                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">CGST</dt><dd className="text-right">{formatRoundedInr(ptHalfTaxAmount)}</dd></div>
-                        <div className="flex items-center justify-between gap-4"><dt className="text-slate-400">SGST</dt><dd className="text-right">{formatRoundedInr(ptHalfTaxAmount)}</dd></div>
-                        <div className="col-span-full border-t border-white/10 pt-3">
-                          <div className="flex items-end justify-between gap-4">
-                            <div>
-                              <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Total Payable</p>
-                              <p className="mt-1 text-xs text-slate-500">PT add-on invoice total including GST.</p>
-                            </div>
-                            <span className="text-3xl font-semibold text-white">{formatRoundedInr(ptInvoiceTotal)}</span>
-                          </div>
-                        </div>
-                      </dl>
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-4 rounded-[24px] border border-white/8 bg-[#161d28] p-5">
-                  <label className="space-y-2">
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Amount Received</span>
-                    <input
-                      value={ptBillingForm.receivedAmount}
-                      onChange={(event) => setPtBillingForm((current) => ({ ...current, receivedAmount: sanitizeIntegerString(event.target.value) }))}
-                      className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
-                      placeholder="0"
-                      inputMode="numeric"
-                    />
-                  </label>
-
-                  <div className="space-y-2">
-                    <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Payment Mode</span>
-                    <div className="grid grid-cols-3 gap-2">
-                      {String(billingSettings?.paymentModesEnabled || "UPI,CARD,CASH")
-                        .split(",")
-                        .map((mode) => mode.trim())
-                        .filter((mode) => ["UPI", "CARD", "CASH"].includes(mode.toUpperCase()))
-                        .map((mode) => {
-                          const selected = ptBillingForm.paymentMode === mode;
-                          return (
-                            <button
-                              key={mode}
-                              type="button"
-                              onClick={() => setPtBillingForm((current) => ({ ...current, paymentMode: mode }))}
-                              className={`rounded-2xl border px-4 py-4 text-sm font-semibold uppercase tracking-[0.18em] transition ${
-                                selected
-                                  ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
-                                  : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20"
-                              }`}
-                            >
-                              {humanizeLabel(mode)}
-                            </button>
-                          );
-                        })}
-                    </div>
-                    {ptBillingForm.paymentMode === "CARD" ? (
-                      <div className="grid grid-cols-2 gap-2">
-                        {[
-                          { value: "DEBIT_CARD", label: "Debit Card" },
-                          { value: "CREDIT_CARD", label: "Credit Card" },
-                        ].map((option) => {
-                          const selected = renewCardSubtype === option.value;
-                          return (
-                            <button
-                              key={option.value}
-                              type="button"
-                              onClick={() => setRenewCardSubtype(option.value as "DEBIT_CARD" | "CREDIT_CARD")}
-                              className={`rounded-2xl border px-4 py-3 text-sm font-semibold transition ${
-                                selected
-                                  ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
-                                  : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20"
-                              }`}
-                            >
-                              {option.label}
-                            </button>
-                          );
-                        })}
-                      </div>
-                    ) : null}
-                  </div>
-
-                  {Number(ptBillingForm.receivedAmount || 0) < ptInvoiceTotal ? (
-                    <label className="space-y-2">
-                      <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Balance Due Date</span>
-                      <input
-                        type="date"
-                        className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
-                        value={ptBillingForm.balanceDueDate}
-                        onChange={(event) => setPtBillingForm((current) => ({ ...current, balanceDueDate: event.target.value }))}
-                      />
-                    </label>
-                  ) : null}
-
-                  <div className="rounded-2xl border border-white/10 bg-[#0f141d] p-4">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Receipt Preview</p>
-                    <dl className="mt-3 space-y-2 text-sm text-slate-300">
-                      <div className="flex items-center justify-between gap-3"><dt>Receipt Number</dt><dd>Generated after payment</dd></div>
-                      <div className="flex items-center justify-between gap-3"><dt>Receipt Date</dt><dd>{currentPreviewDate}</dd></div>
-                      <div className="flex items-center justify-between gap-3"><dt>Payment Method</dt><dd>{ptBillingForm.paymentMode === "CARD" ? (renewCardSubtype === "DEBIT_CARD" ? "Debit Card" : "Credit Card") : ptBillingForm.paymentMode || "-"}</dd></div>
-                      <div className="flex items-center justify-between gap-3"><dt>Payment Status</dt><dd>{ptPreviewStatus}</dd></div>
-                      <div className="flex items-center justify-between gap-3"><dt>Total Paid</dt><dd>{formatRoundedInr(ptReceivedAmount)}</dd></div>
-                      <div className="flex items-center justify-between gap-3 border-t border-white/10 pt-2 text-base font-semibold text-white"><dt>Balance Due</dt><dd>{formatRoundedInr(ptBalanceAmount)}</dd></div>
-                    </dl>
-                  </div>
-                </div>
-              </div>
+              <BillingWorkflowTemplate
+                infoRows={[
+                  { label: "Invoice Number", value: "Generated on submit" },
+                  { label: "Invoice Date", value: currentPreviewDate },
+                  { label: "PT Package", value: formatPtProductName(selectedPtProduct?.productName || selectedPtVariant?.productCode) },
+                  { label: "Membership Duration", value: formatPlanDuration(selectedPtVariant?.durationMonths || 0, selectedPtVariant?.validityDays || 0) },
+                  { label: "Coach", value: selectedPtCoach?.name || "-" },
+                  { label: "Total Sessions", value: selectedPtSessionCount > 0 ? selectedPtSessionCount : "-" },
+                  { label: "Schedule", value: selectedPtDays.map((day) => formatPtDayLabel(day)).join(", ") || "-" },
+                  { label: "Slot", value: `${formatClockTime(ptForm.slotStartTime)} - ${formatClockTime(ptSlotEndTime)}` },
+                  { label: "Billing Representative", value: billingRepName || clientRepName, fullWidth: true },
+                ]}
+                lineItems={[
+                  {
+                    label: formatPtProductName(selectedPtProduct?.productName || selectedPtVariant?.productCode),
+                    subtitle: `${formatPlanDuration(selectedPtVariant?.durationMonths || 0, selectedPtVariant?.validityDays || 0)} • ${selectedPtSessionCount || 0} sessions`,
+                    baseAmount: formatRoundedInr(ptCommercial.baseAmount),
+                    sellingPrice: formatRoundedInr(ptCommercial.sellingPrice),
+                    discount: formatRoundedInr(ptCommercial.discountAmount),
+                  },
+                ]}
+                totalLabel="Total PT Value"
+                totalBaseAmount={formatRoundedInr(ptCommercial.baseAmount)}
+                totalSellingPrice={formatRoundedInr(ptCommercial.sellingPrice)}
+                totalDiscount={formatRoundedInr(ptCommercial.discountAmount)}
+                finalPayable={formatRoundedInr(ptInvoiceTotal)}
+                taxRows={[
+                  { label: "CGST", value: formatRoundedInr(ptHalfTaxAmount) },
+                  { label: "SGST", value: formatRoundedInr(ptHalfTaxAmount) },
+                ]}
+                receivedAmount={ptBillingForm.receivedAmount}
+                onReceivedAmountChange={(value) => setPtBillingForm((current) => ({ ...current, receivedAmount: sanitizeIntegerString(value) }))}
+                paymentMode={ptBillingForm.paymentMode}
+                paymentModeOptions={String(billingSettings?.paymentModesEnabled || "UPI,CARD,CASH")
+                  .split(",")
+                  .map((mode) => mode.trim())
+                  .filter((mode) => ["UPI", "CARD", "CASH"].includes(mode.toUpperCase()))
+                  .map((mode) => ({ value: mode, label: humanizeLabel(mode) }))}
+                onPaymentModeChange={(value) => setPtBillingForm((current) => ({ ...current, paymentMode: value }))}
+                secondaryModeLabel={ptBillingForm.paymentMode === "CARD" ? "Card Type" : ptBillingForm.paymentMode === "UPI" ? "UPI App" : undefined}
+                secondaryModeValue={ptBillingForm.paymentMode === "CARD" ? ptCardSubtype : ptUpiVendor}
+                secondaryModeOptions={
+                  ptBillingForm.paymentMode === "CARD"
+                    ? PAYMENT_CARD_OPTIONS
+                    : ptBillingForm.paymentMode === "UPI"
+                      ? PAYMENT_UPI_OPTIONS
+                    : []
+                }
+                onSecondaryModeChange={(value) => {
+                  if (ptBillingForm.paymentMode === "CARD") {
+                    setPtCardSubtype(value as "DEBIT_CARD" | "CREDIT_CARD");
+                    return;
+                  }
+                  setPtUpiVendor(value as "GOOGLE_PAY" | "PHONEPE" | "PAYTM" | "OTHER");
+                }}
+                showBalanceDueDate={Number(ptBillingForm.receivedAmount || 0) < ptInvoiceTotal}
+                balanceDueDate={ptBillingForm.balanceDueDate}
+                onBalanceDueDateChange={(value) => setPtBillingForm((current) => ({ ...current, balanceDueDate: value }))}
+                receiptRows={[
+                  { label: "Receipt Number", value: "Generated after payment" },
+                  { label: "Receipt Date", value: currentPreviewDate },
+                  { label: "Payment Method", value: resolveBillingPaymentModeLabel(ptBillingForm.paymentMode, ptCardSubtype, ptUpiVendor) },
+                  { label: "Payment Status", value: ptPreviewStatus },
+                  { label: "Total Paid", value: formatRoundedInr(ptReceivedAmount) },
+                  { label: "Balance Due", value: formatRoundedInr(ptBalanceAmount), fullWidth: true },
+                ]}
+              />
             </div>
           </Modal>
 

@@ -149,6 +149,15 @@ function mapTodayAttendance(payload: unknown[]): AttendanceRow[] {
   });
 }
 
+/** Format raw enum values like "SALES_MANAGER" → "Sales Manager", "ASSIGNED_ONLY" → "Assigned Only" */
+function formatEnum(val: string): string {
+  if (!val || val === "-") return val;
+  return val
+    .split("_")
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+    .join(" ");
+}
+
 function toOptionalString(value: string): string | undefined {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
@@ -183,6 +192,16 @@ export function UserManagementPage({
 }: UserManagementPageProps) {
   const router = useRouter();
   const { token, user, accessMetadata } = useAuth();
+  const { branches } = useBranch();
+
+  /** Resolve numeric branch ID to branch name */
+  const branchNameMap = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const b of branches) {
+      if (b.id) map.set(String(b.id), b.name || String(b.id));
+    }
+    return map;
+  }, [branches]);
 
   const canView = hasCapability(user, accessMetadata, requiredViewCapabilities, true);
   const canUpdate = hasCapability(user, accessMetadata, requiredUpdateCapabilities, true);
@@ -636,10 +655,10 @@ export function UserManagementPage({
                       <p className="text-xs text-slate-400">{item.email || "-"}</p>
                     </td>
                     <td className="px-4 py-3">{item.mobile}</td>
-                    <td className="px-4 py-3">{item.designation || "-"}</td>
-                    <td className="px-4 py-3">{item.employmentType || "-"}</td>
-                    <td className="px-4 py-3">{item.dataScope || "-"}</td>
-                    <td className="px-4 py-3">{item.defaultBranchId || "-"}</td>
+                    <td className="px-4 py-3">{item.designation ? formatEnum(item.designation) : "-"}</td>
+                    <td className="px-4 py-3">{item.employmentType ? formatEnum(item.employmentType) : "-"}</td>
+                    <td className="px-4 py-3">{item.dataScope ? formatEnum(item.dataScope) : "-"}</td>
+                    <td className="px-4 py-3">{item.defaultBranchId ? (branchNameMap.get(String(item.defaultBranchId)) || String(item.defaultBranchId)) : "-"}</td>
                     <td className="px-4 py-3">
                       <span
                         className={`rounded-full border px-2 py-1 text-xs font-semibold ${
@@ -847,7 +866,7 @@ export function UserManagementPage({
                   <option value="">-- Select --</option>
                   {users.map((u) => (
                     <option key={u.id} value={u.id}>
-                      {u.name} ({u.designation})
+                      {u.name} ({u.designation ? formatEnum(u.designation) : ""})
                     </option>
                   ))}
                 </select>

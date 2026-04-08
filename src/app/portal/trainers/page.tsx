@@ -37,12 +37,12 @@ export default function TrainersPage() {
       addHref="/portal/trainers/add"
       addLabel="Add Trainer"
       designationOptions={[
-        { label: "PT_COACH", value: "PT_COACH" },
-        { label: "GENERAL_TRAINER", value: "GENERAL_TRAINER" },
-        { label: "YOGA_INSTRUCTOR", value: "YOGA_INSTRUCTOR" },
-        { label: "ZUMBA_INSTRUCTOR", value: "ZUMBA_INSTRUCTOR" },
-        { label: "BOXING_INSTRUCTOR", value: "BOXING_INSTRUCTOR" },
-        { label: "FREELANCE_TRAINER", value: "FREELANCE_TRAINER" },
+        { label: "PT Coach", value: "PT_COACH" },
+        { label: "General Trainer", value: "GENERAL_TRAINER" },
+        { label: "Yoga Instructor", value: "YOGA_INSTRUCTOR" },
+        { label: "Zumba Instructor", value: "ZUMBA_INSTRUCTOR" },
+        { label: "Boxing Instructor", value: "BOXING_INSTRUCTOR" },
+        { label: "Freelance Trainer", value: "FREELANCE_TRAINER" },
       ]}
       requiredViewCapabilities={TRAINER_VIEW_CAPABILITIES}
       requiredUpdateCapabilities={TRAINER_UPDATE_CAPABILITIES}

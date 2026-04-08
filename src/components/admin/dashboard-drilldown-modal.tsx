@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { X } from "lucide-react";
 import { ApiError } from "@/lib/api/http-client";
@@ -166,6 +166,7 @@ export function DashboardDrilldownModal({
   onClose,
 }: DashboardDrilldownModalProps) {
   const router = useRouter();
+  const overlayRef = useRef<HTMLDivElement>(null);
   const [search, setSearch] = useState("");
   const [debouncedSearch, setDebouncedSearch] = useState("");
   const [page, setPage] = useState(0);
@@ -238,6 +239,27 @@ export function DashboardDrilldownModal({
     setPage(0);
   }, [debouncedSearch, metricKey]);
 
+  useEffect(() => {
+    if (!open) {
+      return;
+    }
+
+    const handleKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        onClose();
+      }
+    };
+
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    document.addEventListener("keydown", handleKey);
+
+    return () => {
+      document.body.style.overflow = previousOverflow;
+      document.removeEventListener("keydown", handleKey);
+    };
+  }, [onClose, open]);
+
   const headers = useMemo(() => tableHeaders(data.entityType), [data.entityType]);
 
   const rows = useMemo(() => {
@@ -261,12 +283,20 @@ export function DashboardDrilldownModal({
   }
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-4 py-6">
-      <div className="max-h-[90vh] w-full max-w-7xl overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-slate-200 px-6 py-4">
+    <div
+      ref={overlayRef}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-slate-950/50 px-4 py-6"
+      onClick={(event) => {
+        if (event.target === overlayRef.current) {
+          onClose();
+        }
+      }}
+    >
+      <div className="flex max-h-[90vh] w-full max-w-7xl flex-col overflow-hidden rounded-3xl border border-slate-200 bg-white shadow-2xl">
+        <div className="flex shrink-0 items-start justify-between gap-4 border-b border-slate-200 px-6 py-4">
           <div>
             <h2 className="text-xl font-bold text-[#282828]">{title}</h2>
-            <p className="text-sm text-slate-500">{data.entityType} drilldown</p>
+            <p className="text-sm text-slate-500">{Math.max(data.totalElements || 0, rows.length)} records</p>
           </div>
           <button
             type="button"
@@ -278,7 +308,7 @@ export function DashboardDrilldownModal({
           </button>
         </div>
 
-        <div className="space-y-4 overflow-y-auto px-6 py-5">
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-5">
           <input
             className="h-10 w-full rounded-xl border border-slate-200 bg-slate-50 px-3 text-sm text-slate-700 outline-none ring-red-500 transition focus:bg-white focus:ring-1"
             placeholder="Search records..."

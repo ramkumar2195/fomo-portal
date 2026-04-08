@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AdminPageFrame, SurfaceCard } from "@/components/admin/page-frame";
+import { WeeklyCalendar, WeeklyCalendarDay, WeeklyCalendarEvent } from "@/components/common/weekly-calendar";
 import { Modal } from "@/components/common/modal";
 import { FormField } from "@/components/common/form-field";
 import { ToastBanner } from "@/components/common/toast-banner";
@@ -55,6 +56,56 @@ const EMPTY_FORM: ScheduleFormData = {
   capacity: "20",
   notes: "",
 };
+
+const WEEK_DAYS: WeeklyCalendarDay[] = [
+  { key: "MONDAY", label: "Mon" },
+  { key: "TUESDAY", label: "Tue" },
+  { key: "WEDNESDAY", label: "Wed" },
+  { key: "THURSDAY", label: "Thu" },
+  { key: "FRIDAY", label: "Fri" },
+  { key: "SATURDAY", label: "Sat" },
+  { key: "SUNDAY", label: "Sun" },
+];
+
+function parseCalendarKey(value?: string): { dayKey: string; startTime: string; endTime: string } | null {
+  if (!value) {
+    return null;
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return null;
+  }
+  const dayIndex = parsed.getDay();
+  const dayKey = WEEK_DAYS[dayIndex === 0 ? 6 : dayIndex - 1]?.key;
+  if (!dayKey) {
+    return null;
+  }
+  const startTime = parsed.toTimeString().slice(0, 5);
+  return { dayKey, startTime, endTime: startTime };
+}
+
+function formatCalendarWindow(start?: string, end?: string): string {
+  if (!start || !end) {
+    return "Unscheduled";
+  }
+  const startDate = new Date(start);
+  const endDate = new Date(end);
+  if (Number.isNaN(startDate.getTime()) || Number.isNaN(endDate.getTime())) {
+    return `${start || "-"} to ${end || "-"}`;
+  }
+  return `${startDate.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })} to ${endDate.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit" })}`;
+}
+
+function formatCalendarDate(value?: string): string {
+  if (!value) {
+    return "Not scheduled";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value;
+  }
+  return parsed.toLocaleDateString("en-IN", { weekday: "short", day: "2-digit", month: "short" });
+}
 
 export default function ClassesPage() {
   const { token } = useAuth();
@@ -149,6 +200,48 @@ export default function ClassesPage() {
         s.trainerName.toLowerCase().includes(normalized)
     );
   }, [schedules, search]);
+
+  const scheduleCards = useMemo(() => {
+    const grouped = new Map<string, { count: number; trainers: Set<string>; active: number }>();
+    filteredSchedules.forEach((item) => {
+      const bucket = grouped.get(item.className) ?? { count: 0, trainers: new Set<string>(), active: 0 };
+      bucket.count += 1;
+      if (item.trainerName) {
+        bucket.trainers.add(item.trainerName);
+      }
+      if (item.active !== false) {
+        bucket.active += 1;
+      }
+      grouped.set(item.className, bucket);
+    });
+    return Array.from(grouped.entries()).map(([className, detail]) => ({
+      className,
+      count: detail.count,
+      active: detail.active,
+      trainers: Array.from(detail.trainers),
+    }));
+  }, [filteredSchedules]);
+
+  const calendarEvents = useMemo<WeeklyCalendarEvent[]>(() => {
+    const events: WeeklyCalendarEvent[] = [];
+    filteredSchedules.forEach((item) => {
+      const slot = parseCalendarKey(item.startTime);
+      if (!slot) {
+        return;
+      }
+      events.push({
+        id: item.id,
+        dayKey: slot.dayKey,
+        startTime: slot.startTime,
+        endTime: new Date(item.endTime || item.startTime).toTimeString().slice(0, 5),
+        title: item.className,
+        subtitle: item.trainerName || "Coach pending",
+        meta: `${item.occupancy}/${item.capacity} occupied`,
+        tone: item.active === false ? "rose" : "violet",
+      });
+    });
+    return events;
+  }, [filteredSchedules]);
 
   const openCreate = () => {
     setEditingId(null);
@@ -269,6 +362,25 @@ export default function ClassesPage() {
       {toast && <ToastBanner kind={toast.kind} message={toast.message} onClose={() => setToast(null)} />}
       {error && <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</div>}
 
+      <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
+        {scheduleCards.map((item) => (
+          <SurfaceCard key={item.className} title={item.className}>
+            <div className="space-y-2">
+              <p className="text-3xl font-bold text-slate-800">{item.count}</p>
+              <p className="text-sm text-slate-500">{item.active} active slots</p>
+              <p className="text-xs text-slate-500">
+                {item.trainers.length > 0 ? item.trainers.join(", ") : "Coach assignment pending"}
+              </p>
+            </div>
+          </SurfaceCard>
+        ))}
+      </section>
+
+      <SurfaceCard title="Weekly Calendar">
+        <div className="mb-4 text-sm text-slate-500">Outlook-style weekly view of active classes, coach duties, and occupied windows.</div>
+        <WeeklyCalendar days={WEEK_DAYS} events={calendarEvents} emptyLabel="No class sessions are scheduled for the selected filters." />
+      </SurfaceCard>
+
       <SurfaceCard title="Class Schedule List">
         <div className="overflow-auto">
           <table className="min-w-full text-sm">
@@ -288,10 +400,13 @@ export default function ClassesPage() {
               {filteredSchedules.map((item) => (
                 <tr key={item.id}>
                   <td className="px-3 py-2 font-semibold text-slate-800">{item.className}</td>
-                  <td className="px-3 py-2 text-slate-600">{item.classType || "-"}</td>
+                  <td className="px-3 py-2 text-slate-600">{item.classType || "Not set"}</td>
                   <td className="px-3 py-2 text-slate-700">{item.trainerName || "-"}</td>
-                  <td className="px-3 py-2 text-slate-700">{item.startTime || "-"}</td>
-                  <td className="px-3 py-2 text-slate-700">{item.endTime || "-"}</td>
+                  <td className="px-3 py-2 text-slate-700">
+                    <div>{formatCalendarDate(item.startTime)}</div>
+                    <div className="text-xs text-slate-500">{formatCalendarWindow(item.startTime, item.endTime)}</div>
+                  </td>
+                  <td className="px-3 py-2 text-slate-700">{formatCalendarDate(item.endTime)}</td>
                   <td className="px-3 py-2 text-slate-700">{item.occupancy}</td>
                   <td className="px-3 py-2 text-slate-700">{item.capacity}</td>
                   <td className="px-3 py-2">

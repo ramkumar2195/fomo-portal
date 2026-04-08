@@ -36,11 +36,11 @@ export default function StaffPage() {
       addLabel="Add Staff"
       profileRoute="/portal/staff"
       designationOptions={[
-        { label: "GYM_MANAGER", value: "GYM_MANAGER" },
-        { label: "SALES_MANAGER", value: "SALES_MANAGER" },
-        { label: "SALES_EXECUTIVE", value: "SALES_EXECUTIVE" },
-        { label: "FRONT_DESK_EXECUTIVE", value: "FRONT_DESK_EXECUTIVE" },
-        { label: "FITNESS_MANAGER", value: "FITNESS_MANAGER" },
+        { label: "Gym Manager", value: "GYM_MANAGER" },
+        { label: "Sales Manager", value: "SALES_MANAGER" },
+        { label: "Sales Executive", value: "SALES_EXECUTIVE" },
+        { label: "Front Desk Executive", value: "FRONT_DESK_EXECUTIVE" },
+        { label: "Fitness Manager", value: "FITNESS_MANAGER" },
       ]}
       requiredViewCapabilities={STAFF_VIEW_CAPABILITIES}
       requiredUpdateCapabilities={STAFF_UPDATE_CAPABILITIES}

@@ -162,8 +162,8 @@ export default function RenewalsPage() {
                     <td className="px-6 py-4 text-sm text-slate-300">{formatDateTime(item.endDate)}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">{item.daysRemaining}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">
-                      {item.subscriptionStatus}
-                      {item.paymentConfirmed ? " • Paid" : " • Pending"}
+                      {item.subscriptionStatus?.toUpperCase() === "PAUSED" ? "Frozen" : item.subscriptionStatus}
+                      {item.paymentConfirmed ? " · Paid" : " · Pending"}
                     </td>
                     <td className="px-6 py-4">
                       <Link

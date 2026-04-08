@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useParams } from "next/navigation";
 import { AdminPageFrame, SurfaceCard, TabStrip } from "@/components/admin/page-frame";
+import { WeeklyCalendar, WeeklyCalendarDay, WeeklyCalendarEvent } from "@/components/common/weekly-calendar";
 import { useAuth } from "@/contexts/auth-context";
 import { Modal } from "@/components/common/modal";
 import { ApiError } from "@/lib/api/http-client";
@@ -109,6 +110,29 @@ function entryAccent(entryType: string): string {
   }
 }
 
+function toDayKey(value?: string): string {
+  if (!value) {
+    return "";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return value.slice(0, 10);
+  }
+  return parsed.toISOString().slice(0, 10);
+}
+
+function toTimeKey(value?: string): string {
+  if (!value) {
+    return "";
+  }
+  const parsed = new Date(value);
+  if (!Number.isNaN(parsed.getTime())) {
+    return parsed.toTimeString().slice(0, 5);
+  }
+  const match = value.match(/(\d{2}:\d{2})/);
+  return match ? match[1] : value;
+}
+
 export default function CoachProfilePage() {
   const params = useParams<{ coachId: string }>();
   const coachId = params.coachId;
@@ -197,6 +221,36 @@ export default function CoachProfilePage() {
       grouped.set(key, bucket);
     }
     return Array.from(grouped.entries()).sort(([left], [right]) => left.localeCompare(right));
+  }, [schedule]);
+
+  const calendarDays = useMemo<WeeklyCalendarDay[]>(() => {
+    const start = new Date(`${rangeStart}T00:00:00`);
+    const end = new Date(`${rangeEnd}T00:00:00`);
+    if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end < start) {
+      return [];
+    }
+    const days: WeeklyCalendarDay[] = [];
+    const cursor = new Date(start);
+    while (cursor <= end && days.length < 7) {
+      const key = cursor.toISOString().slice(0, 10);
+      const label = cursor.toLocaleDateString("en-IN", { weekday: "short", day: "2-digit", month: "short" });
+      days.push({ key, label });
+      cursor.setDate(cursor.getDate() + 1);
+    }
+    return days;
+  }, [rangeEnd, rangeStart]);
+
+  const calendarEvents = useMemo<WeeklyCalendarEvent[]>(() => {
+    return (schedule?.entries ?? []).map((entry) => ({
+      id: `${entry.entryType}-${entry.referenceId ?? entry.startAt}`,
+      dayKey: toDayKey(entry.startAt),
+      startTime: toTimeKey(entry.startAt),
+      endTime: toTimeKey(entry.endAt),
+      title: entry.label,
+      subtitle: entry.entryType.replaceAll("_", " "),
+      meta: entry.memberId ? `Member #${entry.memberId}` : entry.status || entry.notes || "",
+      tone: entry.entryType === "CLASS_DUTY" ? "violet" : entry.entryType === "LEAVE" ? "rose" : "sky",
+    }));
   }, [schedule]);
 
   const submitAvailability = async () => {
@@ -336,12 +390,10 @@ export default function CoachProfilePage() {
         </SurfaceCard>
 
         <SurfaceCard title="Weekly Schedule">
-          {entriesByDay.length === 0 ? (
-            <div className="rounded-xl border border-dashed border-slate-200 bg-slate-50 px-4 py-6 text-sm text-slate-500">
-              No PT sessions, class duties, or approved leave in this date range.
-            </div>
-          ) : (
-            <div className="space-y-4">
+          <div className="mb-4 text-sm text-slate-500">Calendar view of PT sessions, class duties, and approved leave in the selected range.</div>
+          <WeeklyCalendar days={calendarDays} events={calendarEvents} emptyLabel="No PT sessions, class duties, or approved leave in this date range." />
+          {entriesByDay.length > 0 ? (
+            <div className="mt-4 space-y-4">
               {entriesByDay.map(([day, entries]) => (
                 <div key={day} className="space-y-3 rounded-2xl border border-slate-200 p-4">
                   <div className="flex items-center justify-between">
@@ -375,7 +427,7 @@ export default function CoachProfilePage() {
                 </div>
               ))}
             </div>
-          )}
+          ) : null}
         </SurfaceCard>
       </section>
 

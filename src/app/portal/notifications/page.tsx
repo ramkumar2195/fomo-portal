@@ -289,7 +289,7 @@ export default function NotificationsPage() {
             }
           >
             <option value="">All channels</option>
-            <option value="IN_APP">IN_APP</option>
+            <option value="IN_APP">In-App Notification</option>
             <option value="SMS">SMS</option>
             <option value="EMAIL">EMAIL</option>
             <option value="WHATSAPP">WHATSAPP</option>
@@ -321,7 +321,7 @@ export default function NotificationsPage() {
                 setCreateForm((prev) => ({ ...prev, channel: event.target.value as NotificationChannel }))
               }
             >
-              <option value="IN_APP">IN_APP</option>
+              <option value="IN_APP">In-App Notification</option>
               <option value="SMS">SMS</option>
               <option value="EMAIL">EMAIL</option>
               <option value="WHATSAPP">WHATSAPP</option>
@@ -360,18 +360,14 @@ export default function NotificationsPage() {
               value={createForm.scheduledAt}
               onChange={(event) => setCreateForm((prev) => ({ ...prev, scheduledAt: event.target.value }))}
             />
-            <input
-              className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              placeholder='Metadata JSON, e.g. {"source":"staff-portal"}'
-              value={createForm.metadataJson}
-              onChange={(event) => setCreateForm((prev) => ({ ...prev, metadataJson: event.target.value }))}
-            />
+            {/* Metadata field hidden from staff UI — auto-populated */}
+            <input type="hidden" value={createForm.metadataJson} />
           </div>
 
           <button
             type="submit"
             disabled={savingCampaign}
-            className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-400"
+            className="rounded-xl bg-[#c42924] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#a81f1c] disabled:opacity-50"
           >
             {savingCampaign ? "Creating..." : "Create Campaign"}
           </button>
@@ -414,7 +410,7 @@ export default function NotificationsPage() {
                   >
                     <td className="px-2 py-3 font-medium text-slate-900">#{campaign.campaignId}</td>
                     <td className="px-2 py-3">{campaign.name}</td>
-                    <td className="px-2 py-3">{campaign.channel}</td>
+                    <td className="px-2 py-3">{campaign.channel === "IN_APP" ? "In-App" : campaign.channel}</td>
                     <td className="px-2 py-3">{campaign.status || "-"}</td>
                     <td className="px-2 py-3">
                       <div className="flex gap-2">
@@ -456,7 +452,7 @@ export default function NotificationsPage() {
                 <span className="font-semibold">Title:</span> {selectedCampaign.title}
               </p>
               <p>
-                <span className="font-semibold">Channel:</span> {selectedCampaign.channel}
+                <span className="font-semibold">Channel:</span> {selectedCampaign.channel === "IN_APP" ? "In-App Notification" : selectedCampaign.channel}
               </p>
               <p>
                 <span className="font-semibold">Scheduled:</span> {formatDateTime(selectedCampaign.scheduledAt || undefined)}
@@ -523,12 +519,8 @@ export default function NotificationsPage() {
               value={inAppForm.deepLink}
               onChange={(event) => setInAppForm((prev) => ({ ...prev, deepLink: event.target.value }))}
             />
-            <input
-              className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
-              placeholder="Metadata JSON"
-              value={inAppForm.metadataJson}
-              onChange={(event) => setInAppForm((prev) => ({ ...prev, metadataJson: event.target.value }))}
-            />
+            {/* Metadata field hidden from staff UI — auto-populated */}
+            <input type="hidden" value={inAppForm.metadataJson} />
             <input
               className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
               type="datetime-local"
@@ -540,7 +532,7 @@ export default function NotificationsPage() {
           <button
             type="submit"
             disabled={sendingInApp}
-            className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-400"
+            className="rounded-xl bg-[#c42924] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#a81f1c] disabled:opacity-50"
           >
             {sendingInApp ? "Sending..." : "Send In-App Notification"}
           </button>

@@ -7,6 +7,7 @@ interface ModalProps {
   size?: "sm" | "md" | "lg" | "xl";
   children: ReactNode;
   footer?: ReactNode;
+  closeOnOverlayClick?: boolean;
 }
 
 const sizeMap: Record<NonNullable<ModalProps["size"]>, string> = {
@@ -16,7 +17,15 @@ const sizeMap: Record<NonNullable<ModalProps["size"]>, string> = {
   xl: "max-w-4xl",
 };
 
-export function Modal({ open, onClose, title, size = "md", children, footer }: ModalProps) {
+export function Modal({
+  open,
+  onClose,
+  title,
+  size = "md",
+  children,
+  footer,
+  closeOnOverlayClick = true,
+}: ModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -40,7 +49,7 @@ export function Modal({ open, onClose, title, size = "md", children, footer }: M
       ref={overlayRef}
       className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 animate-in fade-in duration-150"
       onClick={(e) => {
-        if (e.target === overlayRef.current) onClose();
+        if (closeOnOverlayClick && e.target === overlayRef.current) onClose();
       }}
     >
       <div className={`flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden ${sizeMap[size]} rounded-2xl bg-white shadow-xl`}>

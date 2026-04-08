@@ -214,8 +214,10 @@ function mapClassSchedule(payload: unknown, index: number): ClassScheduleItem {
   return {
     id: toString(record, ["id", "scheduleId"]) || `schedule-${index}`,
     className: toString(record, ["className", "name", "title"]) || "Class",
-    startTime: toString(record, ["startTime", "startsAt", "fromTime"]),
-    endTime: toString(record, ["endTime", "endsAt", "toTime"]),
+    classType: toString(record, ["classType", "type", "scheduleType"]) || undefined,
+    branchCode: toString(record, ["branchCode", "branch"]) || undefined,
+    startTime: toString(record, ["startTime", "startsAt", "fromTime", "startAt"]),
+    endTime: toString(record, ["endTime", "endsAt", "toTime", "endAt"]),
     trainerName: toString(record, ["trainerName", "coachName", "assignedTrainer"]) || "-",
     occupancy: toNumber(record, ["occupancy", "bookedCount", "currentOccupancy"]),
     capacity: toNumber(record, ["capacity", "maxCapacity", "slotCount"]),
@@ -346,6 +348,18 @@ export const trainingService = {
       }
       throw error;
     }
+  },
+
+  async updateAssignmentSessionCount(token: string, assignmentId: string, totalSessions: number): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/assignments/${assignmentId}/session-count`,
+      token,
+      method: "PATCH",
+      body: { totalSessions },
+    });
+
+    return unwrapData<unknown>(response);
   },
 
   async getPtSessionsByAssignment(token: string, assignmentId: string): Promise<unknown[]> {
