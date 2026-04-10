@@ -4,7 +4,7 @@ interface ModalProps {
   open: boolean;
   onClose: () => void;
   title: string;
-  size?: "sm" | "md" | "lg" | "xl";
+  size?: "sm" | "md" | "lg" | "xl" | "xxl";
   children: ReactNode;
   footer?: ReactNode;
   closeOnOverlayClick?: boolean;
@@ -15,6 +15,7 @@ const sizeMap: Record<NonNullable<ModalProps["size"]>, string> = {
   md: "max-w-lg",
   lg: "max-w-2xl",
   xl: "max-w-4xl",
+  xxl: "max-w-6xl",
 };
 
 export function Modal({

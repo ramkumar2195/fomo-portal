@@ -262,6 +262,7 @@ export default function CatalogPage() {
   const [form, setForm] = useState<VariantFormState>(EMPTY_FORM);
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState<{ kind: "success" | "error" | "info"; message: string } | null>(null);
+  const [variantPendingDeactivate, setVariantPendingDeactivate] = useState<CatalogVariant | null>(null);
 
   const loadCatalog = useCallback(async () => {
     if (!token) {
@@ -409,17 +410,19 @@ export default function CatalogPage() {
   };
 
   const handleDeactivate = async (variant: CatalogVariant) => {
-    if (!token) {
-      return;
-    }
-    if (!window.confirm(`Deactivate ${variant.variantName}?`)) {
+    setVariantPendingDeactivate(variant);
+  };
+
+  const confirmDeactivate = async () => {
+    if (!token || !variantPendingDeactivate) {
       return;
     }
 
     try {
-      await subscriptionService.deactivateCatalogVariant(token, variant.variantId);
-      setVariants((current) => current.filter((item) => item.variantId !== variant.variantId));
+      await subscriptionService.deactivateCatalogVariant(token, variantPendingDeactivate.variantId);
+      setVariants((current) => current.filter((item) => item.variantId !== variantPendingDeactivate.variantId));
       setToast({ kind: "success", message: "Catalog variant deactivated." });
+      setVariantPendingDeactivate(null);
     } catch (deactivateError) {
       setToast({
         kind: "error",
@@ -487,6 +490,38 @@ export default function CatalogPage() {
   return (
     <>
       {toast ? <ToastBanner kind={toast.kind} message={toast.message} onClose={() => setToast(null)} /> : null}
+      <Modal
+        open={Boolean(variantPendingDeactivate)}
+        onClose={() => setVariantPendingDeactivate(null)}
+        title="Deactivate Variant"
+        size="md"
+      >
+        <div className="space-y-5">
+          <p className="text-sm leading-6 text-slate-600">
+            {variantPendingDeactivate
+              ? `Deactivate ${variantPendingDeactivate.variantName}? This removes it from future sales while keeping existing history intact.`
+              : ""}
+          </p>
+          <div className="flex justify-end gap-3">
+            <button
+              type="button"
+              onClick={() => setVariantPendingDeactivate(null)}
+              className="rounded-xl border border-slate-200 px-4 py-2 text-sm font-semibold text-slate-700"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                void confirmDeactivate();
+              }}
+              className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white"
+            >
+              Deactivate
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       <AdminPageFrame
         title="Packages & Plans"

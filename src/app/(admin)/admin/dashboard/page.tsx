@@ -180,14 +180,14 @@ function HeroStatCard({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-200">{card.title}</p>
-          <p className="mt-3 text-4xl font-bold tracking-tight text-white">{card.value}</p>
-          <p className="mt-2 text-sm text-slate-300">{card.subtitle}</p>
+          <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-200 break-words">{card.title}</p>
+          <p className="mt-3 break-words text-3xl font-bold leading-tight tracking-tight text-white xl:text-4xl">{card.value}</p>
+          <p className="mt-2 break-words text-sm leading-6 text-slate-300">{card.subtitle}</p>
         </div>
         <div className={`inline-flex shrink-0 rounded-2xl border border-white/10 p-3 shadow-sm [&_svg]:h-5 [&_svg]:w-5 ${card.iconClass}`}>{card.icon}</div>
       </div>
       {badge ? (
-        <span className="mt-4 inline-flex rounded-full bg-[#E8F2D7] px-3 py-1 text-xs font-semibold text-[#5B7F2B]">{badge}</span>
+        <span className="mt-4 inline-flex max-w-full break-words rounded-full bg-[#E8F2D7] px-3 py-1 text-xs font-semibold text-[#5B7F2B]">{badge}</span>
       ) : null}
     </button>
   );
@@ -241,9 +241,9 @@ function MetricValueCard({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-semibold text-slate-100">{card.title}</p>
-          <p className="mt-4 text-4xl font-bold tracking-tight text-white">{card.value}</p>
-          <p className="mt-2 text-sm text-slate-400">{card.subtitle}</p>
+          <p className="break-words text-sm font-semibold text-slate-100">{card.title}</p>
+          <p className="mt-4 break-words text-3xl font-bold leading-tight tracking-tight text-white xl:text-4xl">{card.value}</p>
+          <p className="mt-2 break-words text-sm leading-6 text-slate-400">{card.subtitle}</p>
         </div>
         <div className={`inline-flex shrink-0 rounded-2xl border border-white/10 p-3 shadow-sm [&_svg]:h-5 [&_svg]:w-5 ${card.iconClass}`}>{card.icon}</div>
       </div>
@@ -269,12 +269,12 @@ function CompactMetricCard({
     >
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0">
-          <p className="text-sm font-medium text-slate-200">{card.title}</p>
-          <p className="mt-2 text-3xl font-bold tracking-tight text-white">{card.value}</p>
+          <p className="break-words text-sm font-medium text-slate-200">{card.title}</p>
+          <p className="mt-2 break-words text-2xl font-bold leading-tight tracking-tight text-white xl:text-3xl">{card.value}</p>
         </div>
         <div className={`inline-flex shrink-0 rounded-2xl border border-white/10 p-2.5 shadow-sm [&_svg]:h-4 [&_svg]:w-4 ${card.iconClass}`}>{card.icon}</div>
       </div>
-      {badge ? <div className="mt-3">{badge}</div> : <p className="mt-2 text-xs text-slate-400">{card.subtitle}</p>}
+      {badge ? <div className="mt-3">{badge}</div> : <p className="mt-2 break-words text-xs leading-5 text-slate-400">{card.subtitle}</p>}
     </button>
   );
 }
@@ -303,9 +303,9 @@ function SnapshotStat({
 
   return (
     <div className={`rounded-2xl border p-4 ${toneClass}`}>
-      <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">{label}</p>
-      <p className="mt-3 text-3xl font-bold tracking-tight text-white">{value}</p>
-      <p className="mt-2 text-sm text-slate-300">{subtitle}</p>
+      <p className="break-words text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">{label}</p>
+      <p className="mt-3 break-words text-2xl font-bold leading-tight tracking-tight text-white xl:text-3xl">{value}</p>
+      <p className="mt-2 break-words text-sm leading-6 text-slate-300">{subtitle}</p>
     </div>
   );
 }

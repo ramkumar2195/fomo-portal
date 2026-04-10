@@ -1542,6 +1542,9 @@ function productTierRank(family: MembershipFamily, productCode: string): number 
       return index >= 0 ? index + 1 : 0;
     }
     case "FLEX": {
+      if (normalized.startsWith("FOMO_")) {
+        return 100 + productTierRank("FLAGSHIP", normalized);
+      }
       const order = ["FLEX_LITE", "FLEX_PRO", "FLEX_ELITE"];
       const index = order.indexOf(normalized);
       return index >= 0 ? index + 1 : 0;
@@ -1643,9 +1646,24 @@ function buildDisplayedMembershipCards(
   if (!primary) {
     return current;
   }
+  const effectivePrimary = current
+    .filter((entry) => entry.family === primary.family && entry.family !== "PT")
+    .sort((left, right) => {
+      const leftAnchor = left.startDate || left.expiryDate || "";
+      const rightAnchor = right.startDate || right.expiryDate || "";
+      return rightAnchor.localeCompare(leftAnchor);
+    })[0] || primary;
   return [
-    primary,
-    ...current.filter((entry) => entry.subscriptionId !== primary.subscriptionId),
+    effectivePrimary,
+    ...current.filter((entry) => {
+      if (entry.subscriptionId === effectivePrimary.subscriptionId) {
+        return false;
+      }
+      if (entry.family === "PT") {
+        return true;
+      }
+      return entry.family !== effectivePrimary.family;
+    }),
   ];
 }
 
@@ -1695,6 +1713,9 @@ export default function MemberProfilePage() {
   const [openMembershipMenuId, setOpenMembershipMenuId] = useState<string | null>(null);
   const [ptFocusSection, setPtFocusSection] = useState<"session-register" | null>(null);
   const [supportLoading, setSupportLoading] = useState(false);
+  const [activeFreezeInfo, setActiveFreezeInfo] = useState<Record<string, unknown>>({});
+  const [resolvedPtCoachName, setResolvedPtCoachName] = useState("");
+  const [sessionActionBusyId, setSessionActionBusyId] = useState<string | null>(null);
   const [branches, setBranches] = useState<BranchResponse[]>([]);
   const [coaches, setCoaches] = useState<UserDirectoryItem[]>([]);
   const [staffMembers, setStaffMembers] = useState<UserDirectoryItem[]>([]);
@@ -1966,7 +1987,7 @@ export default function MemberProfilePage() {
     (async () => {
       setSupportLoading(true);
       try {
-        const [branchPage, coachRows, staffRows, memberRows, products, variants, billing, membershipPolicy, inquiryPage, lifecycleAudit] = await Promise.all([
+        const [branchPage, coachRows, staffRows, memberRows, products, variants, billing, membershipPolicy, inquiryPage, lifecycleAudit, activeFreeze] = await Promise.all([
           branchService.listBranches(token, { page: 0, size: 100 }),
           usersService.searchUsers(token, { role: "COACH", active: true }),
           usersService.searchUsers(token, { role: "STAFF", active: true }),
@@ -1977,6 +1998,7 @@ export default function MemberProfilePage() {
           subscriptionService.getMembershipPolicySettings(token),
           subscriptionService.searchInquiriesPaged(token, {}, 0, 200),
           subscriptionService.getMemberLifecycleAudit(token, memberId).catch(() => []),
+          engagementService.getActiveFreeze(token, memberId).catch(() => ({})),
         ]);
 
         if (!active) {
@@ -1992,6 +2014,7 @@ export default function MemberProfilePage() {
         setBillingSettings(billing);
         setMembershipPolicySettings(membershipPolicy);
         setLifecycleAuditEntries(lifecycleAudit);
+        setActiveFreezeInfo(activeFreeze);
         setTransferInquiries(
           (inquiryPage.content || []).filter((item) => {
             const status = String(item.status || "").toUpperCase();
@@ -2325,6 +2348,16 @@ export default function MemberProfilePage() {
       setLoadingTabs((current) => ({ ...current, "personal-training": false }));
     }
   }, [memberId, token]);
+
+  useEffect(() => {
+    if (!token || !memberId || !hasPtAssignment) {
+      return;
+    }
+    if (tabData["personal-training"] || loadingTabs["personal-training"]) {
+      return;
+    }
+    void reloadPtTab();
+  }, [hasPtAssignment, loadingTabs, memberId, reloadPtTab, tabData, token]);
 
   const reloadFitnessAssessment = async () => {
     if (!token || !memberId) {
@@ -2765,11 +2798,56 @@ export default function MemberProfilePage() {
   });
   const activePtAssignmentRecord = activePtAssignment ? toRecord(activePtAssignment) : null;
   const activePtCoachId = pickString(activePtAssignmentRecord, ["coachId"]);
+  const fallbackPtCoachId =
+    activePtCoachId
+    || ptSessions.map((session) => pickString(toRecord(session), ["coachId"])).find(Boolean)
+    || "";
+  useEffect(() => {
+    const directCoachName =
+      pickString(activePtAssignmentRecord, ["coachName", "coachDisplayName"])
+      || coaches.find((coach) => String(coach.id) === String(fallbackPtCoachId))?.name
+      || "";
+    if (directCoachName) {
+      setResolvedPtCoachName(directCoachName);
+      return;
+    }
+    if (!token || !fallbackPtCoachId) {
+      setResolvedPtCoachName("");
+      return;
+    }
+
+    let active = true;
+    (async () => {
+      try {
+        const coach = await usersService.getUserById(token, String(fallbackPtCoachId));
+        if (active) {
+          setResolvedPtCoachName(coach?.name || "");
+        }
+      } catch {
+        if (active) {
+          setResolvedPtCoachName("");
+        }
+      }
+    })();
+
+    return () => {
+      active = false;
+    };
+  }, [activePtAssignmentRecord, coaches, fallbackPtCoachId, token]);
   const activePtCoachName =
     pickString(activePtAssignmentRecord, ["coachName", "coachDisplayName"])
-    || coaches.find((coach) => String(coach.id) === String(activePtCoachId || ""))?.name
+    || resolvedPtCoachName
+    || coaches.find((coach) => String(coach.id) === String(fallbackPtCoachId || ""))?.name
     || pickString(activePtAssignmentRecord, ["coachEmail", "coachId"])
     || "-";
+  const activeFreezeRecord = toRecord(activeFreezeInfo.activeFreeze);
+  const earliestManualUnfreezeDate =
+    pickString(activeFreezeInfo, ["earliestManualUnfreezeDate"])
+    || (pickString(activeFreezeRecord, ["startAt"]) ? addDaysToLocalIsoDate(pickString(activeFreezeRecord, ["startAt"]).slice(0, 10), 4) : "");
+  const manualUnfreezeEligible =
+    pickBoolean(activeFreezeInfo, ["manualUnfreezeEligible"]) !== undefined
+      ? pickBoolean(activeFreezeInfo, ["manualUnfreezeEligible"]) === true
+      : (!earliestManualUnfreezeDate || earliestManualUnfreezeDate <= toLocalIsoDate(new Date()));
   const ptAssignmentRescheduleLimit = pickNumber(activePtAssignmentRecord, ["rescheduleLimit"]);
   const ptUsedReschedules = ptSessions.filter((session) => {
     const status = pickString(toRecord(session), ["status"])?.toUpperCase();
@@ -2997,6 +3075,8 @@ export default function MemberProfilePage() {
     portfolioPrimaryMembership?.durationMonths || durationMonths,
     portfolioPrimaryMembership?.validityDays || validityDays,
   );
+  const primaryMembershipDurationMonths = portfolioPrimaryMembership?.durationMonths || 0;
+  const primaryMembershipValidityDays = portfolioPrimaryMembership?.validityDays || 0;
   const normalizedVisibleCurrentMembershipStatus = String(
     portfolioPrimaryMembership?.status || membershipStatus || "",
   ).trim().toUpperCase();
@@ -3078,6 +3158,15 @@ export default function MemberProfilePage() {
         if (isTransformationPlan && variant.categoryCode !== "TRANSFORMATION") {
           return false;
         }
+        if (
+          isPtPlan &&
+          (
+            (primaryMembershipDurationMonths > 0 && variant.durationMonths > primaryMembershipDurationMonths)
+            || (primaryMembershipDurationMonths <= 0 && primaryMembershipValidityDays > 0 && variant.validityDays > primaryMembershipValidityDays)
+          )
+        ) {
+          return false;
+        }
 
         if (sameProduct) {
           if (currentDuration > 0 && variant.durationMonths > 0) {
@@ -3108,6 +3197,8 @@ export default function MemberProfilePage() {
       isGroupClassPlan,
       isPtPlan,
       isTransformationPlan,
+      primaryMembershipDurationMonths,
+      primaryMembershipValidityDays,
       membershipFamily,
       selectedDurationMonths,
       selectedProductCode,
@@ -3328,7 +3419,10 @@ export default function MemberProfilePage() {
           return false;
         }
         const selectedCategory = lifecycleForm.categoryCode || selectedProductCategoryCode;
-        const selectedProduct = lifecycleForm.productCode || selectedProductCode;
+        const selectedProduct =
+          actionModal === "upgrade"
+            ? lifecycleForm.productCode
+            : (lifecycleForm.productCode || selectedProductCode);
 
         if (selectedCategory && variant.categoryCode !== selectedCategory) {
           return false;
@@ -4278,6 +4372,8 @@ export default function MemberProfilePage() {
         reason: freezeForm.reason || undefined,
       });
       await reloadShell();
+      const refreshedFreeze = await engagementService.getActiveFreeze(token, memberId).catch(() => ({}));
+      setActiveFreezeInfo(refreshedFreeze);
       setActionSuccess("Freeze activated.");
       setActionModal(null);
     } catch (error) {
@@ -4392,12 +4488,18 @@ export default function MemberProfilePage() {
       setActionError("Unfreeze is not available for this membership.");
       return;
     }
+    if (!manualUnfreezeEligible && earliestManualUnfreezeDate) {
+      setActionError(`Manual unfreeze is available from ${formatDateOnly(earliestManualUnfreezeDate)}.`);
+      return;
+    }
 
     setActionBusy(true);
     setActionError(null);
     try {
       const response = await engagementService.unfreezeMembership(token, memberId);
       await reloadShell();
+      const refreshedFreeze = await engagementService.getActiveFreeze(token, memberId).catch(() => ({}));
+      setActiveFreezeInfo(refreshedFreeze);
       setTabData((current) => ({
         ...current,
         "freeze-history": undefined,
@@ -4514,6 +4616,17 @@ export default function MemberProfilePage() {
     }
     if (!Number.isFinite(selectedPtSessionCount) || selectedPtSessionCount <= 0) {
       setActionError("Enter the total PT sessions before continuing.");
+      return;
+    }
+    if (
+      (primaryMembershipDurationMonths > 0 && Number(selectedPtVariant.durationMonths || 0) > primaryMembershipDurationMonths)
+      || (
+        primaryMembershipDurationMonths <= 0 &&
+        primaryMembershipValidityDays > 0 &&
+        Number(selectedPtVariant.validityDays || 0) > primaryMembershipValidityDays
+      )
+    ) {
+      setActionError("PT duration cannot exceed the base membership duration.");
       return;
     }
     if (ptCommercial.sellingPrice <= 0) {
@@ -4669,6 +4782,8 @@ export default function MemberProfilePage() {
     if (!token) {
       return;
     }
+    setSessionActionBusyId(sessionId);
+    setActionError(null);
     try {
       if (action === "start") {
         await trainingService.startSession(token, sessionId, "PORTAL");
@@ -4682,6 +4797,7 @@ export default function MemberProfilePage() {
         await trainingService.markSessionNoShow(token, sessionId);
       }
       await reloadPtTab();
+      await reloadShell();
       setActionSuccess(
         action === "cancel"
           ? "Cancellation window was closed, so the session was treated as consumed."
@@ -4689,6 +4805,8 @@ export default function MemberProfilePage() {
       );
     } catch (error) {
       setActionError(error instanceof Error ? error.message : `Failed to ${action} session.`);
+    } finally {
+      setSessionActionBusyId(null);
     }
   };
 
@@ -6214,11 +6332,12 @@ export default function MemberProfilePage() {
                         const sessId = pickString(rec, ["id"]);
                         const sessStatus = (pickString(rec, ["status"]) || "SCHEDULED").toUpperCase();
                         const slotS = pickString(rec, ["slotStartTime", "sessionTime"]) || "";
-                        const slotE = pickString(rec, ["slotEndTime"]) || "";
+                        const slotE = pickString(rec, ["slotEndTime"]) || addMinutesToTime(slotS, PT_SLOT_DURATION_MINUTES);
                         const actualStart = pickString(rec, ["actualStartTime"]) || "";
                         const dur = pickString(rec, ["durationMinutes"]) || "";
                         const startBy = pickString(rec, ["startedBy"]) || "";
                         const startAllowed = canStartPtSessionNow(rec);
+                        const sessionActionBusy = sessionActionBusyId === sessId;
                         const sameDaySlotOptions = buildAvailablePtSlotsForDate({
                           dateIso: pickString(rec, ["sessionDate"]) || "",
                           availability: ptAvailabilityOptions,
@@ -6240,7 +6359,7 @@ export default function MemberProfilePage() {
                         return (
                           <tr key={idx} className="border-b border-white/5 hover:bg-white/[0.02]">
                             <td className="px-3 py-2.5 text-white">{formatDateOnly(pickString(rec, ["sessionDate"]))}</td>
-                            <td className="px-3 py-2.5 text-slate-300">{slotS}{slotE ? ` - ${slotE}` : ""}</td>
+                            <td className="px-3 py-2.5 text-slate-300">{formatClockTime(slotS)}{slotE ? ` - ${formatClockTime(slotE)}` : ""}</td>
                             <td className="px-3 py-2.5">
                               <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-semibold ${statusBadge(sessStatus)}`}>
                                 {sessStatus.replace("_", " ")}
@@ -6254,9 +6373,9 @@ export default function MemberProfilePage() {
                                 {["SCHEDULED", "UPCOMING", "PENDING"].includes(sessStatus) && sessId ? (
                                   <>
                                     {startAllowed ? (
-                                      <button type="button" onClick={() => void handlePtSessionAction(sessId, "start")}
+                                      <button type="button" onClick={() => void handlePtSessionAction(sessId, "start")} disabled={sessionActionBusy}
                                         className="rounded-lg bg-blue-500/20 px-2 py-1 text-xs font-semibold text-blue-200 hover:bg-blue-500/30">
-                                        Start
+                                        {sessionActionBusy ? "Starting..." : "Start"}
                                       </button>
                                     ) : (
                                       <span className="rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-400">
@@ -6273,7 +6392,7 @@ export default function MemberProfilePage() {
                                         {rescheduleMessage}
                                       </span>
                                     )}
-                                    <button type="button" onClick={() => void handlePtSessionAction(sessId, "no-show")}
+                                    <button type="button" onClick={() => void handlePtSessionAction(sessId, "no-show")} disabled={sessionActionBusy}
                                       className="rounded-lg bg-rose-500/20 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-500/30">
                                       No Show
                                     </button>
@@ -6283,7 +6402,7 @@ export default function MemberProfilePage() {
                                         Cancel
                                       </button>
                                     ) : (
-                                      <button type="button" onClick={() => void handlePtSessionAction(sessId, "cancel")}
+                                      <button type="button" onClick={() => void handlePtSessionAction(sessId, "cancel")} disabled={sessionActionBusy}
                                         className="rounded-lg bg-orange-500/20 px-2 py-1 text-xs font-semibold text-orange-200 hover:bg-orange-500/30">
                                         Late Cancel
                                       </button>
@@ -6343,14 +6462,14 @@ export default function MemberProfilePage() {
                       {sessionHistoryRows.map((rec, idx) => {
                         const sessStatus = (pickString(rec, ["status"]) || "SCHEDULED").toUpperCase();
                         const slotS = pickString(rec, ["slotStartTime", "sessionTime"]) || "";
-                        const slotE = pickString(rec, ["slotEndTime"]) || "";
+                        const slotE = pickString(rec, ["slotEndTime"]) || addMinutesToTime(slotS, PT_SLOT_DURATION_MINUTES);
                         const actualStart = pickString(rec, ["actualStartTime"]) || "";
                         const dur = pickString(rec, ["durationMinutes"]) || "";
                         const startBy = pickString(rec, ["startedBy"]) || "";
                         return (
                           <tr key={idx} className="border-b border-white/5 hover:bg-white/[0.02]">
                             <td className="px-3 py-2.5 text-white">{formatDateOnly(pickString(rec, ["sessionDate"]))}</td>
-                            <td className="px-3 py-2.5 text-slate-300">{slotS}{slotE ? ` - ${slotE}` : ""}</td>
+                            <td className="px-3 py-2.5 text-slate-300">{formatClockTime(slotS)}{slotE ? ` - ${formatClockTime(slotE)}` : ""}</td>
                             <td className="px-3 py-2.5">
                               <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-semibold ${statusBadge(sessStatus)}`}>
                                 {sessStatus.replace("_", " ")}
@@ -7148,7 +7267,7 @@ export default function MemberProfilePage() {
                 <button
                   type="button"
                   onClick={() => void handleUnfreeze()}
-                  disabled={actionBusy}
+                  disabled={actionBusy || !manualUnfreezeEligible}
                   className="flex-[2] rounded-xl bg-emerald-500 px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-60"
                 >
                   <span className="inline-flex items-center gap-2">
@@ -7164,6 +7283,11 @@ export default function MemberProfilePage() {
               <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/10 px-4 py-3 text-sm leading-6 text-emerald-100">
                 Resume this freeze now. Base membership and linked PT access will be restored, biometric access will be unblocked, and any unused freeze days after the minimum freeze window will be credited back.
               </div>
+              {!manualUnfreezeEligible && earliestManualUnfreezeDate ? (
+                <div className="rounded-2xl border border-amber-400/25 bg-amber-500/10 px-4 py-3 text-sm leading-6 text-amber-100">
+                  Manual unfreeze is available from <span className="font-semibold text-white">{formatDateOnly(earliestManualUnfreezeDate)}</span>. Until then, the membership stays frozen and will resume automatically at the end of the freeze window.
+                </div>
+              ) : null}
               <div className="grid gap-3 sm:grid-cols-2">
                 <div className="rounded-2xl border border-white/10 bg-white/[0.03] px-4 py-3">
                   <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-500">Current Membership</p>
@@ -7649,7 +7773,7 @@ export default function MemberProfilePage() {
             open={isLifecycleBillingModal}
             onClose={() => setActionModal(null)}
             title={isUpgradeBillingModal ? "Upgrade Billing" : "Renewal Billing"}
-            size="xl"
+            size={isUpgradeBillingModal ? "xxl" : "xl"}
             footer={
               <>
                 <button type="button" onClick={() => setActionModal(isUpgradeBillingModal ? "upgrade" : "renew")} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Back</button>

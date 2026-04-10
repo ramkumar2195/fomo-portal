@@ -119,6 +119,20 @@ interface CompletedOnboardingState {
   balanceDueFollowUpDueAt?: string;
 }
 
+interface OnboardingDraftState {
+  currentStep: OnboardingStep;
+  memberForm: MemberFormState;
+  subscriptionForm: SubscriptionFormState;
+  ptSetupForm: PtSetupFormState;
+  complementaries: ComplementaryState;
+  membershipLineItems: MembershipLineItem[];
+  showPtComposer: boolean;
+  primaryCategoryFilter: string;
+  primaryProductFilter: string;
+  addOnCategoryFilter: string;
+  addOnProductFilter: string;
+}
+
 interface StepItem {
   step: OnboardingStep;
   label: string;
@@ -201,6 +215,7 @@ const PT_WEEKDAY_OPTIONS = [
 ] as const;
 const PT_EVERYDAY_DAY_CODES = PT_WEEKDAY_OPTIONS.map((day) => day.code);
 const ONBOARDING_COMPLETION_STORAGE_PREFIX = "guided-member-onboarding-completed";
+const ONBOARDING_DRAFT_STORAGE_PREFIX = "guided-member-onboarding-draft";
 
 function toOptionalString(value: string): string | undefined {
   const trimmed = value.trim();
@@ -777,6 +792,9 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
   const [complementaries, setComplementaries] = useState<ComplementaryState>(initialComplementaryState);
   const completionStorageKey = `${ONBOARDING_COMPLETION_STORAGE_PREFIX}:${sourceInquiryId}`;
+  const draftStorageKey = `${ONBOARDING_DRAFT_STORAGE_PREFIX}:${sourceInquiryId}`;
+  const pendingDraftRef = useRef<OnboardingDraftState | null>(null);
+  const draftHydratedRef = useRef(false);
 
   useEffect(() => {
     if (!toast) {
@@ -817,6 +835,20 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       // Ignore invalid persisted onboarding state.
     }
   }, [completionStorageKey]);
+
+  useEffect(() => {
+    draftHydratedRef.current = false;
+    pendingDraftRef.current = null;
+    try {
+      const storedDraft = window.localStorage.getItem(draftStorageKey);
+      if (!storedDraft) {
+        return;
+      }
+      pendingDraftRef.current = JSON.parse(storedDraft) as OnboardingDraftState;
+    } catch {
+      pendingDraftRef.current = null;
+    }
+  }, [draftStorageKey]);
 
   useEffect(() => {
     if (!token) {
@@ -903,6 +935,29 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
     setMemberForm((current) => (current.defaultBranchId === resolvedBranchId ? current : { ...current, defaultBranchId: resolvedBranchId }));
   }, [effectiveBranchId, selectedBranchId, user?.defaultBranchId]);
+
+  useEffect(() => {
+    if (loading || draftHydratedRef.current) {
+      return;
+    }
+    draftHydratedRef.current = true;
+    const draft = pendingDraftRef.current;
+    if (!draft) {
+      return;
+    }
+
+    setMemberForm(draft.memberForm);
+    setSubscriptionForm(draft.subscriptionForm);
+    setPtSetupForm(draft.ptSetupForm);
+    setComplementaries(draft.complementaries);
+    setMembershipLineItems(draft.membershipLineItems);
+    setShowPtComposer(draft.showPtComposer);
+    setPrimaryCategoryFilter(draft.primaryCategoryFilter);
+    setPrimaryProductFilter(draft.primaryProductFilter);
+    setAddOnCategoryFilter(draft.addOnCategoryFilter);
+    setAddOnProductFilter(draft.addOnProductFilter);
+    setCurrentStep(draft.currentStep);
+  }, [loading]);
 
   const primaryVariants = useMemo(
     () =>
@@ -1271,25 +1326,18 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   );
 
   const pricingPreview = useMemo(() => {
-    const primaryCommercial = primaryLineItem
-      ? {
-          baseAmount: primaryLineItem.basePrice,
-          sellingPrice: primaryLineItem.sellingPrice,
-          discountPercent: primaryLineItem.discountPercent,
-          discountAmount: Number((primaryLineItem.basePrice - primaryLineItem.sellingPrice).toFixed(2)),
-        }
-      : resolveCommercialBreakdown(0);
-    const addOnCommercial = ptLineItem
-      ? {
-          baseAmount: ptLineItem.basePrice,
-          sellingPrice: ptLineItem.sellingPrice,
-          discountPercent: ptLineItem.discountPercent,
-          discountAmount: Number((ptLineItem.basePrice - ptLineItem.sellingPrice).toFixed(2)),
-        }
-      : resolveCommercialBreakdown(0);
+    const lineItemCommercials = membershipLineItems.map((item) => ({
+      lineType: item.lineType,
+      baseAmount: item.basePrice,
+      sellingPrice: item.sellingPrice,
+      discountPercent: item.discountPercent,
+      discountAmount: Number((item.basePrice - item.sellingPrice).toFixed(2)),
+    }));
+    const primaryCommercial = lineItemCommercials.find((item) => item.lineType === "PRIMARY") || resolveCommercialBreakdown(0);
+    const addOnCommercial = lineItemCommercials.find((item) => item.lineType === "PT_ADD_ON") || resolveCommercialBreakdown(0);
 
-    const baseAmount = Number((primaryCommercial.baseAmount + addOnCommercial.baseAmount).toFixed(2));
-    const discountAmount = Number((primaryCommercial.discountAmount + addOnCommercial.discountAmount).toFixed(2));
+    const baseAmount = Number(lineItemCommercials.reduce((sum, item) => sum + item.baseAmount, 0).toFixed(2));
+    const discountAmount = Number(lineItemCommercials.reduce((sum, item) => sum + item.discountAmount, 0).toFixed(2));
     const netSaleAmount = Number((baseAmount - discountAmount).toFixed(2));
     const effectiveDiscountPercent =
       baseAmount > 0 ? Number(((discountAmount / baseAmount) * 100).toFixed(2)) : 0;
@@ -1341,10 +1389,8 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     };
   }, [
     billingSettings.gstPercentage,
-    selectedPrimaryVariant,
     membershipLineItems,
-    primaryLineItem,
-    ptLineItem,
+    selectedPrimaryVariant,
     subscriptionForm.receivedAmount,
     subscriptionForm.startDate,
   ]);
@@ -1355,10 +1401,10 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     }
     setSubscriptionForm((current) => {
       const roundedTotalPayable = Math.round(pricingPreview.totalPayable || 0);
-      const currentAmount = Number(current.receivedAmount || 0);
+      const currentAmount = Math.round(Number(current.receivedAmount || 0));
       const shouldAutofill =
         !current.receivedAmount.trim() ||
-        currentAmount === previousAutoReceivedAmountRef.current;
+        currentAmount === Math.round(previousAutoReceivedAmountRef.current || 0);
       if (!shouldAutofill) {
         previousAutoReceivedAmountRef.current = roundedTotalPayable;
         return current;
@@ -1367,6 +1413,66 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       return { ...current, receivedAmount: String(roundedTotalPayable) };
     });
   }, [completedOnboarding, pricingPreview.totalPayable]);
+
+  useEffect(() => {
+    if (pricingPreview.balanceAmount > 0 || !subscriptionForm.balanceDueDate) {
+      return;
+    }
+    setSubscriptionForm((current) => (
+      current.balanceDueDate
+        ? { ...current, balanceDueDate: "" }
+        : current
+    ));
+  }, [pricingPreview.balanceAmount, subscriptionForm.balanceDueDate]);
+
+  useEffect(() => {
+    if (!draftHydratedRef.current) {
+      return;
+    }
+
+    if (completedOnboarding) {
+      try {
+        window.localStorage.removeItem(draftStorageKey);
+      } catch {
+        // Ignore draft cleanup failures once onboarding is complete.
+      }
+      return;
+    }
+
+    const draftState: OnboardingDraftState = {
+      currentStep,
+      memberForm,
+      subscriptionForm,
+      ptSetupForm,
+      complementaries,
+      membershipLineItems,
+      showPtComposer,
+      primaryCategoryFilter,
+      primaryProductFilter,
+      addOnCategoryFilter,
+      addOnProductFilter,
+    };
+
+    try {
+      window.localStorage.setItem(draftStorageKey, JSON.stringify(draftState));
+    } catch {
+      // Ignore local draft persistence failures and continue in memory.
+    }
+  }, [
+    addOnCategoryFilter,
+    addOnProductFilter,
+    complementaries,
+    completedOnboarding,
+    currentStep,
+    draftStorageKey,
+    memberForm,
+    membershipLineItems,
+    primaryCategoryFilter,
+    primaryProductFilter,
+    ptSetupForm,
+    showPtComposer,
+    subscriptionForm,
+  ]);
 
   useEffect(() => {
     if (!token || !memberForm.defaultBranchId) {
@@ -2319,6 +2425,17 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         }
       }
 
+      const settledBalanceAmount = Math.max(
+        0,
+        Math.round(
+          Number(
+            paymentReceipt?.balanceAmount
+            ?? subscriptionResponse.balanceAmount
+            ?? (invoiceTotal - Number(paymentReceipt?.totalPaidAmount || pricingPreview.submittedReceivedAmount || 0)),
+          ) || 0,
+        ),
+      );
+
       const ptProvisionVariant = requiresBundledPtSetup ? selectedPrimaryVariant : selectedAddOnVariant;
       const ptProvisionSubscriptionId = requiresBundledPtSetup
         ? memberSubscriptionId
@@ -2355,14 +2472,14 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
       let balanceDueFollowUpCreated = false;
       let balanceDueFollowUpDueAt: string | undefined;
-      if (pricingPreview.balanceAmount > 0 && subscriptionForm.balanceDueDate) {
+      if (settledBalanceAmount > 0 && subscriptionForm.balanceDueDate) {
         try {
           await subscriptionService.createInquiryFollowUp(token, sourceInquiryId, {
             dueAt: `${subscriptionForm.balanceDueDate}T09:00:00`,
             assignedToStaffId: billedByStaffId || inquiry?.clientRepStaffId || undefined,
             createdByStaffId: billedByStaffId || undefined,
             followUpType: "BALANCE_DUE",
-            notes: `Collect the remaining balance of ${formatCurrency(pricingPreview.balanceAmount)} for invoice ${subscriptionResponse.invoiceNumber}.`,
+            notes: `Collect the remaining balance of ${formatCurrency(settledBalanceAmount)} for invoice ${subscriptionResponse.invoiceNumber}.`,
           });
           balanceDueFollowUpCreated = true;
           balanceDueFollowUpDueAt = `${subscriptionForm.balanceDueDate}T09:00:00`;
@@ -2431,7 +2548,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
           subscriptionForm.paymentUpiVendor,
         ),
         totalPaidAmount: paymentReceipt?.totalPaidAmount || subscriptionResponse.totalPaidAmount || 0,
-        balanceAmount: paymentReceipt?.balanceAmount ?? subscriptionResponse.balanceAmount ?? invoiceTotal,
+        balanceAmount: settledBalanceAmount,
         membershipActivated,
         balanceDueFollowUpCreated,
         balanceDueFollowUpDueAt,
@@ -3340,24 +3457,21 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                           { label: "Billing Representative", value: user?.name || "-" },
                           { label: "Invoice Status", value: completedOnboarding ? formatInvoiceLifecycleStatus(completedOnboarding.invoiceStatus, true) : "Issued on completion" },
                         ]}
-                        lineItems={[
-                          {
-                            label: "Primary Membership",
-                            subtitle: selectedPrimaryMembershipLabel,
-                            baseAmount: formatCurrency(pricingPreview.primaryCommercial.baseAmount),
-                            sellingPrice: formatCurrency(pricingPreview.primaryCommercial.sellingPrice),
-                            discount: `${Math.round(pricingPreview.primaryCommercial.discountPercent)}%`,
-                          },
-                          ...(selectedAddOnVariant
-                            ? [{
-                                label: "PT Add-on",
-                                subtitle: sanitizeMembershipLabel(selectedAddOnVariant.variantName || "PT Add-on"),
-                                baseAmount: formatCurrency(pricingPreview.addOnCommercial.baseAmount),
-                                sellingPrice: formatCurrency(pricingPreview.addOnCommercial.sellingPrice),
-                                discount: `${Math.round(pricingPreview.addOnCommercial.discountPercent)}%`,
-                              }]
-                            : []),
-                        ]}
+                        lineItems={membershipLineItems.map((item) => {
+                          const relatedVariant = [...primaryVariants, ...addOnVariants].find(
+                            (variant) => String(variant.variantId) === String(item.variantId),
+                          );
+                          return {
+                            label: item.lineType === "PRIMARY" ? "Primary Membership" : "PT Add-on",
+                            subtitle:
+                              item.lineType === "PRIMARY"
+                                ? selectedPrimaryMembershipLabel
+                                : sanitizeMembershipLabel(item.variantName || "PT Add-on"),
+                            baseAmount: formatCurrency(item.basePrice),
+                            sellingPrice: formatCurrency(item.sellingPrice),
+                            discount: `${Math.round(item.discountPercent)}%`,
+                          };
+                        })}
                         totalLabel="Total Plan Price"
                         totalBaseAmount={formatCurrency(pricingPreview.baseAmount)}
                         totalSellingPrice={formatCurrency(pricingPreview.netSaleAmount)}

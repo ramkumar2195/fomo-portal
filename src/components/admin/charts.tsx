@@ -67,19 +67,28 @@ export function LineChart({ labels, series }: LineChartProps) {
 }
 
 export function FunnelChart({ stages }: { stages: { label: string; value: number }[] }) {
+  const total = stages.reduce((sum, stage) => sum + stage.value, 0);
   const max = Math.max(...stages.map((stage) => stage.value), 1);
   return (
     <div className="space-y-2">
       {stages.map((stage, index) => {
         const width = (stage.value / max) * 100;
+        const percentage = total > 0 ? (stage.value / total) * 100 : 0;
+        const isZero = stage.value === 0;
+        const barWidth = isZero ? 0 : Math.max(width, 12);
         return (
           <div key={`${stage.label}-${index}`} className="space-y-1">
             <div className="flex items-center justify-between text-xs text-slate-300">
-              <span>{stage.label}</span>
-              <span>{stage.value}</span>
+              <span className="font-medium text-slate-200">{stage.label}</span>
+              <span className="rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] font-semibold text-white">
+                {stage.value} ({percentage.toFixed(stage.value > 0 && percentage < 10 ? 1 : 0)}%)
+              </span>
             </div>
             <div className="h-8 rounded-lg bg-white/[0.06] p-1">
-              <div className="h-full rounded-md bg-[#C42429]/90" style={{ width: `${Math.max(width, 8)}%` }} />
+              <div
+                className={isZero ? "h-full rounded-md border border-dashed border-white/10 bg-transparent" : "h-full rounded-md bg-[#C42429]/90"}
+                style={{ width: isZero ? "100%" : `${barWidth}%` }}
+              />
             </div>
           </div>
         );

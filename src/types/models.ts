@@ -18,6 +18,15 @@ export interface UserDirectoryItem {
   defaultBranchId?: string;
   defaultTrainerStaffId?: string;
   sourceInquiryId?: string;
+  alternateMobileNumber?: string;
+  dateOfBirth?: string;
+  gender?: string;
+  aadhaarNumber?: string;
+  gstNumber?: string;
+  address?: string;
+  emergencyContactName?: string;
+  emergencyContactPhone?: string;
+  emergencyContactRelation?: string;
   createdAt?: string;
 }
 

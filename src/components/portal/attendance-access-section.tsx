@@ -66,7 +66,7 @@ function friendlyBiometricDeviceName(device: BiometricDeviceRecord, index: numbe
   const configuredName = String(device.deviceName || "").trim();
   if (configuredName) return configuredName;
   const serial = String(device.serialNumber || "").trim();
-  const fallbackNames = ["Main Entrance - ESSL", "VIP Lounge - ESSL"];
+  const fallbackNames = ["Main Entrance - Two", "Main Entrance - One"];
   return fallbackNames[index] || (serial ? `ESSL Device ${index + 1}` : `ESSL Device ${index + 1}`);
 }
 

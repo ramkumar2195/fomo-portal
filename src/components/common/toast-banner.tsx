@@ -9,10 +9,10 @@ interface ToastBannerProps {
 }
 
 const kindStyles: Record<ToastBannerProps["kind"], string> = {
-  success: "border-emerald-300 bg-emerald-50 text-emerald-800",
-  error: "border-rose-300 bg-rose-50 text-rose-800",
-  info: "border-blue-300 bg-blue-50 text-blue-800",
-  warning: "border-amber-300 bg-amber-50 text-amber-800",
+  success: "border-emerald-200 bg-white text-emerald-700",
+  error: "border-rose-200 bg-white text-rose-700",
+  info: "border-sky-200 bg-white text-sky-700",
+  warning: "border-amber-200 bg-white text-amber-700",
 };
 
 export function ToastBanner({
@@ -29,14 +29,23 @@ export function ToastBanner({
   }, [autoDismiss, dismissMs, onClose]);
 
   return (
-    <div
-      className={`fixed top-4 right-4 z-50 rounded-lg border px-4 py-3 shadow ${kindStyles[kind]}`}
-    >
-      <div className="flex items-start gap-3">
-        <p className="text-sm font-medium">{message}</p>
-        <button type="button" onClick={onClose} className="text-xs font-semibold uppercase">
-          Close
-        </button>
+    <div className="fixed inset-0 z-[120] flex items-center justify-center bg-black/45 p-4">
+      <div className={`w-full max-w-md rounded-2xl border shadow-2xl ${kindStyles[kind]}`}>
+        <div className="border-b border-slate-100 px-5 py-4">
+          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-500">
+            {kind === "success" ? "Success" : kind === "error" ? "Action Required" : kind === "warning" ? "Warning" : "Notice"}
+          </p>
+          <p className="mt-2 text-sm font-medium leading-6 text-slate-800">{message}</p>
+        </div>
+        <div className="flex justify-end px-5 py-4">
+          <button
+            type="button"
+            onClick={onClose}
+            className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white"
+          >
+            OK
+          </button>
+        </div>
       </div>
     </div>
   );

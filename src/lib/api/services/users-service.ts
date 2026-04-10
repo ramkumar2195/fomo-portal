@@ -79,6 +79,15 @@ interface BackendUserPayload {
   branchId?: string | number;
   branchCode?: string | number;
   createdAt?: string;
+  alternateMobileNumber?: string;
+  dateOfBirth?: string;
+  gender?: string;
+  aadhaarNumber?: string;
+  gstNumber?: string;
+  address?: string;
+  emergencyContactName?: string;
+  emergencyContactPhone?: string;
+  emergencyContactRelation?: string;
 }
 
 export interface UserSearchQuery {
@@ -129,6 +138,8 @@ export interface UpdateUserRequest {
   alternateMobileNumber?: string;
   dateOfBirth?: string;
   gender?: string;
+  aadhaarNumber?: string;
+  gstNumber?: string;
   address?: string;
   emergencyContactName?: string;
   emergencyContactPhone?: string;
@@ -419,6 +430,15 @@ function mapDirectoryUser(payload: BackendUserPayload): UserDirectoryItem {
       payload.defaultTrainerStaffId !== undefined ? String(payload.defaultTrainerStaffId) : undefined,
     sourceInquiryId:
       payload.sourceInquiryId !== undefined ? String(payload.sourceInquiryId) : undefined,
+    alternateMobileNumber: payload.alternateMobileNumber,
+    dateOfBirth: payload.dateOfBirth,
+    gender: payload.gender,
+    aadhaarNumber: payload.aadhaarNumber,
+    gstNumber: payload.gstNumber,
+    address: payload.address,
+    emergencyContactName: payload.emergencyContactName,
+    emergencyContactPhone: payload.emergencyContactPhone,
+    emergencyContactRelation: payload.emergencyContactRelation,
     createdAt: payload.createdAt,
   };
 }
@@ -1079,8 +1099,14 @@ export const usersService = {
   },
 
   async getUserById(token: string, id: string): Promise<UserDirectoryItem | null> {
-    const list = await this.searchUsers(token, { query: id });
-    return list.find((item) => item.id === id) || null;
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "users",
+      path: `${USERS_API_PREFIX}/${id}`,
+      token,
+    });
+
+    const data = unwrapData<unknown>(response);
+    return typeof data === "object" && data !== null ? mapDirectoryUser(data as BackendUserPayload) : null;
   },
 
   async getMemberProfileShell(token: string, memberId: string | number): Promise<MemberProfileShellResponse> {

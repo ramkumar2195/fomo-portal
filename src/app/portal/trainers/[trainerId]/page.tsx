@@ -25,6 +25,7 @@ import type { BiometricAttendanceLogRecord, BiometricDeviceRecord, MemberBiometr
 import { ToastBanner } from "@/components/common/toast-banner";
 import { Modal } from "@/components/common/modal";
 import { AttendanceAccessSection } from "@/components/portal/attendance-access-section";
+import type { UserDirectoryItem } from "@/types/models";
 
 /* ── helpers ─────────────────────────────────────────────────── */
 
@@ -88,6 +89,7 @@ interface ClientRow {
   category: string;
   status: string;
   type: "general" | "pt";
+  mobile?: string;
 }
 
 /* ── component ───────────────────────────────────────────────── */
@@ -104,6 +106,7 @@ export default function TrainerProfilePage() {
 
   // Tab data
   const [assignments, setAssignments] = useState<unknown[]>([]);
+  const [members, setMembers] = useState<UserDirectoryItem[]>([]);
   const [performance, setPerformance] = useState<Rec | null>(null);
   const [attendanceData, setAttendanceData] = useState<unknown[]>([]);
   const [biometricDevices, setBiometricDevices] = useState<BiometricDeviceRecord[]>([]);
@@ -150,11 +153,13 @@ export default function TrainerProfilePage() {
     try {
       switch (tab) {
         case "clients": {
-          const [coachAssigns, perf] = await Promise.all([
+          const [coachAssigns, perf, memberDirectory] = await Promise.all([
             trainingService.getCoachAssignments(token, trainerId).catch(() => []),
             trainingService.getCoachPerformance(token, trainerId).catch(() => null),
+            usersService.searchUsers(token, { role: "MEMBER" }).catch(() => []),
           ]);
           setAssignments(coachAssigns);
+          setMembers(memberDirectory);
           if (perf) setPerformance(toRec(perf));
           break;
         }
@@ -188,16 +193,29 @@ export default function TrainerProfilePage() {
         case "sessions": {
           // Load all PT sessions for this coach
           try {
-            const coachAssigns = assignments.length > 0 ? assignments : await trainingService.getCoachAssignments(token, trainerId).catch(() => []);
+            const [coachAssigns, memberDirectory] = await Promise.all([
+              assignments.length > 0 ? Promise.resolve(assignments) : trainingService.getCoachAssignments(token, trainerId).catch(() => []),
+              members.length > 0 ? Promise.resolve(members) : usersService.searchUsers(token, { role: "MEMBER" }).catch(() => []),
+            ]);
             if (assignments.length === 0 && coachAssigns.length > 0) setAssignments(coachAssigns);
+            if (members.length === 0 && memberDirectory.length > 0) setMembers(memberDirectory);
             const allSessions: unknown[] = [];
+            const memberMap = new Map(memberDirectory.map((member) => [String(member.id), member]));
             for (const assign of coachAssigns) {
               const rec = toRec(assign);
               const assignId = str(rec, "id", "assignmentId");
+              const memberId = str(rec, "memberId", "clientId", "id");
+              const member = memberMap.get(String(memberId));
               if (assignId && assignId !== "-") {
                 try {
                   const sessions = await trainingService.getPtSessionsByAssignment(token, assignId);
-                  allSessions.push(...sessions.map((s) => ({ ...toRec(s), memberName: str(rec, "memberName", "clientName") })));
+                  allSessions.push(
+                    ...sessions.map((s) => ({
+                      ...toRec(s),
+                      memberName: member?.name || str(rec, "memberName", "clientName"),
+                      memberMobile: member?.mobile,
+                    })),
+                  );
                 } catch {
                   // skip
                 }
@@ -326,21 +344,77 @@ export default function TrainerProfilePage() {
 
   // Derive client lists
   const clientRows = useMemo<ClientRow[]>(() => {
-    return assignments.map((a) => {
+    const memberMap = new Map(members.map((member) => [String(member.id), member]));
+    const ptRows = assignments.map((a) => {
       const r = toRec(a);
+      const memberId = str(r, "memberId", "clientId", "id");
+      const member = memberMap.get(String(memberId));
       return {
-        memberId: str(r, "memberId", "clientId", "id"),
-        memberName: str(r, "memberName", "clientName", "name"),
-        planName: str(r, "planName", "productName", "subscriptionName"),
-        category: str(r, "categoryCode", "productCategoryCode", "type"),
-        status: str(r, "status", "assignmentStatus"),
-        type: (str(r, "type", "assignmentType", "categoryCode").toUpperCase().includes("PT") ? "pt" : "general") as "general" | "pt",
+        memberId,
+        memberName: member?.name || str(r, "memberName", "clientName", "name"),
+        planName: str(r, "planName", "productName", "subscriptionName", "packageName") || "Personal Training",
+        category: str(r, "categoryCode", "productCategoryCode", "type", "trainingType") || "PERSONAL_TRAINING",
+        status: str(r, "status", "assignmentStatus", "active").toUpperCase() === "FALSE" ? "INACTIVE" : (str(r, "status", "assignmentStatus") || (toRec(a).active === false ? "INACTIVE" : "ACTIVE")),
+        type: "pt" as const,
+        mobile: member?.mobile,
       };
     });
-  }, [assignments]);
+    const ptMemberIds = new Set(ptRows.map((row) => String(row.memberId)));
+    const generalRows = members
+      .filter((member) => String(member.defaultTrainerStaffId ?? "") === trainerId && !ptMemberIds.has(String(member.id)))
+      .map((member) => ({
+        memberId: member.id,
+        memberName: member.name,
+        planName: "Gym Membership",
+        category: "GENERAL",
+        status: member.active === false ? "INACTIVE" : "ACTIVE",
+        type: "general" as const,
+        mobile: member.mobile,
+      }));
+
+    return [...generalRows, ...ptRows].sort((left, right) => left.memberName.localeCompare(right.memberName));
+  }, [assignments, members, trainerId]);
 
   const generalClients = clientRows.filter((c) => c.type === "general");
   const ptClients = clientRows.filter((c) => c.type === "pt");
+  const activeGeneralClients = generalClients.filter((client) => client.status.toUpperCase() === "ACTIVE");
+  const activePtClients = ptClients.filter((client) => client.status.toUpperCase() === "ACTIVE");
+  const inactivePtClients = ptClients.filter((client) => client.status.toUpperCase() !== "ACTIVE");
+  const todayKey = new Date().toISOString().slice(0, 10);
+  const monthKey = todayKey.slice(0, 7);
+  const sessionMetrics = useMemo(() => {
+    const totals = {
+      total: ptSessions.length,
+      completed: 0,
+      scheduled: 0,
+      cancelled: 0,
+      noShow: 0,
+      todayCompleted: 0,
+      monthCompleted: 0,
+    };
+    for (const session of ptSessions) {
+      const record = toRec(session);
+      const status = str(record, "status", "sessionStatus").toUpperCase();
+      const sessionDate = str(record, "sessionDate", "date", "scheduledAt");
+      const sessionDay = sessionDate !== "-" ? sessionDate.slice(0, 10) : "";
+      if (status === "COMPLETED" || status === "DONE") {
+        totals.completed += 1;
+        if (sessionDay === todayKey) {
+          totals.todayCompleted += 1;
+        }
+        if (sessionDay.startsWith(monthKey)) {
+          totals.monthCompleted += 1;
+        }
+      } else if (status === "SCHEDULED" || status === "UPCOMING" || status === "PENDING") {
+        totals.scheduled += 1;
+      } else if (status === "NO_SHOW") {
+        totals.noShow += 1;
+      } else if (status === "CANCELLED" || status === "CANCELED" || status === "RESCHEDULED") {
+        totals.cancelled += 1;
+      }
+    }
+    return totals;
+  }, [monthKey, ptSessions, todayKey]);
 
   if (loading) {
     return (
@@ -420,6 +494,7 @@ export default function TrainerProfilePage() {
           <StatCard icon={Calendar} label="Join Date" value={formatDate(joinDate !== "-" ? joinDate : undefined)} />
           <StatCard icon={Users} label="Total Clients" value={String(clientRows.length || "-")} />
           <StatCard icon={Dumbbell} label="PT Clients" value={String(ptClients.length || "-")} />
+          <StatCard icon={UserRound} label="General Clients" value={String(generalClients.length || "-")} />
           <StatCard icon={Shield} label="Designation" value={humanize(designation)} />
         </div>
       </div>
@@ -503,7 +578,7 @@ export default function TrainerProfilePage() {
                   {generalClients.length === 0 && ptClients.length === 0 && clientRows.length === 0 ? (
                     <p className="py-4 text-center text-sm text-slate-500">No clients assigned yet.</p>
                   ) : (
-                    <ClientTable clients={generalClients.length > 0 ? generalClients : clientRows.filter((c) => c.type !== "pt")} />
+                    <ClientTable clients={generalClients} />
                   )}
                 </Panel>
 
@@ -517,6 +592,15 @@ export default function TrainerProfilePage() {
                 </Panel>
 
                 {/* Performance Summary */}
+                <Panel title="Client Summary">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <StatCard icon={Users} label="Active General" value={String(activeGeneralClients.length)} />
+                    <StatCard icon={Dumbbell} label="Active PT" value={String(activePtClients.length)} />
+                    <StatCard icon={User} label="Inactive PT" value={String(inactivePtClients.length)} />
+                    <StatCard icon={Shield} label="Total Assigned" value={String(clientRows.length)} />
+                  </div>
+                </Panel>
+
                 {performance && (
                   <Panel title="Performance Summary">
                     <dl className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
@@ -610,31 +694,17 @@ export default function TrainerProfilePage() {
             ) : (
               <>
                 {/* Session Summary */}
-                {(() => {
-                  const completed = ptSessions.filter((s) => {
-                    const st = str(toRec(s), "status").toUpperCase();
-                    return st === "COMPLETED" || st === "DONE";
-                  }).length;
-                  const scheduled = ptSessions.filter((s) => {
-                    const st = str(toRec(s), "status").toUpperCase();
-                    return st === "SCHEDULED" || st === "UPCOMING" || st === "PENDING";
-                  }).length;
-                  const cancelled = ptSessions.filter((s) => {
-                    const st = str(toRec(s), "status").toUpperCase();
-                    return st === "CANCELLED" || st === "CANCELED";
-                  }).length;
-                  const total = ptSessions.length;
-                  return (
-                    <Panel title="Session Summary">
-                      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                        <StatCard icon={Calendar} label="Total Sessions" value={String(total)} />
-                        <StatCard icon={CheckCircle2} label="Completed" value={String(completed)} />
-                        <StatCard icon={Clock} label="Scheduled" value={String(scheduled)} />
-                        <StatCard icon={User} label="Cancelled" value={String(cancelled)} />
-                      </div>
-                    </Panel>
-                  );
-                })()}
+                <Panel title="Session Summary">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                    <StatCard icon={Calendar} label="Total Sessions" value={String(sessionMetrics.total)} />
+                    <StatCard icon={CheckCircle2} label="Completed" value={String(sessionMetrics.completed)} />
+                    <StatCard icon={Clock} label="Completed Today" value={String(sessionMetrics.todayCompleted)} />
+                    <StatCard icon={Dumbbell} label="Completed This Month" value={String(sessionMetrics.monthCompleted)} />
+                    <StatCard icon={UserRound} label="Scheduled" value={String(sessionMetrics.scheduled)} />
+                    <StatCard icon={User} label="Cancelled" value={String(sessionMetrics.cancelled)} />
+                    <StatCard icon={Shield} label="No Show" value={String(sessionMetrics.noShow)} />
+                  </div>
+                </Panel>
 
                 {/* Session Register */}
                 <Panel title="Session Register" subtitle="Detailed log of all PT sessions">

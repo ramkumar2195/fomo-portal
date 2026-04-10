@@ -38,6 +38,7 @@ interface AttendanceRow {
 
 interface OwnAttendanceRow {
   id: string;
+  staffId?: string;
   staffName: string;
   date: string;
   clockIn?: string;
@@ -79,6 +80,7 @@ function mapOwnAttendance(payload: unknown): OwnAttendanceRow[] {
     const r = toRecord(item);
     return {
       id: String(r.id ?? r.attendanceId ?? `att-${index}`),
+      staffId: r.staffId !== undefined ? String(r.staffId) : r.trainerId !== undefined ? String(r.trainerId) : undefined,
       staffName: String(r.staffName ?? r.trainerName ?? r.name ?? "-"),
       date: String(r.date ?? r.attendanceDate ?? "-"),
       clockIn: r.clockInTime ? String(r.clockInTime) : r.checkInAt ? String(r.checkInAt) : undefined,
@@ -175,6 +177,31 @@ function resolveBooleanFilter(value: "ALL" | "ACTIVE" | "INACTIVE"): boolean | u
   return undefined;
 }
 
+function buildUpdatePayload(item: UserDirectoryItem, active: boolean, role: Extract<UserRole, "STAFF" | "COACH">): UpdateUserRequest {
+  return {
+    name: item.name,
+    fullName: item.name,
+    mobileNumber: item.mobile,
+    email: item.email || `${item.mobile}@fomo.local`,
+    defaultBranchId: item.defaultBranchId,
+    role,
+    employmentType: item.employmentType as EmploymentType | undefined,
+    designation: item.designation as UserDesignation | undefined,
+    dataScope: item.dataScope as DataScope | undefined,
+    active,
+    alternateMobileNumber: item.alternateMobileNumber,
+    dateOfBirth: item.dateOfBirth,
+    gender: item.gender,
+    aadhaarNumber: item.aadhaarNumber,
+    gstNumber: item.gstNumber,
+    address: item.address,
+    emergencyContactName: item.emergencyContactName,
+    emergencyContactPhone: item.emergencyContactPhone,
+    emergencyContactRelation: item.emergencyContactRelation,
+    defaultTrainerStaffId: item.defaultTrainerStaffId,
+  };
+}
+
 export function UserManagementPage({
   role,
   title,
@@ -232,6 +259,7 @@ export function UserManagementPage({
   });
 
   const [attendanceRows, setAttendanceRows] = useState<AttendanceRow[]>([]);
+  const [directoryAttendanceByUserId, setDirectoryAttendanceByUserId] = useState<Record<string, OwnAttendanceRow>>({});
 
   const [activeTab, setActiveTab] = useState<ManagementTab>("directory");
   const [ownAttendance, setOwnAttendance] = useState<OwnAttendanceRow[]>([]);
@@ -248,6 +276,7 @@ export function UserManagementPage({
     staffId: "",
   });
   const [leaveSubmitting, setLeaveSubmitting] = useState(false);
+  const [statusSavingId, setStatusSavingId] = useState<string | null>(null);
 
   const { selectedBranchId, effectiveBranchId } = useBranch();
 
@@ -261,17 +290,36 @@ export function UserManagementPage({
     setError(null);
 
     try {
-      const list = await usersService.searchUsers(token, {
-        role,
-        query: toOptionalString(searchQuery),
-        active: resolveBooleanFilter(activeFilter),
-        designation: designationFilter ? (designationFilter as UserDesignation) : undefined,
-        employmentType: employmentTypeFilter || undefined,
-        dataScope: dataScopeFilter || undefined,
-        defaultBranchId: effectiveBranchId ? String(effectiveBranchId) : undefined,
-      });
+      const today = new Date().toISOString().slice(0, 10);
+      const [list, attendanceReport] = await Promise.all([
+        usersService.searchUsers(token, {
+          role,
+          query: toOptionalString(searchQuery),
+          active: resolveBooleanFilter(activeFilter),
+          designation: designationFilter ? (designationFilter as UserDesignation) : undefined,
+          employmentType: employmentTypeFilter || undefined,
+          dataScope: dataScopeFilter || undefined,
+          defaultBranchId: effectiveBranchId ? String(effectiveBranchId) : undefined,
+        }),
+        role === "COACH"
+          ? usersService.getTrainerAttendanceReport(token, { from: today, to: today })
+          : usersService.getStaffAttendanceReport(token, { from: today, to: today }),
+      ]);
 
       setUsers(list);
+
+      const attendanceRows = mapOwnAttendance(attendanceReport);
+      const nextDirectoryAttendance: Record<string, OwnAttendanceRow> = {};
+      attendanceRows.forEach((row) => {
+        if (!row.staffId) {
+          return;
+        }
+        const existing = nextDirectoryAttendance[row.staffId];
+        if (!existing || (!!row.clockIn && !existing.clockIn)) {
+          nextDirectoryAttendance[row.staffId] = row;
+        }
+      });
+      setDirectoryAttendanceByUserId(nextDirectoryAttendance);
     } catch (loadError) {
       const message = loadError instanceof Error ? loadError.message : `Unable to load ${role.toLowerCase()} users`;
       setError(message);
@@ -421,6 +469,50 @@ export function UserManagementPage({
     };
   }, [users]);
 
+  const attendanceStatusForUser = useCallback(
+    (userId: string) => {
+      const row = directoryAttendanceByUserId[userId];
+      if (!row) {
+        return { label: "No Punch", className: "border-slate-200 bg-slate-50 text-slate-600" };
+      }
+      if (row.clockIn && !row.clockOut) {
+        return { label: "Checked In", className: "border-emerald-200 bg-emerald-50 text-emerald-700" };
+      }
+      return { label: "Checked Out", className: "border-amber-200 bg-amber-50 text-amber-700" };
+    },
+    [directoryAttendanceByUserId],
+  );
+
+  const toggleUserActive = useCallback(
+    async (item: UserDirectoryItem, nextActive: boolean) => {
+      if (!token || !canUpdate) {
+        return;
+      }
+
+      setStatusSavingId(item.id);
+      try {
+        const latest = await usersService.getUserById(token, item.id);
+        if (!latest) {
+          throw new Error("User not found");
+        }
+        const updated = await usersService.updateUser(token, item.id, buildUpdatePayload(latest, nextActive, role));
+        setUsers((prev) => prev.map((current) => (current.id === updated.id ? updated : current)));
+        setToast({
+          kind: "success",
+          message: `${role === "COACH" ? "Trainer" : "Staff"} ${nextActive ? "activated" : "deactivated"} successfully.`,
+        });
+      } catch (updateError) {
+        setToast({
+          kind: "error",
+          message: updateError instanceof Error ? updateError.message : "Unable to update user status",
+        });
+      } finally {
+        setStatusSavingId(null);
+      }
+    },
+    [canUpdate, role, token],
+  );
+
   const openEdit = (item: UserDirectoryItem) => {
     setEditingUser(item);
     setEditForm({
@@ -559,7 +651,7 @@ export function UserManagementPage({
           </button>
         }
       >
-        <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-6">
+        <div className="grid gap-2 md:grid-cols-3 xl:grid-cols-5">
           <input
             className="rounded-lg border border-slate-300 px-2 py-2 text-sm"
             placeholder="Search by name/mobile"
@@ -600,17 +692,6 @@ export function UserManagementPage({
             <option value="VENDOR">VENDOR</option>
           </select>
 
-          <select
-            className="rounded-lg border border-slate-300 px-2 py-2 text-sm"
-            value={dataScopeFilter}
-            onChange={(event) => setDataScopeFilter(event.target.value as "" | DataScope)}
-          >
-            <option value="">All scopes</option>
-            <option value="GLOBAL">GLOBAL</option>
-            <option value="BRANCH">BRANCH</option>
-            <option value="ASSIGNED_ONLY">ASSIGNED_ONLY</option>
-          </select>
-
           <button
             type="button"
             onClick={() => void loadUsers()}
@@ -628,10 +709,9 @@ export function UserManagementPage({
               <tr className="bg-[#171d29] text-left text-xs font-semibold tracking-wide text-slate-400 uppercase">
                 <th className="px-4 py-3">Name</th>
                 <th className="px-4 py-3">Mobile</th>
-                <th className="px-4 py-3">Designation</th>
+                <th className="px-4 py-3">Trainer Type</th>
                 <th className="px-4 py-3">Employment</th>
-                <th className="px-4 py-3">Data Scope</th>
-                <th className="px-4 py-3">Default Branch</th>
+                <th className="px-4 py-3">Check-In</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Action</th>
               </tr>
@@ -639,7 +719,7 @@ export function UserManagementPage({
             <tbody className="divide-y divide-white/10">
               {users.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-4 text-slate-400" colSpan={8}>
+                  <td className="px-4 py-4 text-slate-400" colSpan={7}>
                     No users found
                   </td>
                 </tr>
@@ -647,8 +727,7 @@ export function UserManagementPage({
                 users.map((item) => (
                   <tr
                     key={item.id}
-                    className={`hover:bg-white/5${profileRoute ? " cursor-pointer" : ""}`}
-                    onClick={profileRoute ? () => router.push(`${profileRoute}/${item.id}`) : undefined}
+                    className="hover:bg-white/5"
                   >
                     <td className="px-4 py-3">
                       <p className="font-semibold text-white">{item.name}</p>
@@ -657,8 +736,16 @@ export function UserManagementPage({
                     <td className="px-4 py-3">{item.mobile}</td>
                     <td className="px-4 py-3">{item.designation ? formatEnum(item.designation) : "-"}</td>
                     <td className="px-4 py-3">{item.employmentType ? formatEnum(item.employmentType) : "-"}</td>
-                    <td className="px-4 py-3">{item.dataScope ? formatEnum(item.dataScope) : "-"}</td>
-                    <td className="px-4 py-3">{item.defaultBranchId ? (branchNameMap.get(String(item.defaultBranchId)) || String(item.defaultBranchId)) : "-"}</td>
+                    <td className="px-4 py-3">
+                      {(() => {
+                        const attendanceStatus = attendanceStatusForUser(item.id);
+                        return (
+                          <span className={`rounded-full border px-2 py-1 text-xs font-semibold ${attendanceStatus.className}`}>
+                            {attendanceStatus.label}
+                          </span>
+                        );
+                      })()}
+                    </td>
                     <td className="px-4 py-3">
                       <span
                         className={`rounded-full border px-2 py-1 text-xs font-semibold ${
@@ -671,17 +758,41 @@ export function UserManagementPage({
                       </span>
                     </td>
                     <td className="px-4 py-3">
-                      {canUpdate ? (
-                        <button
-                          type="button"
-                          onClick={() => openEdit(item)}
-                          className="rounded-lg border border-white/10 px-2 py-1 text-xs font-semibold text-slate-200 hover:bg-white/5"
-                        >
-                          Manage
-                        </button>
-                      ) : (
-                        <span className="text-xs text-gray-400">-</span>
-                      )}
+                      <div className="flex flex-wrap gap-2">
+                        {canUpdate ? (
+                          <button
+                            type="button"
+                            onClick={() => void toggleUserActive(item, item.active === false)}
+                            className={`rounded-lg px-2 py-1 text-xs font-semibold ${
+                              item.active === false
+                                ? "bg-emerald-600 text-white hover:bg-emerald-700"
+                                : "border border-white/10 text-slate-200 hover:bg-white/5"
+                            } disabled:opacity-50`}
+                            disabled={statusSavingId === item.id}
+                          >
+                            {statusSavingId === item.id ? "Saving..." : item.active === false ? "Activate" : "Deactivate"}
+                          </button>
+                        ) : null}
+                        {profileRoute ? (
+                          <button
+                            type="button"
+                            onClick={() => router.push(`${profileRoute}/${item.id}`)}
+                            className="rounded-lg border border-white/10 px-2 py-1 text-xs font-semibold text-slate-200 hover:bg-white/5"
+                          >
+                            Open Profile
+                          </button>
+                        ) : canUpdate ? (
+                          <button
+                            type="button"
+                            onClick={() => openEdit(item)}
+                            className="rounded-lg border border-white/10 px-2 py-1 text-xs font-semibold text-slate-200 hover:bg-white/5"
+                          >
+                            Edit
+                          </button>
+                        ) : (
+                          <span className="text-xs text-gray-400">-</span>
+                        )}
+                      </div>
                     </td>
                   </tr>
                 ))
@@ -708,6 +819,11 @@ export function UserManagementPage({
             </button>
           }
         >
+          {role === "COACH" ? (
+            <div className="mb-4 rounded-xl border border-sky-200 bg-sky-50 px-4 py-3 text-sm text-sky-800">
+              Current base attendance model uses trainer punches. Shift-aware salary and auto-deduction should be built on top of assigned shift windows like `6-10`, `5-9`, `5-9 premium`, `6-10 premium`, and Sunday 4-hour duty.
+            </div>
+          ) : null}
           {ownAttendanceLoading ? (
             <p className="py-4 text-sm text-slate-500">Loading attendance...</p>
           ) : (
@@ -726,7 +842,7 @@ export function UserManagementPage({
                   {ownAttendance.length === 0 ? (
                     <tr>
                       <td className="px-4 py-4 text-slate-400" colSpan={5}>
-                        No attendance records found
+                        No attendance punches found yet.
                       </td>
                     </tr>
                   ) : (
@@ -798,7 +914,7 @@ export function UserManagementPage({
                   {leaveRequests.length === 0 ? (
                     <tr>
                       <td className="px-4 py-4 text-slate-400" colSpan={7}>
-                        No leave requests found
+                        No leave requests found yet.
                       </td>
                     </tr>
                   ) : (
