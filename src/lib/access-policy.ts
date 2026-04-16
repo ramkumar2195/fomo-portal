@@ -69,7 +69,6 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
 
 const STAFF_DESIGNATION_DENY_PREFIXES: Partial<Record<UserDesignation, string[]>> = {
   GYM_MANAGER: [
-    "/portal/members/add",
     "/portal/trainers/add",
     "/portal/staff/add",
     "/admin/catalog",
@@ -342,6 +341,7 @@ export function canAssignTrainerScheduleSlots(
 ): boolean {
   if (!user) return false;
   if (user.role === "ADMIN") return true;
+  if (isGymManager(user)) return true;
   return hasStrictCapability(user, accessMetadata, [
     "TRAINER_SCHEDULE_MANAGE",
     "PT_SLOT_MANAGE",
