@@ -63,6 +63,8 @@ export interface RenewalQueueItem {
   invoiceId?: string;
   receiptId?: string;
   paymentConfirmed: boolean;
+  legacyCatalog?: boolean;
+  migrationOnly?: boolean;
 }
 
 export interface CatalogProduct {
@@ -388,6 +390,7 @@ function mapInvoices(payload: unknown): InvoiceSummary[] {
     .map((record, index) => ({
       id: toString(record, ["id", "invoiceId"]) || `invoice-${index}`,
       invoiceNumber: toString(record, ["invoiceNumber", "number", "invoiceNo"]) || "-",
+      billedByStaffId: toString(record, ["billedByStaffId"]) || undefined,
       amount: toNumber(record, ["amount", "total", "invoiceAmount"]),
       status: toString(record, ["status", "invoiceStatus"]) || "UNKNOWN",
       issuedAt: toString(record, ["issuedAt", "createdAt", "invoiceDate"]),
@@ -459,6 +462,8 @@ function mapRenewalQueue(payload: unknown): RenewalQueueItem[] {
       invoiceId: toString(record, ["invoiceId"]) || undefined,
       receiptId: toString(record, ["receiptId"]) || undefined,
       paymentConfirmed: toBoolean(record, ["paymentConfirmed"]),
+      legacyCatalog: toBoolean(record, ["legacyCatalog"]),
+      migrationOnly: toBoolean(record, ["migrationOnly"]),
     }));
 }
 

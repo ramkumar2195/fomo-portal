@@ -16,15 +16,41 @@ export interface WeeklyCalendarEvent {
   subtitle?: string;
   meta?: string;
   tone?: "slate" | "emerald" | "amber" | "rose" | "violet" | "sky";
+  onClick?: () => void;
+  actions?: WeeklyCalendarAction[];
+}
+
+export interface WeeklyCalendarAction {
+  label: string;
+  onClick: () => void;
+  tone?: "default" | "danger";
+}
+
+export interface WeeklyCalendarFreeSlot {
+  id: string;
+  dayKey: string;
+  startTime: string;
+  endTime: string;
+  label?: string;
+  onClick: () => void;
 }
 
 const TONE_CLASS: Record<NonNullable<WeeklyCalendarEvent["tone"]>, string> = {
   slate: "border-white/10 bg-white/[0.05] text-slate-100",
-  emerald: "border-emerald-400/20 bg-emerald-500/10 text-emerald-50",
-  amber: "border-amber-400/20 bg-amber-500/10 text-amber-50",
-  rose: "border-rose-400/20 bg-rose-500/10 text-rose-50",
-  violet: "border-violet-400/20 bg-violet-500/10 text-violet-50",
-  sky: "border-sky-400/20 bg-sky-500/10 text-sky-50",
+  emerald: "border-l-2 border-l-emerald-400 border-emerald-400/20 bg-emerald-500/10 text-emerald-50",
+  amber: "border-l-2 border-l-amber-400 border-amber-400/20 bg-amber-500/10 text-amber-50",
+  rose: "border-l-2 border-l-rose-400 border-rose-400/20 bg-rose-500/10 text-rose-50",
+  violet: "border-l-2 border-l-violet-400 border-violet-400/20 bg-violet-500/10 text-violet-50",
+  sky: "border-l-2 border-l-sky-400 border-sky-400/20 bg-sky-500/10 text-sky-50",
+};
+
+const TONE_META_CLASS: Record<NonNullable<WeeklyCalendarEvent["tone"]>, string> = {
+  slate: "text-slate-300 font-semibold",
+  emerald: "text-emerald-300 font-semibold",
+  amber: "text-amber-300 font-semibold",
+  rose: "text-rose-300 font-semibold",
+  violet: "text-violet-300 font-semibold",
+  sky: "text-sky-300 font-semibold",
 };
 
 function normalizeTime(value: string): string {
@@ -50,17 +76,32 @@ function normalizeTime(value: string): string {
 export function WeeklyCalendar({
   days,
   events,
+  freeSlots = [],
+  timeSlots: explicitTimeSlots,
   emptyLabel = "No scheduled items in this window.",
+  showEventTime = true,
+  showFreeSlotTime = true,
 }: {
   days: WeeklyCalendarDay[];
   events: WeeklyCalendarEvent[];
+  freeSlots?: WeeklyCalendarFreeSlot[];
+  timeSlots?: string[];
   emptyLabel?: string;
+  showEventTime?: boolean;
+  showFreeSlotTime?: boolean;
 }) {
-  const timeSlots = Array.from(new Set(events.map((event) => event.startTime))).sort((left, right) =>
-    left.localeCompare(right),
-  );
+  const [openMenuId, setOpenMenuId] = React.useState<string | null>(null);
+  React.useEffect(() => {
+    const handleDocumentMouseDown = () => setOpenMenuId(null);
+    document.addEventListener("mousedown", handleDocumentMouseDown);
+    return () => document.removeEventListener("mousedown", handleDocumentMouseDown);
+  }, []);
 
-  if (events.length === 0 || timeSlots.length === 0) {
+  const timeSlots = Array.from(
+    new Set([...(explicitTimeSlots ?? []), ...events.map((event) => event.startTime), ...freeSlots.map((slot) => slot.startTime)]),
+  ).sort((left, right) => left.localeCompare(right));
+
+  if (events.length === 0 && freeSlots.length === 0 && timeSlots.length === 0) {
     return (
       <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] px-4 py-6 text-sm text-slate-400">
         {emptyLabel}
@@ -93,28 +134,38 @@ export function WeeklyCalendar({
             </div>
             {days.map((day) => {
               const cellEvents = events.filter((event) => event.dayKey === day.key && event.startTime === time);
+              const cellFreeSlots = freeSlots.filter((slot) => slot.dayKey === day.key && slot.startTime === time);
               return (
                 <div key={`${day.key}-${time}`} className="min-h-[112px] border-r border-white/8 px-3 py-3 last:border-r-0">
                   <div className="space-y-2">
-                    {cellEvents.length === 0 ? (
-                      <div className="rounded-2xl border border-dashed border-white/8 px-3 py-5 text-center text-xs text-slate-500">
-                        Free
-                      </div>
-                    ) : (
+                    {cellEvents.length > 0 ? (
                       cellEvents.map((event) => (
-                        <div
+                        <EventCard
                           key={event.id}
-                          className={`rounded-2xl border px-3 py-3 shadow-sm ${TONE_CLASS[event.tone || "slate"]}`}
-                        >
-                          <p className="text-sm font-semibold">{event.title}</p>
-                          {event.subtitle ? <p className="mt-1 text-xs text-slate-300">{event.subtitle}</p> : null}
-                          <p className="mt-2 text-[11px] uppercase tracking-[0.18em] text-slate-400">
-                            {normalizeTime(event.startTime)}
-                            {event.endTime ? ` to ${normalizeTime(event.endTime)}` : ""}
-                          </p>
-                          {event.meta ? <p className="mt-1 text-xs text-slate-400">{event.meta}</p> : null}
-                        </div>
+                          event={event}
+                          showEventTime={showEventTime}
+                          openMenuId={openMenuId}
+                          setOpenMenuId={setOpenMenuId}
+                        />
                       ))
+                    ) : cellFreeSlots.length > 0 ? (
+                      cellFreeSlots.map((slot) => (
+                        <button
+                          key={slot.id}
+                          type="button"
+                          onClick={slot.onClick}
+                          className="w-full rounded-2xl border border-dashed border-emerald-400/25 bg-emerald-500/5 px-3 py-4 text-left text-xs text-emerald-100 transition hover:border-emerald-300/60 hover:bg-emerald-500/10"
+                        >
+                          <span className="block font-semibold">{slot.label || "Free PT Slot"}</span>
+                          {showFreeSlotTime ? (
+                            <span className="mt-1 block uppercase tracking-[0.18em] text-emerald-200/80">
+                              {normalizeTime(slot.startTime)} to {normalizeTime(slot.endTime)}
+                            </span>
+                          ) : null}
+                        </button>
+                      ))
+                    ) : (
+                      <div className="min-h-[72px]" />
                     )}
                   </div>
                 </div>
@@ -125,4 +176,86 @@ export function WeeklyCalendar({
       </div>
     </div>
   );
+}
+
+function EventCard({
+  event,
+  showEventTime,
+  openMenuId,
+  setOpenMenuId,
+}: {
+  event: WeeklyCalendarEvent;
+  showEventTime: boolean;
+  openMenuId: string | null;
+  setOpenMenuId: React.Dispatch<React.SetStateAction<string | null>>;
+}) {
+  const classes = `relative rounded-2xl border px-3 py-3 text-left shadow-sm ${TONE_CLASS[event.tone || "slate"]} ${
+    event.onClick ? "cursor-pointer transition hover:border-white/25 hover:bg-white/[0.08]" : ""
+  }`;
+  const content = (
+    <>
+      {event.actions && event.actions.length > 0 && !event.onClick ? (
+        <div className="absolute right-2 top-2">
+          <button
+            type="button"
+            onMouseDown={(clickEvent) => clickEvent.stopPropagation()}
+            onClick={(clickEvent) => {
+              clickEvent.stopPropagation();
+              setOpenMenuId((current) => (current === event.id ? null : event.id));
+            }}
+            className="rounded-full border border-white/10 bg-black/20 px-2 py-0.5 text-xs font-bold text-slate-200 hover:bg-black/30"
+            aria-haspopup="menu"
+            aria-expanded={openMenuId === event.id}
+          >
+            ...
+          </button>
+          {openMenuId === event.id ? (
+            <div
+              className="absolute right-0 z-20 mt-2 min-w-[150px] overflow-hidden rounded-xl border border-slate-700 bg-[#111821] shadow-xl"
+              onMouseDown={(clickEvent) => clickEvent.stopPropagation()}
+              onClick={(clickEvent) => clickEvent.stopPropagation()}
+              role="menu"
+            >
+              {event.actions.map((action) => (
+                <button
+                  key={action.label}
+                  type="button"
+                  onClick={(clickEvent) => {
+                    clickEvent.stopPropagation();
+                    setOpenMenuId(null);
+                    action.onClick();
+                  }}
+                  className={`block w-full px-3 py-2 text-left text-xs font-semibold hover:bg-white/10 ${
+                    action.tone === "danger" ? "text-rose-200" : "text-slate-100"
+                  }`}
+                  role="menuitem"
+                >
+                  {action.label}
+                </button>
+              ))}
+            </div>
+          ) : null}
+        </div>
+      ) : null}
+      <p className="text-sm font-semibold">{event.title}</p>
+      {event.subtitle ? <p className="mt-1 text-xs text-slate-300">{event.subtitle}</p> : null}
+      {showEventTime ? (
+        <p className="mt-2 text-[11px] uppercase tracking-[0.18em] text-slate-400">
+          {normalizeTime(event.startTime)}
+          {event.endTime ? ` to ${normalizeTime(event.endTime)}` : ""}
+        </p>
+      ) : null}
+      {event.meta ? <p className={`mt-1 text-xs ${TONE_META_CLASS[event.tone || "slate"]}`}>{event.meta}</p> : null}
+    </>
+  );
+
+  if (event.onClick) {
+    return (
+      <button type="button" onClick={event.onClick} className={classes}>
+        {content}
+      </button>
+    );
+  }
+
+  return <div className={classes}>{content}</div>;
 }

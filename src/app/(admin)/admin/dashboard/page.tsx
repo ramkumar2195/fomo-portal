@@ -54,6 +54,9 @@ const EMPTY_DASHBOARD: SuperAdminDashboardResponse = {
     },
     subscriptions: {
       activeSubscriptions: 0,
+      inactiveSubscriptions: 0,
+      balanceDueInvoices: 0,
+      balanceDueAmount: 0,
     },
     newMembers: {
       today: 0,
@@ -135,6 +138,7 @@ const EMPTY_DASHBOARD: SuperAdminDashboardResponse = {
     expiringIn7Days: 0,
     expiringIn30Days: 0,
     expiredSubscriptions: 0,
+    inactiveSubscriptions: 0,
     balanceDueInvoices: 0,
     balanceDueAmount: 0,
   },
@@ -284,11 +288,13 @@ function SnapshotStat({
   value,
   subtitle,
   tone = "neutral",
+  onClick,
 }: {
   label: string;
   value: string;
   subtitle: string;
   tone?: "neutral" | "green" | "amber" | "rose" | "blue";
+  onClick?: () => void;
 }) {
   const toneClass =
     tone === "green"
@@ -301,8 +307,24 @@ function SnapshotStat({
             ? "border-sky-400/20 bg-sky-500/10"
             : "border-white/8 bg-white/[0.03]";
 
+  const className = `rounded-2xl border p-4 ${toneClass}`;
+
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className={`${className} text-left transition hover:border-[#C42429] hover:bg-white/[0.05]`}
+      >
+        <p className="break-words text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">{label}</p>
+        <p className="mt-3 break-words text-2xl font-bold leading-tight tracking-tight text-white xl:text-3xl">{value}</p>
+        <p className="mt-2 break-words text-sm leading-6 text-slate-300">{subtitle}</p>
+      </button>
+    );
+  }
+
   return (
-    <div className={`rounded-2xl border p-4 ${toneClass}`}>
+    <div className={className}>
       <p className="break-words text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400">{label}</p>
       <p className="mt-3 break-words text-2xl font-bold leading-tight tracking-tight text-white xl:text-3xl">{value}</p>
       <p className="mt-2 break-words text-sm leading-6 text-slate-300">{subtitle}</p>
@@ -693,6 +715,36 @@ export default function AdminDashboardPage({
     ];
   }, [dashboard.summary]);
 
+  const ptHealthCards = useMemo<DashboardMetricCard[]>(() => {
+    const summary = dashboard.summary;
+    return [
+      createMetricCard(
+        "PT Active",
+        formatCount(summary.pt.ptActiveClients),
+        "Members with current PT",
+        <Users className="h-4 w-4" />,
+        "bg-emerald-500/15 text-emerald-100",
+        "PT_ACTIVE_CLIENTS",
+      ),
+      createMetricCard(
+        "PT Inactive",
+        formatCount(summary.pt.ptInactiveClients),
+        "Members with PT history but no live PT",
+        <Users className="h-4 w-4" />,
+        "bg-slate-500/15 text-slate-100",
+        "PT_INACTIVE_CLIENTS",
+      ),
+      createMetricCard(
+        "Total PT Clients",
+        formatCount(summary.pt.ptClients),
+        "All PT-linked members",
+        <Users className="h-4 w-4" />,
+        "bg-violet-500/15 text-violet-100",
+        "PT_CLIENTS",
+      ),
+    ];
+  }, [dashboard.summary]);
+
   const teamCards = useMemo<DashboardMetricCard[]>(() => {
     const summary = dashboard.summary;
     return [
@@ -903,6 +955,18 @@ export default function AdminDashboardPage({
                 value={formatInr(resolvedBalanceDueAmount)}
                 subtitle={`${formatCount(resolvedBalanceDueInvoices)} invoice${resolvedBalanceDueInvoices === 1 ? "" : "s"} awaiting collection`}
                 tone="amber"
+                onClick={() =>
+                  setSelectedCard(
+                    createMetricCard(
+                      "Pending Revenue",
+                      formatInr(resolvedBalanceDueAmount),
+                      `${formatCount(resolvedBalanceDueInvoices)} invoice${resolvedBalanceDueInvoices === 1 ? "" : "s"} awaiting collection`,
+                      <IndianRupee className="h-4 w-4" />,
+                      "bg-amber-500/15 text-amber-100",
+                      "PENDING_REVENUE",
+                    ),
+                  )
+                }
               />
             </div>
           </SurfaceCard>
@@ -910,7 +974,7 @@ export default function AdminDashboardPage({
       </section>
 
       <section className="grid gap-4 xl:grid-cols-12">
-        <div className="xl:col-span-6">
+        <div className="xl:col-span-4">
           <SurfaceCard title="Member Health">
             <div className="grid gap-4 md:grid-cols-2">
               {memberHealthCards.map((card) => (
@@ -933,7 +997,28 @@ export default function AdminDashboardPage({
           </SurfaceCard>
         </div>
 
-        <div className="xl:col-span-6">
+        <div className="xl:col-span-4">
+          <SurfaceCard title="PT Health">
+            <div className="grid gap-4 md:grid-cols-1">
+              {ptHealthCards.map((card) => (
+                <CompactMetricCard
+                  key={card.metricKey}
+                  card={card}
+                  onClick={() => setSelectedCard(card)}
+                  badge={
+                    card.metricKey === "PT_ACTIVE_CLIENTS"
+                      ? <DashboardPill label="Active PT cycles" tone="green" />
+                      : card.metricKey === "PT_INACTIVE_CLIENTS"
+                        ? <DashboardPill label="Historical PT" tone="neutral" />
+                        : undefined
+                  }
+                />
+              ))}
+            </div>
+          </SurfaceCard>
+        </div>
+
+        <div className="xl:col-span-4">
           <SurfaceCard title="Subscription Health">
             <div className="grid gap-3 sm:grid-cols-2">
               <SnapshotStat
@@ -941,24 +1026,72 @@ export default function AdminDashboardPage({
                 value={formatCount(dashboard.summary.subscriptions.activeSubscriptions)}
                 subtitle="Currently live memberships"
                 tone="green"
+                onClick={() =>
+                  setSelectedCard(
+                    createMetricCard(
+                      "Active Subscriptions",
+                      formatCount(dashboard.summary.subscriptions.activeSubscriptions),
+                      "Currently live memberships",
+                      <Layers3 className="h-4 w-4" />,
+                      "bg-emerald-500/15 text-emerald-100",
+                      "ACTIVE_SUBSCRIPTIONS",
+                    ),
+                  )
+                }
+              />
+              <SnapshotStat
+                label="Inactive Subscriptions"
+                value={formatCount(dashboard.summary.subscriptions.inactiveSubscriptions || dashboard.subscriptions.inactiveSubscriptions || dashboard.subscriptions.expiredSubscriptions)}
+                subtitle="Expired or no longer live"
+                tone="neutral"
+                onClick={() =>
+                  setSelectedCard(
+                    createMetricCard(
+                      "Inactive Subscriptions",
+                      formatCount(dashboard.summary.subscriptions.inactiveSubscriptions || dashboard.subscriptions.inactiveSubscriptions || dashboard.subscriptions.expiredSubscriptions),
+                      "Expired or no longer live",
+                      <Layers3 className="h-4 w-4" />,
+                      "bg-slate-500/15 text-slate-100",
+                      "INACTIVE_SUBSCRIPTIONS",
+                    ),
+                  )
+                }
               />
               <SnapshotStat
                 label="Expiring Soon"
                 value={formatCount(resolvedExpiringSoon)}
                 subtitle="Due for renewal shortly"
                 tone="amber"
+                onClick={() =>
+                  setSelectedCard(
+                    createMetricCard(
+                      "Expiring Soon",
+                      formatCount(resolvedExpiringSoon),
+                      "Due for renewal shortly",
+                      <Layers3 className="h-4 w-4" />,
+                      "bg-amber-500/15 text-amber-100",
+                      "EXPIRING_SOON",
+                    ),
+                  )
+                }
               />
               <SnapshotStat
                 label="Balance Due Invoices"
                 value={formatCount(resolvedBalanceDueInvoices)}
                 subtitle="Invoices awaiting collection"
                 tone="rose"
-              />
-              <SnapshotStat
-                label="Pending Revenue"
-                value={formatInr(resolvedBalanceDueAmount)}
-                subtitle="Outstanding to be collected"
-                tone="blue"
+                onClick={() =>
+                  setSelectedCard(
+                    createMetricCard(
+                      "Balance Due Invoices",
+                      formatCount(resolvedBalanceDueInvoices),
+                      "Invoices awaiting collection",
+                      <IndianRupee className="h-4 w-4" />,
+                      "bg-rose-500/15 text-rose-100",
+                      "PENDING_REVENUE",
+                    ),
+                  )
+                }
               />
             </div>
           </SurfaceCard>

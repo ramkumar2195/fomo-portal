@@ -14,9 +14,10 @@ export default function AddTrainerPage() {
   return (
     <UserOnboardForm
       title="Add Trainer"
-      subtitle="Create a COACH user via users-service register API"
+      subtitle="Create a coach profile with trainer basics, shift details, and category mapping."
       targetRole="COACH"
       designationOptions={[
+        { label: "HEAD_COACH", value: "HEAD_COACH" },
         { label: "PT_COACH", value: "PT_COACH" },
         { label: "GENERAL_TRAINER", value: "GENERAL_TRAINER" },
         { label: "YOGA_INSTRUCTOR", value: "YOGA_INSTRUCTOR" },
@@ -25,8 +26,8 @@ export default function AddTrainerPage() {
         { label: "FREELANCE_TRAINER", value: "FREELANCE_TRAINER" },
       ]}
       dataScopeOptions={[
-        { label: "ASSIGNED_ONLY", value: "ASSIGNED_ONLY" },
         { label: "BRANCH", value: "BRANCH" },
+        { label: "ASSIGNED_ONLY", value: "ASSIGNED_ONLY" },
       ]}
       requiredCapabilities={CREATE_TRAINER_CAPABILITIES}
       successLabel="Trainer created successfully."

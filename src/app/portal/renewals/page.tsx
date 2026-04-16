@@ -18,6 +18,8 @@ interface RenewalRow extends RenewalQueueItem {
   memberName: string;
 }
 
+const RENEWALS_PAGE_SIZE = 10;
+
 function toMemberLabel(memberId: string) {
   return memberId ? `Member #${memberId}` : "Unknown member";
 }
@@ -29,6 +31,9 @@ export default function RenewalsPage() {
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<RenewalRow[]>([]);
   const [activeMembers, setActiveMembers] = useState(0);
+  const [expiredMembers, setExpiredMembers] = useState(0);
+  const [upcomingPage, setUpcomingPage] = useState(0);
+  const [expiredPage, setExpiredPage] = useState(0);
 
   const loadPage = useCallback(async () => {
     if (!token || !user) {
@@ -39,7 +44,7 @@ export default function RenewalsPage() {
     setError(null);
 
     try {
-      const [members, renewals, overview] = await Promise.all([
+      const [members, renewals, overview, dashboard] = await Promise.all([
         usersService.searchUsers(token, {
           role: "MEMBER",
           defaultBranchId: effectiveBranchId ? String(effectiveBranchId) : undefined,
@@ -48,6 +53,7 @@ export default function RenewalsPage() {
           daysAhead: 30,
         }),
         engagementService.getSalesDashboard(token, user.id, user.role),
+        usersService.getSuperAdminDashboard(token, effectiveBranchId),
       ]);
 
       const memberNameById = new Map(
@@ -64,7 +70,10 @@ export default function RenewalsPage() {
         .sort((left, right) => left.daysRemaining - right.daysRemaining);
 
       setRows(filteredRows);
-      setActiveMembers(overview.adminOverview.totalActiveMembers || members.length);
+      setActiveMembers(dashboard.summary.members.activeMembers || overview.adminOverview.totalActiveMembers || members.length);
+      setExpiredMembers(dashboard.summary.members.expiredMembers);
+      setUpcomingPage(0);
+      setExpiredPage(0);
     } catch (loadError) {
       const message = loadError instanceof Error ? loadError.message : "Unable to load renewal data";
       setError(message);
@@ -85,10 +94,24 @@ export default function RenewalsPage() {
     () => rows.filter((item) => item.daysRemaining < 0).sort((left, right) => right.daysRemaining - left.daysRemaining),
     [rows],
   );
+  const expiredSubscriptionMembersCount = useMemo(
+    () => new Set(expiredRows.map((item) => item.memberId).filter(Boolean)).size,
+    [expiredRows],
+  );
   const upcoming7 = useMemo(
     () => upcomingRows.filter((item) => item.daysRemaining <= 7).length,
     [upcomingRows],
   );
+  const pagedUpcomingRows = useMemo(
+    () => upcomingRows.slice(upcomingPage * RENEWALS_PAGE_SIZE, (upcomingPage + 1) * RENEWALS_PAGE_SIZE),
+    [upcomingPage, upcomingRows],
+  );
+  const pagedExpiredRows = useMemo(
+    () => expiredRows.slice(expiredPage * RENEWALS_PAGE_SIZE, (expiredPage + 1) * RENEWALS_PAGE_SIZE),
+    [expiredPage, expiredRows],
+  );
+  const upcomingTotalPages = Math.max(1, Math.ceil(upcomingRows.length / RENEWALS_PAGE_SIZE));
+  const expiredTotalPages = Math.max(1, Math.ceil(expiredRows.length / RENEWALS_PAGE_SIZE));
 
   if (loading) {
     return <PageLoader label="Loading renewals..." />;
@@ -119,7 +142,8 @@ export default function RenewalsPage() {
           </div>
           <div>
             <p className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-400">Currently Expired</p>
-            <p className="text-2xl font-bold text-white">{expiredRows.length} Members</p>
+            <p className="text-2xl font-bold text-white">{expiredMembers} Members</p>
+            <p className="mt-1 text-xs text-slate-500">{expiredSubscriptionMembersCount} with expired subscription rows</p>
           </div>
         </article>
         <article className="flex items-center gap-4 rounded-[28px] border border-emerald-400/20 bg-[#131d1b] p-6 shadow-[0_24px_70px_rgba(0,0,0,0.28)]">
@@ -155,7 +179,7 @@ export default function RenewalsPage() {
                   </td>
                 </tr>
               ) : (
-                upcomingRows.map((item) => (
+                pagedUpcomingRows.map((item) => (
                   <tr key={`upcoming-${item.memberSubscriptionId}`} className="hover:bg-white/[0.03]">
                     <td className="px-6 py-4 text-sm font-semibold text-white">{item.memberName}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">{item.variantName}</td>
@@ -164,14 +188,21 @@ export default function RenewalsPage() {
                     <td className="px-6 py-4 text-sm text-slate-300">
                       {item.subscriptionStatus?.toUpperCase() === "PAUSED" ? "Frozen" : item.subscriptionStatus}
                       {item.paymentConfirmed ? " · Paid" : " · Pending"}
+                      {item.migrationOnly ? " · Historical only" : ""}
                     </td>
                     <td className="px-6 py-4">
-                      <Link
-                        href="/portal/billing"
-                        className="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
-                      >
-                        Open Billing
-                      </Link>
+                      {item.migrationOnly ? (
+                        <span className="inline-flex rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-300">
+                          Historical only
+                        </span>
+                      ) : (
+                        <Link
+                          href="/portal/billing"
+                          className="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
+                        >
+                          Open Billing
+                        </Link>
+                      )}
                     </td>
                   </tr>
                 ))
@@ -179,10 +210,33 @@ export default function RenewalsPage() {
             </tbody>
           </table>
         </div>
+        <div className="flex items-center justify-between px-2 text-xs text-slate-400">
+          <span>
+            Page {upcomingPage + 1} of {upcomingTotalPages} ({upcomingRows.length} total)
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setUpcomingPage((current) => Math.max(0, current - 1))}
+              disabled={upcomingPage === 0}
+              className="rounded-xl border border-white/10 px-3 py-1.5 text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              onClick={() => setUpcomingPage((current) => Math.min(upcomingTotalPages - 1, current + 1))}
+              disabled={upcomingPage >= upcomingTotalPages - 1}
+              className="rounded-xl border border-white/10 px-3 py-1.5 text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Next
+            </button>
+          </div>
+        </div>
       </section>
 
       <section className="space-y-6">
-        <h2 className="text-lg font-bold text-white">Expired Members</h2>
+        <h2 className="text-lg font-bold text-white">Expired Subscriptions</h2>
         <div className="overflow-x-auto rounded-[28px] border border-white/8 bg-[#111821] shadow-[0_24px_70px_rgba(0,0,0,0.28)]">
           <table className="w-full text-left">
             <thead>
@@ -203,21 +257,30 @@ export default function RenewalsPage() {
                   </td>
                 </tr>
               ) : (
-                expiredRows.map((item) => (
+                pagedExpiredRows.map((item) => (
                   <tr key={`expired-${item.memberSubscriptionId}`} className="hover:bg-white/[0.03]">
                     <td className="px-6 py-4 text-sm font-semibold text-white">{item.memberName}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">{item.variantName}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">{formatDateTime(item.endDate)}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">{Math.abs(item.daysRemaining)}</td>
-                    <td className="px-6 py-4 text-sm text-slate-300">{item.paymentConfirmed ? "Settled" : "Pending"}</td>
+                    <td className="px-6 py-4 text-sm text-slate-300">
+                      {item.paymentConfirmed ? "Settled" : "Pending"}
+                      {item.migrationOnly ? " · Historical only" : ""}
+                    </td>
                     <td className="px-6 py-4">
                       <div className="flex gap-2">
-                        <Link
-                          href="/portal/billing"
-                          className="rounded-xl bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700"
-                        >
-                          Renew Now
-                        </Link>
+                        {item.migrationOnly ? (
+                          <span className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-slate-200">
+                            Historical only
+                          </span>
+                        ) : (
+                          <Link
+                            href="/portal/billing"
+                            className="rounded-xl bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700"
+                          >
+                            Renew Now
+                          </Link>
+                        )}
                         <Link
                           href="/portal/follow-ups"
                           className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
@@ -231,6 +294,29 @@ export default function RenewalsPage() {
               )}
             </tbody>
           </table>
+        </div>
+        <div className="flex items-center justify-between px-2 text-xs text-slate-400">
+          <span>
+            Page {expiredPage + 1} of {expiredTotalPages} ({expiredRows.length} subscriptions, {expiredSubscriptionMembersCount} members with expired rows)
+          </span>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setExpiredPage((current) => Math.max(0, current - 1))}
+              disabled={expiredPage === 0}
+              className="rounded-xl border border-white/10 px-3 py-1.5 text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Previous
+            </button>
+            <button
+              type="button"
+              onClick={() => setExpiredPage((current) => Math.min(expiredTotalPages - 1, current + 1))}
+              disabled={expiredPage >= expiredTotalPages - 1}
+              className="rounded-xl border border-white/10 px-3 py-1.5 text-slate-200 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Next
+            </button>
+          </div>
         </div>
       </section>
     </div>

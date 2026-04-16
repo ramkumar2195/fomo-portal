@@ -113,6 +113,7 @@ export interface BranchDirectoryMemberRow {
   memberId: string;
   fullName: string;
   mobileNumber: string;
+  gender?: string;
   activePlan: string;
   attendancePercent: number;
   memberStatus: string;

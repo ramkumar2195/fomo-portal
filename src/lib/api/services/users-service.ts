@@ -88,6 +88,12 @@ interface BackendUserPayload {
   emergencyContactName?: string;
   emergencyContactPhone?: string;
   emergencyContactRelation?: string;
+  dateOfJoining?: string;
+  totalExperienceYears?: number;
+  maxClientCapacity?: number;
+  shiftTimings?: string;
+  assignedCategory?: string;
+  profileImageUrl?: string;
 }
 
 export interface UserSearchQuery {
@@ -121,6 +127,12 @@ export interface RegisterUserRequest {
   emergencyContactPhone?: string;
   emergencyContactRelation?: string;
   defaultTrainerStaffId?: string;
+  dateOfJoining?: string;
+  totalExperienceYears?: number;
+  maxClientCapacity?: number;
+  shiftTimings?: string;
+  assignedCategory?: string;
+  profileImageUrl?: string;
 }
 
 export interface UpdateUserRequest {
@@ -145,6 +157,29 @@ export interface UpdateUserRequest {
   emergencyContactPhone?: string;
   emergencyContactRelation?: string;
   defaultTrainerStaffId?: string;
+  dateOfJoining?: string;
+  totalExperienceYears?: number;
+  maxClientCapacity?: number;
+  shiftTimings?: string;
+  assignedCategory?: string;
+  profileImageUrl?: string;
+}
+
+export interface UpdateOwnProfileRequest {
+  fullName: string;
+  email: string;
+  mobileNumber: string;
+  dateOfBirth?: string;
+  gender?: string;
+  address?: string;
+  emergencyContactName?: string;
+  emergencyContactPhone?: string;
+  emergencyContactRelation?: string;
+}
+
+export interface ChangePasswordRequest {
+  oldPassword: string;
+  newPassword: string;
 }
 
 export interface StaffAttendanceReportQuery {
@@ -439,6 +474,12 @@ function mapDirectoryUser(payload: BackendUserPayload): UserDirectoryItem {
     emergencyContactName: payload.emergencyContactName,
     emergencyContactPhone: payload.emergencyContactPhone,
     emergencyContactRelation: payload.emergencyContactRelation,
+    dateOfJoining: payload.dateOfJoining,
+    totalExperienceYears: payload.totalExperienceYears,
+    maxClientCapacity: payload.maxClientCapacity,
+    shiftTimings: payload.shiftTimings,
+    assignedCategory: payload.assignedCategory,
+    profileImageUrl: payload.profileImageUrl,
     createdAt: payload.createdAt,
   };
 }
@@ -480,6 +521,9 @@ function toString(payload: Record<string, unknown>, keys: string[]): string {
     const value = payload[key];
     if (typeof value === "string") {
       return value;
+    }
+    if (typeof value === "number" && Number.isFinite(value)) {
+      return String(value);
     }
   }
 
@@ -544,6 +588,7 @@ function mapDashboardDrilldownMemberRow(payload: unknown): DashboardDrilldownMem
     branchId: toString(record, ["branchId"]) || undefined,
     branchName: toString(record, ["branchName"]) || undefined,
     activePlan: toString(record, ["activePlan", "planName"]) || undefined,
+    assignedTrainerName: toString(record, ["assignedTrainerName", "trainerName", "coachName"]) || undefined,
     memberStatus: toString(record, ["memberStatus", "status"]) || undefined,
     paymentStatus: toString(record, ["paymentStatus"]) || undefined,
     attendancePercent: toNumber(record, ["attendancePercent"]),
@@ -702,6 +747,9 @@ function mapSuperAdminDashboard(payload: unknown): SuperAdminDashboardResponse {
       },
       subscriptions: {
         activeSubscriptions: toNumber(summarySubscriptions, ["activeSubscriptions"]),
+        inactiveSubscriptions: toNumber(summarySubscriptions, ["inactiveSubscriptions"]),
+        balanceDueInvoices: toNumber(summarySubscriptions, ["balanceDueInvoices"]),
+        balanceDueAmount: toNumber(summarySubscriptions, ["balanceDueAmount"]),
       },
       newMembers: {
         today: toNumber(summaryNewMembers, ["today"]),
@@ -789,8 +837,10 @@ function mapSuperAdminDashboard(payload: unknown): SuperAdminDashboardResponse {
       expiringIn7Days: expiringSoon,
       expiringIn30Days: toNumber(subscriptions, ["expiringIn30Days"]),
       expiredSubscriptions: toNumber(subscriptions, ["expiredSubscriptions"]),
-      balanceDueInvoices: toNumber(subscriptions, ["balanceDueInvoices"]),
-      balanceDueAmount: toNumber(subscriptions, ["balanceDueAmount"]),
+      inactiveSubscriptions:
+        toNumber(subscriptions, ["inactiveSubscriptions"]) || toNumber(summarySubscriptions, ["inactiveSubscriptions"]),
+      balanceDueInvoices: toNumber(subscriptions, ["balanceDueInvoices"]) || toNumber(summarySubscriptions, ["balanceDueInvoices"]),
+      balanceDueAmount: toNumber(subscriptions, ["balanceDueAmount"]) || toNumber(summarySubscriptions, ["balanceDueAmount"]),
     },
     engagement: {
       todayCheckIns: toNumber(engagement, ["todayCheckIns"]),
@@ -1281,6 +1331,37 @@ export const usersService = {
     });
 
     return mapDirectoryUser(unwrapData<BackendUserPayload>(response));
+  },
+
+  async updateMyProfile(token: string, payload: UpdateOwnProfileRequest): Promise<UserDirectoryItem> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "users",
+      path: `${USERS_API_PREFIX}/me/profile`,
+      token,
+      method: "PATCH",
+      body: payload,
+    });
+
+    return mapDirectoryUser(unwrapData<BackendUserPayload>(response));
+  },
+
+  async changePassword(token: string, id: string, payload: ChangePasswordRequest): Promise<void> {
+    await apiRequest<unknown | { data: unknown }>({
+      service: "users",
+      path: `${USERS_API_PREFIX}/${id}/password`,
+      token,
+      method: "PATCH",
+      body: payload,
+    });
+  },
+
+  async deleteUser(token: string, id: string): Promise<void> {
+    await apiRequest<unknown | { data: unknown }>({
+      service: "users",
+      path: `${USERS_API_PREFIX}/${id}`,
+      token,
+      method: "DELETE",
+    });
   },
 
   async getSuperAdminDashboard(token: string, branchId?: string | number): Promise<SuperAdminDashboardResponse> {

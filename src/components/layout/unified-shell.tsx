@@ -46,6 +46,7 @@ interface NavLinkItem {
   queryKey?: string;
   queryValues?: string[];
   queryNotValues?: string[];
+  adminOnly?: boolean;
 }
 
 interface NavSection {
@@ -157,8 +158,19 @@ const NAV_SECTIONS: NavSection[] = [
   {
     key: "reports",
     label: "Reports",
-    href: "/portal/reports",
     icon: <ReportsIcon className="h-4 w-4" />,
+    children: [
+      { href: "/portal/reports", label: "Analysis", icon: <ReportsIcon className="h-4 w-4" /> },
+      {
+        href: "/portal/reports?tab=downloads",
+        accessHref: "/portal/reports",
+        label: "Reports",
+        icon: <ReportsIcon className="h-4 w-4" />,
+        queryKey: "tab",
+        queryValues: ["downloads"],
+        adminOnly: true,
+      },
+    ],
   },
   {
     key: "settings",
@@ -268,6 +280,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
           }
 
           const visibleChildren = section.children.filter((item) =>
+            (!item.adminOnly || user?.role === "ADMIN") &&
             canAccessRoute(item.accessHref || toPathname(item.href), user, accessMetadata),
           );
 
@@ -389,7 +402,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
       return `/admin/staff/${result.item.id}`;
     }
     if (role === "COACH") {
-      return `/admin/coaches/${result.item.id}`;
+      return `/portal/trainers/${result.item.id}`;
     }
     return "/portal/members";
   };
@@ -583,10 +596,10 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
       <div className={`${collapsed ? "md:pl-24" : "md:pl-[232px]"} transition-all duration-200`}>
         {/* Header */}
         <header
-          className={`fixed top-0 right-0 z-30 h-[57px] border-b border-white/[0.05] bg-[#0f141d]/94 shadow-[0_12px_40px_rgba(0,0,0,0.2)] backdrop-blur ${collapsed ? "md:left-24" : "md:left-[232px]"} left-0 md:left-auto transition-all duration-200`}
+          className={`fixed top-0 right-0 z-30 h-[57px] border-b border-white/[0.05] bg-[#0f141d]/94 shadow-[0_12px_40px_rgba(0,0,0,0.2)] backdrop-blur left-0 ${collapsed ? "md:left-24" : "md:left-[232px]"} transition-all duration-200`}
         >
-          <div className="mx-auto flex h-full max-w-[1500px] items-center gap-4 px-7">
-            <div className="flex min-w-0 flex-1 items-center gap-3">
+          <div className="grid h-full w-full grid-cols-[minmax(0,1fr)_auto] items-center gap-2 px-3 sm:px-4">
+            <div className="flex min-w-0 items-center gap-2">
               {/* Mobile hamburger */}
               <button
                 type="button"
@@ -601,7 +614,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
 
               {/* Search */}
               <div className="hidden min-w-0 flex-1 md:block">
-                <div ref={searchRef} className="relative max-w-[340px]">
+                <div ref={searchRef} className="relative w-full">
                   <SearchIcon className="pointer-events-none absolute left-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-400" />
                   <input
                     type="text"
@@ -616,7 +629,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                         setGlobalSearchOpen(true);
                       }
                     }}
-                    className="relative z-10 w-full rounded-[10px] border border-white/10 bg-[#131b26] py-2 pr-4 pl-9 text-[13px] text-slate-100 outline-none transition focus:border-[#C42924]"
+                    className="relative z-10 h-11 w-full rounded-[12px] border border-white/10 bg-[#131b26] py-2.5 pr-4 pl-10 text-[14px] text-slate-100 outline-none transition focus:border-[#C42924]"
                   />
                   {globalSearchOpen ? (
                     <div className="absolute left-0 right-0 top-[calc(100%+0.5rem)] z-50 overflow-hidden rounded-[16px] border border-white/8 bg-[#131925] shadow-[0_24px_60px_rgba(0,0,0,0.42)]">
@@ -660,12 +673,12 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
               </div>
             </div>
 
-            <div className="flex shrink-0 items-center gap-2">
+            <div className="flex shrink-0 items-center gap-1.5">
               {/* Branch selector */}
               {branches.length > 0 ? (
                 canSwitchBranches && branches.length > 1 ? (
                   <select
-                    className="rounded-lg border border-white/10 bg-[#131b26] px-3 py-2 text-sm text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
+                    className="rounded-lg border border-white/10 bg-[#131b26] px-2.5 py-1.5 text-xs text-slate-100 shadow-[inset_0_1px_0_rgba(255,255,255,0.04)]"
                     value={selectedBranchId}
                     onChange={(e) => selectBranch(e.target.value)}
                   >
@@ -676,7 +689,7 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                     ))}
                   </select>
                 ) : (
-                  <div className="rounded-full border border-white/10 bg-[#131b26] px-3 py-1.5 text-[12px] font-medium text-slate-100">
+                  <div className="rounded-full border border-white/10 bg-[#131b26] px-2.5 py-1 text-[11px] font-medium text-slate-100">
                     {selectedBranchName || branches[0]?.name || "Branch"}
                   </div>
                 )

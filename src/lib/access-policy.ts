@@ -7,9 +7,11 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     "/portal/inquiries",
     "/portal/follow-ups",
     "/portal/members",
+    "/admin/members",
     "/portal/renewals",
     "/portal/billing",
     "/portal/trainers",
+    "/admin/coaches",
     "/portal/trainer-attendance",
     "/portal/staff",
     "/portal/community",
@@ -20,7 +22,6 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     "/portal/accounts",
     "/admin/programs",
     "/admin/classes",
-    "/admin/credits",
   ],
   SALES_MANAGER: [
     "/portal/sales-dashboard",
@@ -64,6 +65,17 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
   BOXING_INSTRUCTOR: [],
   FREELANCE_TRAINER: [],
   MEMBER: [],
+};
+
+const STAFF_DESIGNATION_DENY_PREFIXES: Partial<Record<UserDesignation, string[]>> = {
+  GYM_MANAGER: [
+    "/portal/members/add",
+    "/portal/trainers/add",
+    "/portal/staff/add",
+    "/admin/catalog",
+    "/admin/credits",
+    "/admin/settings",
+  ],
 };
 
 function roleFromInput(input?: AuthUser | UserRole | null): UserRole | undefined {
@@ -272,6 +284,71 @@ export function canManagePlans(user?: AuthUser | null): boolean {
   return Boolean(user?.role === "ADMIN" && hasDesignation(user, "SUPER_ADMIN"));
 }
 
+function hasStrictCapability(
+  user: Pick<AuthUser, "role" | "designation"> | null | undefined,
+  accessMetadata: AccessMetadata | null | undefined,
+  required: string | readonly string[],
+): boolean {
+  return hasCapability(user, accessMetadata, required, false);
+}
+
+export function isGymManager(user?: Pick<AuthUser, "role" | "designation"> | null): boolean {
+  return Boolean(user?.role === "STAFF" && user.designation === "GYM_MANAGER");
+}
+
+export function canOperatePtSessions(
+  user: Pick<AuthUser, "role" | "designation"> | null | undefined,
+  accessMetadata?: AccessMetadata | null,
+): boolean {
+  if (!user) return false;
+  if (user.role === "ADMIN" || user.role === "COACH") return true;
+  if (isGymManager(user)) return true;
+  return hasStrictCapability(user, accessMetadata, [
+    "PT_SESSION_OPERATE",
+    "PT_SESSION_MANAGE",
+    "TRAINING_SESSION_OPERATE",
+  ]);
+}
+
+export function canManagePtSetup(
+  user: Pick<AuthUser, "role" | "designation"> | null | undefined,
+  accessMetadata?: AccessMetadata | null,
+): boolean {
+  if (!user) return false;
+  if (user.role === "ADMIN") return true;
+  return hasStrictCapability(user, accessMetadata, [
+    "PT_SETUP_MANAGE",
+    "PT_ASSIGNMENT_MANAGE",
+    "TRAINING_ASSIGNMENT_MANAGE",
+  ]);
+}
+
+export function canEditTrainerProfile(
+  user: Pick<AuthUser, "role" | "designation"> | null | undefined,
+  accessMetadata?: AccessMetadata | null,
+): boolean {
+  if (!user) return false;
+  if (user.role === "ADMIN") return true;
+  return hasStrictCapability(user, accessMetadata, [
+    "TRAINER_MANAGE",
+    "COACH_MANAGE",
+    "USER_MANAGE",
+  ]);
+}
+
+export function canAssignTrainerScheduleSlots(
+  user: Pick<AuthUser, "role" | "designation"> | null | undefined,
+  accessMetadata?: AccessMetadata | null,
+): boolean {
+  if (!user) return false;
+  if (user.role === "ADMIN") return true;
+  return hasStrictCapability(user, accessMetadata, [
+    "TRAINER_SCHEDULE_MANAGE",
+    "PT_SLOT_MANAGE",
+    "CLASS_SCHEDULE_MANAGE",
+  ]);
+}
+
 export function canAccessRoute(
   pathname: string,
   user?: AuthUser | null,
@@ -303,6 +380,10 @@ export function canAccessRouteWithMetadata(
     if (user.role === "ADMIN") return true;
     // STAFF can access specific /admin routes based on designation
     if (user.role === "STAFF" && user.designation) {
+      const deniedPrefixes = STAFF_DESIGNATION_DENY_PREFIXES[user.designation] || [];
+      if (routeMatches(pathname, deniedPrefixes)) {
+        return false;
+      }
       const allowedPrefixes = STAFF_DESIGNATION_ROUTE_PREFIXES[user.designation] || [];
       return allowedPrefixes.includes("*") || routeMatches(pathname, allowedPrefixes);
     }
@@ -327,6 +408,11 @@ export function canAccessRouteWithMetadata(
   }
 
   if (!user.designation) {
+    return false;
+  }
+
+  const deniedPrefixes = STAFF_DESIGNATION_DENY_PREFIXES[user.designation] || [];
+  if (routeMatches(pathname, deniedPrefixes)) {
     return false;
   }
 

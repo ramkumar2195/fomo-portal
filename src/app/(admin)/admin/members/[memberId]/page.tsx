@@ -8,6 +8,7 @@ import {
   ArrowLeft,
   BadgeCheck,
   CalendarDays,
+  CircleFadingArrowUp,
   CreditCard,
   Download,
   ExternalLink,
@@ -18,6 +19,7 @@ import {
   RotateCcw,
   Share2,
   Snowflake,
+  Trash2,
   UserRound,
   Wallet,
 } from "lucide-react";
@@ -30,6 +32,7 @@ import { engagementService } from "@/lib/api/services/engagement-service";
 import { subscriptionService } from "@/lib/api/services/subscription-service";
 import { trainingService } from "@/lib/api/services/training-service";
 import { usersService } from "@/lib/api/services/users-service";
+import { canManagePtSetup, canOperatePtSessions } from "@/lib/access-policy";
 import { formatMemberCode } from "@/lib/inquiry-code";
 import { UserDirectoryItem, FreezeHistoryEntry, InvoiceSummary, BillingReceiptSummary } from "@/types/models";
 import { InquiryRecord } from "@/types/inquiry";
@@ -109,9 +112,12 @@ type ActionModalKey =
   | "upgrade"
   | "upgrade-billing"
   | "pt-billing"
+  | "pt-setup"
+  | "pt-manual-entry"
   | "pt-session-count"
   | "pt-reschedule"
   | "pt-cancel"
+  | "pt-delete-sessions"
   | "downgrade"
   | "transfer"
   | "pt"
@@ -216,6 +222,19 @@ const PT_WEEKDAY_OPTIONS = [
   { code: "SATURDAY", label: "Sat" },
 ] as const;
 const PT_EVERYDAY_DAY_CODES = PT_WEEKDAY_OPTIONS.map((day) => day.code);
+const PT_MWF_DAY_CODES = ["MONDAY", "WEDNESDAY", "FRIDAY"] as const;
+const PT_TTS_DAY_CODES = ["TUESDAY", "THURSDAY", "SATURDAY"] as const;
+const PT_EXERCISE_TYPE_OPTIONS = [
+  { value: "STRENGTH", label: "Strength" },
+  { value: "HYPERTROPHY", label: "Hypertrophy" },
+  { value: "CONDITIONING", label: "Conditioning" },
+  { value: "FUNCTIONAL", label: "Functional" },
+  { value: "MOBILITY", label: "Mobility" },
+  { value: "CALISTHENICS", label: "Calisthenics" },
+  { value: "BOXING", label: "Boxing" },
+  { value: "ASSESSMENT", label: "Assessment" },
+  { value: "OTHER", label: "Other" },
+] as const;
 const PAYMENT_CARD_OPTIONS = [
   { value: "DEBIT_CARD", label: "Debit Card" },
   { value: "CREDIT_CARD", label: "Credit Card" },
@@ -319,7 +338,7 @@ function derivePtRescheduleLimit(durationMonths: number, unlimited = false): num
   if (unlimited) {
     return 0;
   }
-  return durationMonths > 0 ? 3 : 0;
+  return durationMonths > 0 ? Math.max(Math.ceil(durationMonths) * 3, 3) : 0;
 }
 
 function addMinutesToTime(timeValue: string, minutesToAdd: number): string {
@@ -406,7 +425,16 @@ function canCancelPtSessionInTime(session: RecordLike, now = new Date()): boolea
 
 function canReschedulePtSessionInTime(session: RecordLike, now = new Date()): boolean {
   const hoursRemaining = hoursUntilPtSession(session, now);
-  return hoursRemaining !== null && hoursRemaining >= PT_RESCHEDULE_CUTOFF_HOURS;
+  return (
+    hoursRemaining !== null
+    && hoursRemaining < PT_CANCEL_CUTOFF_HOURS
+    && hoursRemaining >= PT_RESCHEDULE_CUTOFF_HOURS
+  );
+}
+
+function isLateNoShowWindow(session: RecordLike, now = new Date()): boolean {
+  const startAt = getPtSessionStartDateTime(session);
+  return startAt !== null && now.getTime() >= startAt.getTime();
 }
 
 function describePtHoursRemaining(session: RecordLike, now = new Date()): string {
@@ -445,19 +473,19 @@ function getPtRescheduleAvailabilityMessage(params: {
     return "No same-day free slot for this coach";
   }
   if (!canReschedulePtSessionInTime(session, now)) {
-    return `Reschedule closes ${PT_RESCHEDULE_CUTOFF_HOURS}h before slot`;
+    return "Reschedule window closed";
   }
-  return "Same-day reschedule available";
+  return "Reschedule available";
 }
 
 function getPtCancelAvailabilityMessage(session: RecordLike, now = new Date()): string {
   if (canCancelPtSessionInTime(session, now)) {
     return `Cancel allowed until ${PT_CANCEL_CUTOFF_HOURS}h before slot`;
   }
-  if (canReschedulePtSessionInTime(session, now)) {
-    return `Cancel closed. Only same-day reschedule is allowed until ${PT_RESCHEDULE_CUTOFF_HOURS}h before slot`;
+  if (!isLateNoShowWindow(session, now)) {
+    return "Cancel window closed";
   }
-  return "Late cancellation will consume the session";
+  return "No-show window only";
 }
 
 function parseAuditDetails(details?: string): Record<string, string> {
@@ -577,14 +605,18 @@ function canStartPtSessionNow(session: RecordLike, now = new Date()): boolean {
   return now >= startAt && now <= endAt;
 }
 
+function hasPtSessionEnded(session: RecordLike, now = new Date()): boolean {
+  const endAt = getPtSessionEndDateTime(session);
+  return Boolean(endAt && now > endAt);
+}
+
 function buildPtTimeSlotOptions(): string[] {
   const windows = [
-    { start: 6 * 60, end: 10 * 60 },
-    { start: 17 * 60, end: 21 * 60 },
+    { start: 5 * 60, end: 22 * 60 },
   ];
   const options: string[] = [];
   windows.forEach((window) => {
-    for (let minute = window.start; minute + PT_SLOT_DURATION_MINUTES <= window.end; minute += PT_SLOT_DURATION_MINUTES) {
+    for (let minute = window.start; minute + PT_SLOT_DURATION_MINUTES <= window.end; minute += 30) {
       const hours = Math.floor(minute / 60);
       const mins = minute % 60;
       options.push(`${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`);
@@ -595,6 +627,24 @@ function buildPtTimeSlotOptions(): string[] {
 
 function formatPtDayLabel(dayCode: string): string {
   return PT_WEEKDAY_OPTIONS.find((day) => day.code === dayCode)?.label || humanizeLabel(dayCode);
+}
+
+function getWeekdayCodeForDate(dateIso?: string): string {
+  if (!dateIso) {
+    return "";
+  }
+  const date = parseLocalDateTime(dateIso, "00:00");
+  return date ? date.toLocaleDateString("en-US", { weekday: "long" }).toUpperCase() : "";
+}
+
+function getAssignedPtSlotForDate(slots: unknown[], dateIso?: string): RecordLike | null {
+  const weekday = getWeekdayCodeForDate(dateIso);
+  if (!weekday) {
+    return null;
+  }
+  return slots
+    .map((slot) => toRecord(slot))
+    .find((slot) => (pickString(slot, ["dayOfWeek"]) || "").toUpperCase() === weekday) || null;
 }
 
 function buildSyntheticInternalEmail(seed?: string, domain = "members.fomotraining.internal"): string {
@@ -1276,14 +1326,32 @@ function ProfilePanel({
 function StatPill({
   label,
   value,
+  onClick,
 }: {
   label: string;
   value: string;
+  onClick?: () => void;
 }) {
-  return (
-    <div className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-3">
+  const content = (
+    <>
       <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">{label}</p>
       <p className="mt-2 text-base font-semibold text-white">{value}</p>
+    </>
+  );
+  if (onClick) {
+    return (
+      <button
+        type="button"
+        onClick={onClick}
+        className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-3 text-left transition hover:border-red-400/40 hover:bg-white/[0.08]"
+      >
+        {content}
+      </button>
+    );
+  }
+  return (
+    <div className="rounded-2xl border border-white/8 bg-white/[0.04] px-4 py-3">
+      {content}
     </div>
   );
 }
@@ -1690,7 +1758,7 @@ export default function MemberProfilePage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const memberId = params.memberId;
-  const { token, user } = useAuth();
+  const { token, user, accessMetadata } = useAuth();
 
   const [shell, setShell] = useState<MemberProfileShellResponse | null>(null);
   const [loadingShell, setLoadingShell] = useState(true);
@@ -1712,6 +1780,13 @@ export default function MemberProfilePage() {
   const [selectedMembershipId, setSelectedMembershipId] = useState<string>("");
   const [openMembershipMenuId, setOpenMembershipMenuId] = useState<string | null>(null);
   const [ptFocusSection, setPtFocusSection] = useState<"session-register" | null>(null);
+  const [ptHistoryModal, setPtHistoryModal] = useState<{
+    subscriptionId: string;
+    label: string;
+    startDate?: string;
+    endDate?: string;
+    totalSessions?: number;
+  } | null>(null);
   const [supportLoading, setSupportLoading] = useState(false);
   const [activeFreezeInfo, setActiveFreezeInfo] = useState<Record<string, unknown>>({});
   const [resolvedPtCoachName, setResolvedPtCoachName] = useState("");
@@ -1731,6 +1806,25 @@ export default function MemberProfilePage() {
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [completedBilling, setCompletedBilling] = useState<CompletedBillingState | null>(null);
+  const [ptSetupForm, setPtSetupForm] = useState({
+    coachId: "",
+    startDate: "",
+    endDate: "",
+    totalSessions: "",
+    slotStartTime: "06:00",
+    scheduleDays: ["MONDAY", "WEDNESDAY", "FRIDAY"] as string[],
+  });
+  const [ptManualEntryForm, setPtManualEntryForm] = useState({
+    assignmentId: "",
+    sessionDate: toLocalIsoDate(new Date()),
+    sessionTime: "06:00",
+    status: "COMPLETED" as "COMPLETED" | "NO_SHOW" | "CANCELLED" | "SCHEDULED",
+    exerciseType: "STRENGTH",
+    useCustomTime: false,
+    notes: "",
+  });
+  const [selectedPtSessionIds, setSelectedPtSessionIds] = useState<string[]>([]);
+  const [ptDeleteSessionIds, setPtDeleteSessionIds] = useState<string[]>([]);
   const [editForm, setEditForm] = useState({
     fullName: "",
     email: "",
@@ -1762,6 +1856,14 @@ export default function MemberProfilePage() {
     receivedAmount: "",
     balanceDueDate: "",
   });
+
+  useEffect(() => {
+    if (!actionSuccess) {
+      return;
+    }
+    const timeout = window.setTimeout(() => setActionSuccess(null), 3200);
+    return () => window.clearTimeout(timeout);
+  }, [actionSuccess]);
   const [renewCardSubtype, setRenewCardSubtype] = useState<"DEBIT_CARD" | "CREDIT_CARD">("DEBIT_CARD");
   const [lifecycleUpiVendor, setLifecycleUpiVendor] = useState<"GOOGLE_PAY" | "PHONEPE" | "PAYTM" | "OTHER">("GOOGLE_PAY");
   const [freezeForm, setFreezeForm] = useState({
@@ -1779,6 +1881,7 @@ export default function MemberProfilePage() {
     productCode: "",
     productVariantId: "",
     coachId: "",
+    partnerMemberId: "",
     startDate: "",
     endDate: "",
     totalSessions: "",
@@ -1798,11 +1901,17 @@ export default function MemberProfilePage() {
   const [ptSessionCountForm, setPtSessionCountForm] = useState({
     assignmentId: "",
     totalSessions: "",
+    importedCompletedSessions: "",
+    importedPendingSessions: "",
+    importedNoShowSessions: "",
+    importedCancelledSessions: "",
+    importedReschedulesUsed: "",
   });
   const [resumeBillingForm, setResumeBillingForm] = useState({
     paymentMode: "UPI",
     invoiceId: "",
   });
+  const autoOpenedBalanceInvoiceRef = useRef<string | null>(null);
   const [ptRescheduleForm, setPtRescheduleForm] = useState({
     sessionId: "",
     currentDate: "",
@@ -1837,6 +1946,9 @@ export default function MemberProfilePage() {
     if (matched) {
       setActiveTab(matched.key);
     }
+    if (requestedTab === "personal-training" && searchParams.get("section") === "session-register") {
+      setPtFocusSection("session-register");
+    }
   }, [searchParams]);
 
   // Reset stale loading flags when token refreshes so stuck tabs can retry
@@ -1853,11 +1965,15 @@ export default function MemberProfilePage() {
     setTabErrors((current) => ({ ...current, subscriptions: undefined }));
 
     try {
-      const [dashboard, entitlements, programEnrollments] = await withTabTimeout(
+      const [dashboard, entitlements, programEnrollments, subscriptionHistory] = await withTabTimeout(
         Promise.all([
           subscriptionService.getMemberDashboard(token, memberId),
           subscriptionService.getMemberEntitlements(token, memberId),
           trainingService.getMemberProgramEnrollments(token, memberId),
+          subscriptionService.getSubscriptionRegister(token, {
+            memberId,
+            from: "2000-01-01",
+          }).catch(() => []),
         ]),
         "subscriptions",
       );
@@ -1867,7 +1983,7 @@ export default function MemberProfilePage() {
         subscriptions: {
           dashboard: toRecord(dashboard),
           entitlements: toArray(entitlements),
-          history: [],
+          history: toArray(subscriptionHistory),
           programEnrollments: toArray(programEnrollments),
         },
       }));
@@ -1884,6 +2000,33 @@ export default function MemberProfilePage() {
     } finally {
       setLoadingTabs((current) => ({ ...current, subscriptions: false }));
     }
+  }, [memberId, token]);
+
+  const loadMemberPtData = useCallback(async (): Promise<TabPayloadMap["personal-training"]> => {
+    if (!token || !memberId) {
+      return { assignments: [], sessions: [], slots: [] };
+    }
+
+    const ptAssignmentsData = await withTabTimeout(trainingService.getMemberAssignments(token, memberId), "personal training");
+    const ptArr = Array.isArray(ptAssignmentsData) ? ptAssignmentsData : [];
+    const assignmentIds = Array.from(new Set(
+      ptArr
+        .map((assignment) => pickString(toRecord(assignment), ["id", "assignmentId"]))
+        .filter(Boolean),
+    ));
+    const activeAssign = ptArr.find((assignment) => pickBoolean(toRecord(assignment), ["active"]) === true);
+    const activeAssignId = activeAssign ? pickString(toRecord(activeAssign), ["id", "assignmentId"]) : "";
+
+    const sessionResults = await Promise.all(
+      assignmentIds.map((assignmentId) => trainingService.getPtSessionsByAssignment(token, assignmentId).catch(() => [])),
+    );
+    const ptSessions = sessionResults.flatMap((result) => Array.isArray(result) ? result : []);
+    const slotsResult = activeAssignId
+      ? await trainingService.getSlotsByAssignment(token, activeAssignId).catch(() => [])
+      : [];
+    const ptSlots = Array.isArray(slotsResult) ? slotsResult : [];
+
+    return { assignments: ptArr, sessions: ptSessions, slots: ptSlots };
   }, [memberId, token]);
 
   const reloadShell = async () => {
@@ -2065,6 +2208,11 @@ export default function MemberProfilePage() {
       if (tabDataRef.current.subscriptions === undefined && !loadingTabsRef.current.subscriptions) {
         void loadMembershipTab();
       }
+      if (tabDataRef.current["personal-training"] === undefined && !loadingTabsRef.current["personal-training"]) {
+        void loadMemberPtData().then((payload) => {
+          setTabData((current) => ({ ...current, "personal-training": payload }));
+        }).catch(() => undefined);
+      }
     }
 
     if (activeTab === "subscriptions") {
@@ -2136,27 +2284,7 @@ export default function MemberProfilePage() {
             break;
           case "personal-training":
             try {
-              const ptAssignmentsData = await withTabTimeout(trainingService.getMemberAssignments(token, memberId), "personal training");
-              const ptArr = Array.isArray(ptAssignmentsData) ? ptAssignmentsData : [];
-              // For each active assignment, try to fetch sessions and slots
-              let ptSessions: unknown[] = [];
-              let ptSlots: unknown[] = [];
-              const activeAssign = ptArr.find((a) => {
-                const rec = toRecord(a);
-                return pickBoolean(rec, ["active"]) === true;
-              });
-              if (activeAssign) {
-                const assignId = pickString(toRecord(activeAssign), ["id", "assignmentId"]);
-                if (assignId) {
-                  const [sessionsResult, slotsResult] = await Promise.all([
-                    trainingService.getPtSessionsByAssignment(token, assignId).catch(() => []),
-                    trainingService.getSlotsByAssignment(token, assignId).catch(() => []),
-                  ]);
-                  ptSessions = Array.isArray(sessionsResult) ? sessionsResult : [];
-                  ptSlots = Array.isArray(slotsResult) ? slotsResult : [];
-                }
-              }
-              payload = { assignments: ptArr, sessions: ptSessions, slots: ptSlots } as unknown as TabPayloadMap["personal-training"];
+              payload = await loadMemberPtData();
             } catch {
               // Training service may return 404 when no assignments exist
               payload = { assignments: [], sessions: [] };
@@ -2222,7 +2350,7 @@ export default function MemberProfilePage() {
       active = false;
     };
   // eslint-disable-next-line react-hooks/exhaustive-deps -- loadingTabs/tabData accessed via refs to avoid re-run race conditions
-  }, [activeTab, loadMembershipTab, memberId, shell, token]);
+  }, [activeTab, loadMemberPtData, loadMembershipTab, memberId, shell, token]);
 
   useEffect(() => {
     if (activeTab !== "personal-training" || ptFocusSection !== "session-register") {
@@ -2319,25 +2447,10 @@ export default function MemberProfilePage() {
     setLoadingTabs((current) => ({ ...current, "personal-training": true }));
     setTabErrors((current) => ({ ...current, "personal-training": undefined }));
     try {
-      const ptAssignmentsData = await withTabTimeout(trainingService.getMemberAssignments(token, memberId), "personal training");
-      const ptArr = Array.isArray(ptAssignmentsData) ? ptAssignmentsData : [];
-      let ptSessions: unknown[] = [];
-      let ptSlots: unknown[] = [];
-      const activeAssign = ptArr.find((assignment) => pickBoolean(toRecord(assignment), ["active"]) === true);
-      if (activeAssign) {
-        const assignId = pickString(toRecord(activeAssign), ["id", "assignmentId"]);
-        if (assignId) {
-          const [sessionsResult, slotsResult] = await Promise.all([
-            trainingService.getPtSessionsByAssignment(token, assignId).catch(() => []),
-            trainingService.getSlotsByAssignment(token, assignId).catch(() => []),
-          ]);
-          ptSessions = Array.isArray(sessionsResult) ? sessionsResult : [];
-          ptSlots = Array.isArray(slotsResult) ? slotsResult : [];
-        }
-      }
+      const payload = await loadMemberPtData();
       setTabData((current) => ({
         ...current,
-        "personal-training": { assignments: ptArr, sessions: ptSessions, slots: ptSlots },
+        "personal-training": payload,
       }));
     } catch (error) {
       setTabErrors((current) => ({
@@ -2347,7 +2460,7 @@ export default function MemberProfilePage() {
     } finally {
       setLoadingTabs((current) => ({ ...current, "personal-training": false }));
     }
-  }, [memberId, token]);
+  }, [loadMemberPtData, memberId, token]);
 
   useEffect(() => {
     if (!token || !memberId || !hasPtAssignment) {
@@ -2586,10 +2699,11 @@ export default function MemberProfilePage() {
       ? "Group Class Trainer"
       : "Assigned Trainer";
   const clientRepName = pickFromSourcesString(shellSources, ["clientRepName", "clientRepresentativeName", "clientRep"]) || "-";
+  const resolvedClientRepName = clientRepName !== "-" ? clientRepName : "System Admin";
   const interestedIn = pickFromSourcesString(shellSources, ["interestedIn"]) || "-";
   const billingRepName =
     pickFromSourcesString(shellSources, ["billedByStaffName", "billingRepName", "billingRepresentativeName"]) ||
-    (clientRepName !== "-" ? clientRepName : "-");
+    resolvedClientRepName;
   const sourceInquiryId = pickFromSourcesNumber(shellSources, ["sourceInquiryId", "inquiryId", "leadId"]);
   const memberCode =
     pickFromSourcesString(shellSources, ["memberCode", "code", "externalCode"]) ||
@@ -2598,7 +2712,8 @@ export default function MemberProfilePage() {
           branchCode,
           createdAt: joinDate,
         })
-      : String(shell?.memberId || memberId));
+      : "") ||
+    String(shell?.memberId || memberId);
   const email = shell?.email || pickFromSourcesString(shellSources, ["email"]);
   const phone = shell?.mobileNumber || pickFromSourcesString(shellSources, ["mobileNumber", "phoneNumber", "mobile"]);
   const normalizedPhonePin = normalizeIndianMobile(phone || "");
@@ -2712,6 +2827,26 @@ export default function MemberProfilePage() {
   const checkInRows = attendanceLogRows.filter((entry) => entry.eventLabel.toUpperCase().includes("CHECK-IN"));
 
   const overviewBilling = (tabData.billing as LifecycleBillingTabState | undefined)?.invoices || [];
+  const userDisplayNameById = useMemo(() => {
+    const pairs = [...staffMembers, ...coaches, ...members]
+      .map((entry) => [String(entry.id), entry.name || `User ${entry.id}`] as const);
+    return new Map<string, string>(pairs);
+  }, [coaches, members, staffMembers]);
+  const invoiceBillingRepName = useMemo(() => {
+    const latestInvoiceWithRep = [...overviewBilling]
+      .filter((invoice) => invoice.billedByStaffId)
+      .sort((left, right) => {
+        const leftTime = left.issuedAt ? new Date(left.issuedAt).getTime() : 0;
+        const rightTime = right.issuedAt ? new Date(right.issuedAt).getTime() : 0;
+        return rightTime - leftTime;
+      })[0];
+    if (!latestInvoiceWithRep?.billedByStaffId) {
+      return "";
+    }
+    return userDisplayNameById.get(String(latestInvoiceWithRep.billedByStaffId)) || "";
+  }, [overviewBilling, userDisplayNameById]);
+  const resolvedBillingRepName = invoiceBillingRepName || billingRepName || "System Admin";
+  const resolvedAssignedTrainerBase = assignedTrainer && assignedTrainer !== "-" ? assignedTrainer : "";
   const outstandingBillingInvoices = useMemo(
     () =>
       [...overviewBilling]
@@ -2789,9 +2924,39 @@ export default function MemberProfilePage() {
     normalizedMembershipStatus === "PAUSED" &&
     hasOutstandingBalance &&
     normalizedPaymentStatus !== "PAID";
-  const ptTabData = tabData["personal-training"] as { assignments?: unknown[]; sessions?: unknown[] } | undefined;
+  const ptTabData = tabData["personal-training"] as { assignments?: unknown[]; sessions?: unknown[]; slots?: unknown[] } | undefined;
   const ptAssignments = Array.isArray(ptTabData?.assignments) ? ptTabData.assignments : (Array.isArray(tabData["personal-training"]) ? tabData["personal-training"] as unknown[] : []);
-  const ptSessions = Array.isArray(ptTabData?.sessions) ? ptTabData.sessions : [];
+  const rawPtSessions = Array.isArray(ptTabData?.sessions) ? ptTabData.sessions : [];
+  const rawPtSlots = Array.isArray(ptTabData?.slots) ? ptTabData.slots : [];
+  useEffect(() => {
+    if (actionModal !== "pt-manual-entry" || ptManualEntryForm.useCustomTime) {
+      return;
+    }
+    const assignedSlot = getAssignedPtSlotForDate(rawPtSlots, ptManualEntryForm.sessionDate);
+    const assignedTime = pickString(assignedSlot || {}, ["slotStartTime"]);
+    if (assignedTime && assignedTime !== ptManualEntryForm.sessionTime) {
+      setPtManualEntryForm((current) => ({ ...current, sessionTime: assignedTime }));
+    }
+  }, [actionModal, ptManualEntryForm.sessionDate, ptManualEntryForm.sessionTime, ptManualEntryForm.useCustomTime, rawPtSlots]);
+  const ptHistoryModalSessions = useMemo(() => {
+    if (!ptHistoryModal) {
+      return [] as unknown[];
+    }
+    return rawPtSessions.filter((session) => {
+      const record = toRecord(session);
+      const sessionDate = pickString(record, ["sessionDate"]);
+      if (!sessionDate) {
+        return false;
+      }
+      if (ptHistoryModal.startDate && sessionDate < ptHistoryModal.startDate) {
+        return false;
+      }
+      if (ptHistoryModal.endDate && sessionDate > ptHistoryModal.endDate) {
+        return false;
+      }
+      return true;
+    });
+  }, [ptHistoryModal, rawPtSessions]);
   const activePtAssignment = ptAssignments.find((item) => {
     const record = toRecord(item);
     return pickBoolean(record, ["active"]) === true;
@@ -2800,7 +2965,7 @@ export default function MemberProfilePage() {
   const activePtCoachId = pickString(activePtAssignmentRecord, ["coachId"]);
   const fallbackPtCoachId =
     activePtCoachId
-    || ptSessions.map((session) => pickString(toRecord(session), ["coachId"])).find(Boolean)
+    || rawPtSessions.map((session) => pickString(toRecord(session), ["coachId"])).find(Boolean)
     || "";
   useEffect(() => {
     const directCoachName =
@@ -2838,8 +3003,11 @@ export default function MemberProfilePage() {
     pickString(activePtAssignmentRecord, ["coachName", "coachDisplayName"])
     || resolvedPtCoachName
     || coaches.find((coach) => String(coach.id) === String(fallbackPtCoachId || ""))?.name
-    || pickString(activePtAssignmentRecord, ["coachEmail", "coachId"])
     || "-";
+  const resolvedAssignedTrainer =
+    resolvedAssignedTrainerBase
+    || (activePtCoachName && activePtCoachName !== "-" ? activePtCoachName : "")
+    || "Head Coach";
   const activeFreezeRecord = toRecord(activeFreezeInfo.activeFreeze);
   const earliestManualUnfreezeDate =
     pickString(activeFreezeInfo, ["earliestManualUnfreezeDate"])
@@ -2848,11 +3016,18 @@ export default function MemberProfilePage() {
     pickBoolean(activeFreezeInfo, ["manualUnfreezeEligible"]) !== undefined
       ? pickBoolean(activeFreezeInfo, ["manualUnfreezeEligible"]) === true
       : (!earliestManualUnfreezeDate || earliestManualUnfreezeDate <= toLocalIsoDate(new Date()));
-  const ptAssignmentRescheduleLimit = pickNumber(activePtAssignmentRecord, ["rescheduleLimit"]);
-  const ptUsedReschedules = ptSessions.filter((session) => {
+  const ptAssignmentTotalSessions = pickNumber(activePtAssignmentRecord, ["sessionCount", "includedSessions", "totalSessions"]);
+  const ptDerivedRescheduleLimit = ptAssignmentTotalSessions > 0 ? Math.max(Math.ceil(ptAssignmentTotalSessions / 13) * 3, 3) : 0;
+  const ptConfiguredRescheduleLimit = pickNumber(activePtAssignmentRecord, ["rescheduleLimit"]);
+  const ptAssignmentRescheduleLimit = ptConfiguredRescheduleLimit > 0
+    ? Math.max(ptConfiguredRescheduleLimit, ptDerivedRescheduleLimit)
+    : ptDerivedRescheduleLimit;
+  const importedPtReschedulesUsed = pickNumber(activePtAssignmentRecord, ["importedReschedulesUsed", "legacyReschedulesUsed"]);
+  const ptUsedReschedules = rawPtSessions.filter((session) => {
     const status = pickString(toRecord(session), ["status"])?.toUpperCase();
-    return status === "RESCHEDULED";
-  }).length;
+    const rescheduledFromId = pickString(toRecord(session), ["rescheduledFromId"]);
+    return Boolean(rescheduledFromId) || status === "RESCHEDULED";
+  }).length + importedPtReschedulesUsed;
   const ptHasUnlimitedReschedules = ptAssignmentRescheduleLimit <= 0;
   const ptRemainingReschedules = ptHasUnlimitedReschedules ? null : Math.max(ptAssignmentRescheduleLimit - ptUsedReschedules, 0);
   const ptRescheduleSlotOptions = buildAvailablePtSlotsForDate({
@@ -2885,6 +3060,8 @@ export default function MemberProfilePage() {
     }
     return summaries;
   })();
+  const ptManualAssignedSlot = getAssignedPtSlotForDate(rawPtSlots, ptManualEntryForm.sessionDate);
+  const ptManualAssignedSlotTime = pickString(ptManualAssignedSlot || {}, ["slotStartTime"]);
   const subscriptionsDashboardRecord = toRecord(tabData.subscriptions?.dashboard);
   const entitlementRecords = toArray<RecordLike>(tabData.subscriptions?.entitlements);
   const dashboardMembershipSummaries = toArray(subscriptionsDashboardRecord.memberships)
@@ -3121,6 +3298,82 @@ export default function MemberProfilePage() {
   const isTransformationPlan = membershipFamily === "TRANSFORMATION";
   const isFlexPlan = membershipFamily === "FLEX";
   const isPtPlan = membershipFamily === "PT";
+  const currentPtCommercialRecord = currentPortfolioMembershipItems.find((entry) => entry.family === "PT")
+    || (isTransformationPlan ? portfolioTransformationMembership : null);
+  const currentPtCommercialVariant = currentPtCommercialRecord
+    ? catalogVariants.find((variant) => String(variant.variantId) === String(currentPtCommercialRecord.productVariantId))
+      || catalogVariants.find((variant) => variant.productCode === currentPtCommercialRecord.productCode && variant.variantName === currentPtCommercialRecord.variantName)
+    : null;
+  const activePtAssignmentId = pickString(activePtAssignmentRecord, ["id", "assignmentId"]);
+  const currentPtContext = {
+    assignmentId: activePtAssignmentId,
+    coupleGroupId: pickString(activePtAssignmentRecord, ["coupleGroupId"]),
+    startDate: pickString(activePtAssignmentRecord, ["startDate"]) || currentPtCommercialRecord?.startDate || "",
+    endDate: pickString(activePtAssignmentRecord, ["endDate"]) || currentPtCommercialRecord?.expiryDate || "",
+    totalSessions: Math.max(
+      Number(currentPtCommercialRecord?.includedPtSessions || 0),
+      Number(currentPtCommercialVariant?.includedPtSessions || 0),
+      Number(pickNumber(activePtAssignmentRecord, ["sessionCount", "includedSessions", "totalSessions"]) || 0),
+    ),
+    importedCompletedSessions: pickNumber(activePtAssignmentRecord, ["importedCompletedSessions", "legacyCompletedSessions"]),
+    importedPendingSessions: pickNumber(activePtAssignmentRecord, ["importedPendingSessions", "legacyPendingSessions"]),
+    importedNoShowSessions: pickNumber(activePtAssignmentRecord, ["importedNoShowSessions", "legacyNoShowSessions"]),
+    importedCancelledSessions: pickNumber(activePtAssignmentRecord, ["importedCancelledSessions", "legacyCancelledSessions"]),
+    importedReschedulesUsed: pickNumber(activePtAssignmentRecord, ["importedReschedulesUsed", "legacyReschedulesUsed"]),
+  };
+  const currentPtSessions = useMemo(() => {
+    if (!currentPtContext.startDate && !currentPtContext.endDate) {
+      return rawPtSessions;
+    }
+    return rawPtSessions.filter((session) => {
+      const record = toRecord(session);
+      const sessionDate = pickString(record, ["sessionDate"]);
+      if (!sessionDate) {
+        return false;
+      }
+      const sessionAssignmentId = pickString(record, ["assignmentId"]);
+      const sessionCoupleGroupId = pickString(record, ["coupleGroupId"]);
+      const isSharedCoupleSession = Boolean(currentPtContext.coupleGroupId && sessionCoupleGroupId === currentPtContext.coupleGroupId);
+      if (currentPtContext.assignmentId && sessionAssignmentId && sessionAssignmentId !== currentPtContext.assignmentId && !isSharedCoupleSession) {
+        return false;
+      }
+      if (currentPtContext.startDate && sessionDate < currentPtContext.startDate) {
+        return false;
+      }
+      if (currentPtContext.endDate && sessionDate > currentPtContext.endDate) {
+        return false;
+      }
+      return true;
+    });
+  }, [currentPtContext.assignmentId, currentPtContext.coupleGroupId, currentPtContext.endDate, currentPtContext.startDate, rawPtSessions]);
+  const ptAssignmentOptions = useMemo(() => {
+    return ptAssignments
+      .map((assignment) => {
+        const record = toRecord(assignment);
+        const assignmentId = pickString(record, ["id", "assignmentId"]);
+        if (!assignmentId) {
+          return null;
+        }
+        const variantId = pickString(record, ["productVariantId"]);
+        const variant = catalogVariants.find((item) => String(item.variantId) === String(variantId));
+        const start = pickString(record, ["startDate"]);
+        const end = pickString(record, ["endDate"]);
+        const packageName =
+          pickString(record, ["packageName", "variantName", "productName", "assignmentName"])
+          || variant?.variantName
+          || "Personal Training";
+        const dateLabel = [formatDateOnly(start), formatDateOnly(end)].filter(Boolean).join(" - ");
+        return {
+          assignmentId,
+          label: dateLabel ? `${packageName} (${dateLabel})` : packageName,
+        };
+      })
+      .filter((entry): entry is { assignmentId: string; label: string } => entry !== null);
+  }, [catalogVariants, ptAssignments]);
+  const ptManualAssignmentLabel =
+    ptAssignmentOptions.find((assignment) => assignment.assignmentId === ptManualEntryForm.assignmentId)?.label
+    || ptAssignmentOptions[0]?.label
+    || "Current PT package";
   const hasPrimaryMembership = Boolean(selectedSubscriptionId) && membershipFamily !== "CREDIT_PACK";
   const hasOverviewMembership =
     overviewMembershipCards.length > 0 &&
@@ -3209,6 +3462,8 @@ export default function MemberProfilePage() {
   const isAdminOperator = user?.role === "ADMIN";
   const isStaffOperator = user?.role === "STAFF";
   const canOperateMemberships = isAdminOperator || isStaffOperator;
+  const canManagePtAdminControls = canManagePtSetup(user, accessMetadata);
+  const canOperatePtSessionControls = canOperatePtSessions(user, accessMetadata);
   const canManageTransfers = isAdminOperator || (user?.role === "STAFF" && user?.designation === "GYM_MANAGER");
   const pauseBenefitDays = Math.max(
     currentCatalogVariant?.passBenefitDays || 0,
@@ -3226,6 +3481,7 @@ export default function MemberProfilePage() {
     ? Math.max(0, Math.floor((Date.parse(todayIsoDate) - Date.parse(selectedStartDate)) / (24 * 60 * 60 * 1000)))
     : 0;
   const upgradeWindowExceeded = Boolean(selectedStartDate) && elapsedUpgradeDays > currentUpgradeWindowDays;
+  const upgradeWindowBlocksAction = upgradeWindowExceeded && !isAdminOperator;
   const freezeMinDays = 5;
   const freezeMaxDays = pauseBenefitDays;
   const freezeDaysInput = Number(freezeForm.freezeDays || 0);
@@ -3242,6 +3498,49 @@ export default function MemberProfilePage() {
   const canCollectOutstandingBalance =
     canOperateMemberships &&
     hasOutstandingBalance;
+  useEffect(() => {
+    const requestedInvoiceId = searchParams.get("collectBalanceInvoiceId") || "";
+    const requestedTab = searchParams.get("tab");
+    if (requestedTab !== "billing" || !memberId) {
+      return;
+    }
+
+    const autoOpenKey = `${memberId}:${requestedInvoiceId || "first-outstanding"}`;
+    if (autoOpenedBalanceInvoiceRef.current === autoOpenKey) {
+      return;
+    }
+
+    if (!overviewBilling.length) {
+      if (!loadingTabs.billing) {
+        void reloadBillingTab();
+      }
+      return;
+    }
+
+    const targetInvoice = requestedInvoiceId
+      ? outstandingBillingInvoices.find((invoice) => String(invoice.id || "") === requestedInvoiceId)
+      : selectedOutstandingInvoice;
+    if (!targetInvoice || roundAmount(targetInvoice.balanceAmount || 0) <= 0) {
+      return;
+    }
+
+    autoOpenedBalanceInvoiceRef.current = autoOpenKey;
+    setActiveTab("billing");
+    setResumeBillingForm((current) => ({
+      ...current,
+      invoiceId: String(targetInvoice.id || ""),
+    }));
+    setActionError(null);
+    setActionModal("unfreeze-billing");
+  }, [
+    loadingTabs.billing,
+    memberId,
+    outstandingBillingInvoices,
+    overviewBilling.length,
+    reloadBillingTab,
+    searchParams,
+    selectedOutstandingInvoice,
+  ]);
   const canShowBalanceCollectionAction =
     hasPrimaryMembership &&
     canCollectOutstandingBalance &&
@@ -3257,8 +3556,8 @@ export default function MemberProfilePage() {
     (isFlagshipPlan || isGroupClassPlan || isFlexPlan || isTransformationPlan || isPtPlan) &&
     canOperateMemberships &&
     eligibleUpgradeVariants.length > 0 &&
-    !upgradeWindowExceeded;
-  const canUpgradeMembership = canShowUpgradeMembershipAction && !upgradeWindowExceeded;
+    !upgradeWindowBlocksAction;
+  const canUpgradeMembership = canShowUpgradeMembershipAction && !upgradeWindowBlocksAction;
   const canShowPtActions = Boolean(activePtAssignment) || isFlagshipPlan || isTransformationPlan || isPtPlan;
   const canTransferMembership =
     hasPrimaryMembership &&
@@ -3271,6 +3570,8 @@ export default function MemberProfilePage() {
     );
   const canAddPtMembershipAction =
     hasPrimaryMembership &&
+    canOperateMemberships &&
+    user?.designation !== "GYM_MANAGER" &&
     isFlagshipPlan &&
     !hasActivePtMembership &&
     !Boolean(activePtAssignment);
@@ -3525,14 +3826,14 @@ export default function MemberProfilePage() {
   const ptProducts = useMemo(
     () =>
       catalogProducts.filter(
-        (product) => product.categoryCode === "PT" && ["PT_LEVEL_1", "PT_LEVEL_2"].includes(product.productCode),
+        (product) => product.categoryCode === "PT" && ["PT_LEVEL_1", "PT_LEVEL_2", "COUPLE_PT_LEVEL_1", "COUPLE_PT_LEVEL_2"].includes(product.productCode),
       ),
     [catalogProducts],
   );
   const ptVariants = useMemo(
     () =>
       catalogVariants.filter(
-        (variant) => variant.categoryCode === "PT" && ["PT_LEVEL_1", "PT_LEVEL_2"].includes(variant.productCode),
+        (variant) => variant.categoryCode === "PT" && ["PT_LEVEL_1", "PT_LEVEL_2", "COUPLE_PT_LEVEL_1", "COUPLE_PT_LEVEL_2"].includes(variant.productCode),
       ),
     [catalogVariants],
   );
@@ -3712,10 +4013,25 @@ export default function MemberProfilePage() {
     () => ptProducts.find((product) => String(product.productCode) === String(ptForm.productCode || selectedPtVariant?.productCode || "")),
     [ptForm.productCode, ptProducts, selectedPtVariant?.productCode],
   );
+  const isCouplePt = useMemo(() => {
+    const productCode = String(selectedPtProduct?.productCode || ptForm.productCode || "");
+    const variantCode = String(selectedPtVariant?.productCode || "");
+    return /COUPLE_PT/i.test(productCode) || /COUPLE_PT/i.test(variantCode);
+  }, [ptForm.productCode, selectedPtProduct?.productCode, selectedPtVariant?.productCode]);
+  const couplePartnerOptions = useMemo(
+    () =>
+      members
+        .filter((entry) => String(entry.id) !== String(memberId))
+        .map((entry) => ({
+          id: String(entry.id),
+          label: `${entry.name || "Member"}${entry.mobile ? ` · ${entry.mobile}` : ""}`,
+        })),
+    [memberId, members],
+  );
   const ptEligibleCoaches = useMemo(
     () =>
       coaches.filter((coach) => {
-        if (String(coach.designation || "").toUpperCase() !== "PT_COACH") {
+        if (!["PT_COACH", "GENERAL_TRAINER", "HEAD_COACH"].includes(String(coach.designation || "").toUpperCase())) {
           return false;
         }
         return true;
@@ -3748,6 +4064,11 @@ export default function MemberProfilePage() {
     () => addMinutesToTime(ptForm.slotStartTime, PT_SLOT_DURATION_MINUTES),
     [ptForm.slotStartTime],
   );
+  useEffect(() => {
+    if (!isCouplePt && ptForm.partnerMemberId) {
+      setPtForm((current) => ({ ...current, partnerMemberId: "" }));
+    }
+  }, [isCouplePt, ptForm.partnerMemberId]);
   const projectedPtEndDate = useMemo(
     () =>
       projectMembershipEndDate(
@@ -3928,6 +4249,7 @@ export default function MemberProfilePage() {
         productCode: ptProducts[0]?.productCode || "",
         productVariantId: "",
         coachId: "",
+        partnerMemberId: "",
         startDate: new Date().toISOString().slice(0, 10),
         endDate: "",
         totalSessions: "",
@@ -4089,7 +4411,6 @@ export default function MemberProfilePage() {
 
     const operatorId = Number((user as { id?: string | number } | null)?.id || 0);
     const assignedToStaffId = operatorId > 0 ? operatorId : Number(editForm.clientRepStaffId || 0) || undefined;
-
     setActionBusy(true);
     setActionError(null);
     try {
@@ -4212,7 +4533,6 @@ export default function MemberProfilePage() {
 
     const operatorId = Number((user as { id?: string | number } | null)?.id || 0);
     const assignedToStaffId = operatorId > 0 ? operatorId : Number(editForm.clientRepStaffId || 0) || undefined;
-
     setActionBusy(true);
     setActionError(null);
     try {
@@ -4546,12 +4866,20 @@ export default function MemberProfilePage() {
     }
   };
 
-  const createPtOperationalSchedule = useCallback(async (subscriptionId: number) => {
+  const createPtOperationalSchedule = useCallback(async (
+    subscriptionId: number,
+    targetMemberId?: string | number,
+    targetMemberEmail?: string,
+    coupleGroupId?: number,
+    couplePartnerMemberId?: number,
+  ) => {
     if (!token || !memberId || !ptForm.coachId || !selectedPtVariant) {
       throw new Error("PT assignment details are incomplete.");
     }
 
-    const memberEmailForAssignment = email || buildSyntheticInternalEmail(phone || memberId, "members.fomotraining.internal");
+    const resolvedMemberId = targetMemberId ?? memberId;
+    const memberEmailForAssignment =
+      targetMemberEmail || email || buildSyntheticInternalEmail(String(phone || resolvedMemberId), "members.fomotraining.internal");
     const coachEmailForAssignment =
       selectedPtCoach?.email || buildSyntheticInternalEmail(selectedPtCoach?.mobile || selectedPtCoach?.id || ptForm.coachId, "staff.fomotraining.internal");
     const payload = {
@@ -4565,6 +4893,8 @@ export default function MemberProfilePage() {
       totalSessions: selectedPtSessionCount,
       rescheduleLimit: derivePtRescheduleLimit(Number(selectedPtVariant.durationMonths || 0), hasUnlimitedPtReschedules),
       slotDurationMinutes: PT_SLOT_DURATION_MINUTES,
+      coupleGroupId,
+      couplePartnerMemberId,
       slots: selectedPtDays.map((dayCode) => ({
         dayOfWeek: dayCode,
         slotStartTime: `${ptForm.slotStartTime}:00`,
@@ -4608,6 +4938,10 @@ export default function MemberProfilePage() {
     }
     if (!ptForm.startDate) {
       setActionError("Choose the PT start date before continuing.");
+      return;
+    }
+    if (isCouplePt && !ptForm.partnerMemberId) {
+      setActionError("Select the partner member for this Couple PT package.");
       return;
     }
     if (selectedPtDays.length === 0) {
@@ -4665,76 +4999,144 @@ export default function MemberProfilePage() {
 
     const operatorId = Number((user as { id?: string | number } | null)?.id || 0);
     const assignedToStaffId = operatorId > 0 ? operatorId : Number(editForm.clientRepStaffId || 0) || undefined;
+    const resolveBaseSubscriptionId = async (targetMemberId: string): Promise<number> => {
+      const dashboard = toRecord(await subscriptionService.getMemberDashboard(token, targetMemberId));
+      const memberships = toArray(dashboard.memberships)
+        .map(extractMembershipPortfolioItem)
+        .filter((entry): entry is MembershipPortfolioItem => entry !== null);
+      const primaryMembership = extractMembershipPortfolioItem(dashboard.primaryMembership);
+      const baseMembership = primaryMembership
+        || memberships.find((entry) => entry.family !== "PT")
+        || memberships[0];
+      const baseSubscriptionId = Number(baseMembership?.subscriptionId || 0);
+      if (!Number.isFinite(baseSubscriptionId) || baseSubscriptionId <= 0) {
+        throw new Error("Partner member does not have an active base membership.");
+      }
+      return baseSubscriptionId;
+    };
 
     setActionBusy(true);
     setActionError(null);
     try {
-      const response = await subscriptionService.createMemberAddOnSubscription(token, String(memberId), {
-        baseSubscriptionId: Number(selectedSubscriptionId),
-        startDate: ptForm.startDate,
-        addOnVariantIds: [Number(selectedPtVariant.variantId)],
-        inquiryId: sourceInquiryId || undefined,
-        discountAmount: ptCommercial.discountAmount > 0 ? roundAmount(ptCommercial.discountAmount) : undefined,
-        discountedByStaffId: operatorId > 0 ? operatorId : undefined,
-        billedByStaffId: operatorId > 0 ? operatorId : undefined,
-      });
-
-      const invoiceId = Number(response.invoiceId || 0);
-      const invoiceNumber = String(response.invoiceNumber || "").trim();
-      const addOnSubscriptionId = Number(
-        response.createdSubscriptions.find((item) => item.addOn)?.memberSubscriptionId || response.memberSubscriptionId || 0,
-      );
-      if (!Number.isFinite(invoiceId) || invoiceId <= 0 || !Number.isFinite(addOnSubscriptionId) || addOnSubscriptionId <= 0) {
-        throw new Error("PT invoice was created without valid payment references.");
+      const coupleGroupId = isCouplePt ? Date.now() : undefined;
+      const partnerMemberId = isCouplePt ? String(ptForm.partnerMemberId || "") : "";
+      const partnerMember = isCouplePt ? members.find((entry) => String(entry.id) === partnerMemberId) : null;
+      if (isCouplePt && (!partnerMemberId || !partnerMember)) {
+        throw new Error("Select a valid partner member for the Couple PT package.");
       }
+      const partnerBaseSubscriptionId = isCouplePt ? await resolveBaseSubscriptionId(partnerMemberId) : 0;
 
-      let paymentReceipt: Awaited<ReturnType<typeof subscriptionService.recordPayment>> | null = null;
-      let membershipActivated = false;
-      let ptSetupPendingReason: string | null = null;
-      const payFullInvoice = !ptBillingForm.balanceDueDate && receivedAmount > 0;
-      const paymentAmount = payFullInvoice ? ptInvoiceTotal : receivedAmount;
+      const resolveMemberEmail = (targetId: string, targetRecord?: { email?: string | null; mobile?: string | null } | null) =>
+        targetRecord?.email
+        || buildSyntheticInternalEmail(targetRecord?.mobile || targetId, "members.fomotraining.internal");
 
-      if (receivedAmount > 0) {
-        paymentReceipt = await subscriptionService.recordPayment(token, invoiceId, {
-          memberId: Number(memberId),
-          amount: paymentAmount,
-          paymentMode: ptBillingForm.paymentMode,
-          inquiryId: sourceInquiryId || undefined,
+      const createAddOn = async (targetMemberId: string, baseSubscriptionId: number, inquiryId?: number) => {
+        const response = await subscriptionService.createMemberAddOnSubscription(token, targetMemberId, {
+          baseSubscriptionId,
+          startDate: ptForm.startDate,
+          addOnVariantIds: [Number(selectedPtVariant.variantId)],
+          inquiryId: inquiryId || undefined,
+          discountAmount: ptCommercial.discountAmount > 0 ? roundAmount(ptCommercial.discountAmount) : undefined,
+          discountedByStaffId: operatorId > 0 ? operatorId : undefined,
+          billedByStaffId: operatorId > 0 ? operatorId : undefined,
         });
-
-        const activationThresholdMet = meetsActivationThreshold(
-          ptInvoiceTotal,
-          paymentReceipt?.totalPaidAmount || paymentAmount,
-          membershipPolicySettings.minPartialPaymentPercent,
+        const invoiceId = Number(response.invoiceId || 0);
+        const invoiceNumber = String(response.invoiceNumber || "").trim();
+        const addOnSubscriptionId = Number(
+          response.createdSubscriptions.find((item) => item.addOn)?.memberSubscriptionId || response.memberSubscriptionId || 0,
         );
-        if (activationThresholdMet) {
-          await subscriptionService.activateMembership(token, addOnSubscriptionId);
-          membershipActivated = true;
-          try {
-            await createPtOperationalSchedule(addOnSubscriptionId);
-          } catch (setupError) {
-            ptSetupPendingReason = setupError instanceof ApiError
-              ? setupError.message
-              : setupError instanceof Error
+        if (!Number.isFinite(invoiceId) || invoiceId <= 0 || !Number.isFinite(addOnSubscriptionId) || addOnSubscriptionId <= 0) {
+          throw new Error("PT invoice was created without valid payment references.");
+        }
+        return { invoiceId, invoiceNumber, addOnSubscriptionId };
+      };
+
+      const recordPaymentFor = async (
+        targetMemberId: string,
+        targetEmail: string,
+        addOn: { invoiceId: number; invoiceNumber: string; addOnSubscriptionId: number },
+        partnerId?: number,
+        inquiryId?: number,
+      ) => {
+        let paymentReceipt: Awaited<ReturnType<typeof subscriptionService.recordPayment>> | null = null;
+        let membershipActivated = false;
+        let ptSetupPendingReason: string | null = null;
+        const payFullInvoice = !ptBillingForm.balanceDueDate && receivedAmount > 0;
+        const paymentAmount = payFullInvoice ? ptInvoiceTotal : receivedAmount;
+
+        if (receivedAmount > 0) {
+          paymentReceipt = await subscriptionService.recordPayment(token, addOn.invoiceId, {
+            memberId: Number(targetMemberId),
+            amount: paymentAmount,
+            paymentMode: ptBillingForm.paymentMode,
+            inquiryId,
+          });
+
+          const activationThresholdMet = meetsActivationThreshold(
+            ptInvoiceTotal,
+            paymentReceipt?.totalPaidAmount || paymentAmount,
+            membershipPolicySettings.minPartialPaymentPercent,
+          );
+          if (activationThresholdMet) {
+            await subscriptionService.activateMembership(token, addOn.addOnSubscriptionId);
+            membershipActivated = true;
+            try {
+              await createPtOperationalSchedule(
+                addOn.addOnSubscriptionId,
+                targetMemberId,
+                targetEmail,
+                coupleGroupId,
+                partnerId,
+              );
+            } catch (setupError) {
+              ptSetupPendingReason = setupError instanceof ApiError
                 ? setupError.message
-                : "Operational PT setup could not be completed.";
+                : setupError instanceof Error
+                  ? setupError.message
+                  : "Operational PT setup could not be completed.";
+            }
           }
         }
-      }
 
-      const balanceAmount = Math.max(
-        0,
-        roundAmount(Number((paymentReceipt?.balanceAmount ?? ptInvoiceTotal - paymentAmount) || 0)),
+        const balanceAmount = Math.max(
+          0,
+          roundAmount(Number((paymentReceipt?.balanceAmount ?? ptInvoiceTotal - paymentAmount) || 0)),
+        );
+
+        if (balanceAmount > 0 && ptBillingForm.balanceDueDate && inquiryId) {
+          await subscriptionService.createInquiryFollowUp(token, inquiryId, {
+            dueAt: `${ptBillingForm.balanceDueDate}T09:00:00`,
+            assignedToStaffId,
+            createdByStaffId: operatorId > 0 ? operatorId : undefined,
+            followUpType: "BALANCE_DUE",
+            notes: `Collect the remaining PT balance of ${formatRoundedInr(balanceAmount)} for invoice ${addOn.invoiceNumber || addOn.invoiceId}.`,
+          });
+        }
+
+        return { paymentReceipt, balanceAmount, membershipActivated, ptSetupPendingReason };
+      };
+
+      const currentAddOn = await createAddOn(String(memberId), Number(selectedSubscriptionId), sourceInquiryId || undefined);
+      const currentEmail = resolveMemberEmail(String(memberId), memberRecord);
+      const currentPayment = await recordPaymentFor(
+        String(memberId),
+        currentEmail,
+        currentAddOn,
+        isCouplePt ? Number(partnerMemberId) : undefined,
+        sourceInquiryId || undefined,
       );
 
-      if (balanceAmount > 0 && ptBillingForm.balanceDueDate && sourceInquiryId) {
-        await subscriptionService.createInquiryFollowUp(token, sourceInquiryId, {
-          dueAt: `${ptBillingForm.balanceDueDate}T09:00:00`,
-          assignedToStaffId,
-          createdByStaffId: operatorId > 0 ? operatorId : undefined,
-          followUpType: "BALANCE_DUE",
-          notes: `Collect the remaining PT balance of ${formatRoundedInr(balanceAmount)} for invoice ${invoiceNumber || invoiceId}.`,
-        });
+      let partnerAddOn: { invoiceId: number; invoiceNumber: string; addOnSubscriptionId: number } | null = null;
+      let partnerPayment: Awaited<ReturnType<typeof recordPaymentFor>> | null = null;
+      if (isCouplePt && partnerMember) {
+        partnerAddOn = await createAddOn(partnerMemberId, partnerBaseSubscriptionId);
+        const partnerEmail = resolveMemberEmail(partnerMemberId, partnerMember);
+        partnerPayment = await recordPaymentFor(
+          partnerMemberId,
+          partnerEmail,
+          partnerAddOn,
+          Number(memberId),
+        );
       }
 
       await reloadShell();
@@ -4744,28 +5146,28 @@ export default function MemberProfilePage() {
         billing: undefined,
         "personal-training": undefined,
       }));
-      if (paymentReceipt) {
+      if (currentPayment.paymentReceipt) {
         setCompletedBilling({
           context: "pt",
           title: "PT Payment Recorded",
-          message: invoiceNumber
-            ? `Invoice ${invoiceNumber} was created and the PT payment was recorded successfully.`
+          message: currentAddOn.invoiceNumber
+            ? `Invoice ${currentAddOn.invoiceNumber} was created and the PT payment was recorded successfully.`
             : "PT invoice and payment were recorded successfully.",
-          invoiceId,
-          invoiceNumber: invoiceNumber || `invoice-${invoiceId}`,
-          receiptId: paymentReceipt.receiptId,
-          receiptNumber: paymentReceipt.receiptNumber || undefined,
-          paymentStatus: paymentReceipt.paymentStatus || (balanceAmount > 0 ? "PARTIALLY_PAID" : "PAID"),
-          totalPaidAmount: Number(paymentReceipt.totalPaidAmount || receivedAmount),
-          balanceAmount,
+          invoiceId: currentAddOn.invoiceId,
+          invoiceNumber: currentAddOn.invoiceNumber || `invoice-${currentAddOn.invoiceId}`,
+          receiptId: currentPayment.paymentReceipt.receiptId,
+          receiptNumber: currentPayment.paymentReceipt.receiptNumber || undefined,
+          paymentStatus: currentPayment.paymentReceipt.paymentStatus || (currentPayment.balanceAmount > 0 ? "PARTIALLY_PAID" : "PAID"),
+          totalPaidAmount: Number(currentPayment.paymentReceipt.totalPaidAmount || receivedAmount),
+          balanceAmount: currentPayment.balanceAmount,
         });
       }
       setActionSuccess(
-        membershipActivated
-          ? ptSetupPendingReason
-            ? `PT add-on invoiced and activated, but PT setup is pending. ${ptSetupPendingReason}`
-            : "PT add-on invoiced, activated, and scheduled."
-          : `PT add-on invoiced${invoiceNumber ? ` as ${invoiceNumber}` : ""}. PT scheduling will unlock after ${membershipPolicySettings.minPartialPaymentPercent}% payment collection.`,
+        currentPayment.membershipActivated
+          ? currentPayment.ptSetupPendingReason
+            ? `PT add-on invoiced and activated, but PT setup is pending. ${currentPayment.ptSetupPendingReason}`
+            : `PT add-on invoiced, activated, and scheduled.${partnerAddOn ? ` Partner invoice ${partnerAddOn.invoiceNumber || partnerAddOn.invoiceId} was also created.` : ""}`
+          : `PT add-on invoiced${currentAddOn.invoiceNumber ? ` as ${currentAddOn.invoiceNumber}` : ""}. PT scheduling will unlock after ${membershipPolicySettings.minPartialPaymentPercent}% payment collection.`,
       );
       setActionModal(null);
     } catch (error) {
@@ -4780,6 +5182,10 @@ export default function MemberProfilePage() {
     action: "start" | "end" | "complete" | "cancel" | "no-show",
   ) => {
     if (!token) {
+      return;
+    }
+    if (!canOperatePtSessionControls) {
+      setActionError("Only gym managers or authorized operators can update PT session status.");
       return;
     }
     setSessionActionBusyId(sessionId);
@@ -4800,12 +5206,97 @@ export default function MemberProfilePage() {
       await reloadShell();
       setActionSuccess(
         action === "cancel"
-          ? "Cancellation window was closed, so the session was treated as consumed."
+          ? "Session cancelled successfully."
           : `Session ${action === "start" ? "started" : action === "end" ? "ended" : action} successfully.`,
       );
     } catch (error) {
       setActionError(error instanceof Error ? error.message : `Failed to ${action} session.`);
     } finally {
+      setSessionActionBusyId(null);
+    }
+  };
+
+  const materializeVirtualPtSession = async (session: Record<string, unknown>, note: string): Promise<string> => {
+    if (!token) {
+      throw new Error("Login session is required.");
+    }
+    const existingId = pickString(session, ["id", "sessionId"]);
+    if (existingId) {
+      return existingId;
+    }
+    const assignmentId = Number(pickString(session, ["assignmentId"]) || 0);
+    const coachId = Number(pickString(session, ["coachId"]) || 0);
+    const targetMemberId = Number(pickString(session, ["memberId"]) || memberId || 0);
+    const sessionDate = pickString(session, ["sessionDate"]);
+    const sessionTime = pickString(session, ["sessionTime", "slotStartTime"]);
+    if (!assignmentId || !coachId || !targetMemberId || !sessionDate || !sessionTime) {
+      throw new Error("PT session setup is incomplete for this slot.");
+    }
+    const created = await trainingService.createPtSession(token, {
+      assignmentId,
+      coachId,
+      memberId: targetMemberId,
+      sessionDate,
+      sessionTime,
+      notes: note,
+    });
+    const createdId = pickString(toRecord(created), ["id", "sessionId"]);
+    if (!createdId) {
+      throw new Error("PT session was created but no session ID was returned.");
+    }
+    return createdId;
+  };
+
+  const handlePtVirtualSessionStart = async (session: Record<string, unknown>) => {
+    if (!token) {
+      return;
+    }
+    if (!canOperatePtSessionControls) {
+      setActionError("Only gym managers or authorized operators can start PT sessions.");
+      return;
+    }
+    const sessionDate = pickString(session, ["sessionDate"]);
+    const sessionTime = pickString(session, ["sessionTime", "slotStartTime"]);
+    const assignmentId = Number(pickString(session, ["assignmentId"]) || 0);
+    if (!assignmentId || !sessionDate || !sessionTime) {
+      setActionError("PT session setup is incomplete for this slot.");
+      return;
+    }
+
+    const busyKey = `virtual-${assignmentId}-${sessionDate}-${sessionTime}`;
+    setSessionActionBusyId(busyKey);
+    setActionError(null);
+    try {
+      const createdId = await materializeVirtualPtSession(session, "Created from assigned PT slot at session start.");
+      await trainingService.startSession(token, createdId, "PORTAL");
+      await reloadPtTab();
+      await reloadShell();
+      setActionSuccess("Session started successfully.");
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Failed to start session.");
+    } finally {
+      setSessionActionBusyId(null);
+    }
+  };
+
+  const handlePtMaterializedSessionAction = async (
+    session: RecordLike,
+    action: "complete" | "cancel" | "no-show",
+    note: string,
+  ) => {
+    if (!canOperatePtSessionControls) {
+      setActionError("Only gym managers or authorized operators can update PT session status.");
+      return;
+    }
+    const existingId = pickString(session, ["id"]);
+    const busyKey = existingId || `virtual-${pickString(session, ["assignmentId"])}-${pickString(session, ["sessionDate"])}-${pickString(session, ["slotStartTime", "sessionTime"])}`;
+    setSessionActionBusyId(busyKey);
+    setActionError(null);
+    try {
+      const sessionId = existingId || await materializeVirtualPtSession(session as Record<string, unknown>, note);
+      await handlePtSessionAction(sessionId, action);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : `Failed to ${action} session.`);
       setSessionActionBusyId(null);
     }
   };
@@ -4819,13 +5310,205 @@ export default function MemberProfilePage() {
     setPtCalendarEntries(Array.isArray(calendarPage.content) ? calendarPage.content : []);
   }, [token]);
 
+  const ensurePtTabLoaded = useCallback(async () => {
+    if (!token || !memberId) {
+      return { assignments: [] as unknown[], sessions: [] as unknown[], slots: [] as unknown[] };
+    }
+    const existing = tabDataRef.current["personal-training"];
+    if (existing) {
+      return {
+        assignments: Array.isArray(existing.assignments) ? existing.assignments : [],
+        sessions: Array.isArray(existing.sessions) ? existing.sessions : [],
+        slots: Array.isArray(existing.slots) ? existing.slots : [],
+      };
+    }
+    try {
+      const payload = await loadMemberPtData();
+      setTabData((current) => ({ ...current, "personal-training": payload }));
+      return payload;
+    } catch {
+      return { assignments: [], sessions: [], slots: [] };
+    }
+  }, [loadMemberPtData, memberId, token]);
+
+  const openPtHistoryModal = useCallback(async (row: {
+    id: string;
+    planName: string;
+    startDate?: string;
+    endDate?: string;
+    totalSessions?: number;
+  }) => {
+    await ensurePtTabLoaded();
+    setPtHistoryModal({
+      subscriptionId: row.id,
+      label: row.planName,
+      startDate: row.startDate,
+      endDate: row.endDate,
+      totalSessions: row.totalSessions,
+    });
+  }, [ensurePtTabLoaded]);
+
+  const openPtSetupModal = useCallback(() => {
+    const existingDays = rawPtSlots
+      .map((slot) => pickString(toRecord(slot), ["dayOfWeek"]))
+      .filter(Boolean);
+    const existingStartTime = rawPtSlots.length > 0
+      ? pickString(toRecord(rawPtSlots[0]), ["slotStartTime"]) || "06:00"
+      : "06:00";
+    setPtSetupForm({
+      coachId: activePtCoachId || "",
+      startDate: pickString(activePtAssignmentRecord, ["startDate"]) || currentPtCommercialRecord?.startDate || "",
+      endDate: pickString(activePtAssignmentRecord, ["endDate"]) || currentPtCommercialRecord?.expiryDate || "",
+      totalSessions: String(
+        Math.max(
+          Number(currentPtCommercialRecord?.includedPtSessions || 0),
+          pickNumber(activePtAssignmentRecord, ["totalSessions", "includedSessions", "sessionCount"]) || 0,
+        ) || "",
+      ),
+      slotStartTime: existingStartTime,
+      scheduleDays: existingDays.length > 0 ? existingDays : ["MONDAY", "WEDNESDAY", "FRIDAY"],
+    });
+    setActionError(null);
+    setActionModal("pt-setup");
+  }, [activePtAssignmentRecord, activePtCoachId, currentPtCommercialRecord, rawPtSlots]);
+
+  const openPtManualEntryModal = useCallback(() => {
+    const assignmentId = currentPtContext.assignmentId || "";
+    if (!assignmentId) {
+      setActionError("No current active PT assignment is available for missed session entry.");
+      return;
+    }
+    const today = toLocalIsoDate(new Date());
+    const assignedSlot = getAssignedPtSlotForDate(rawPtSlots, today);
+    const defaultTime = pickString(assignedSlot || {}, ["slotStartTime"]) || pickString(toRecord(rawPtSlots[0] || {}), ["slotStartTime"]) || "06:00";
+    setPtManualEntryForm({
+      assignmentId,
+      sessionDate: today,
+      sessionTime: defaultTime,
+      status: "COMPLETED",
+      exerciseType: "STRENGTH",
+      useCustomTime: false,
+      notes: "",
+    });
+    setActionError(null);
+    setActionModal("pt-manual-entry");
+  }, [currentPtContext.assignmentId, rawPtSlots]);
+
+  const handlePtSetupSave = async () => {
+    if (!token || !memberId) {
+      return;
+    }
+    if (!canManagePtAdminControls) {
+      setActionError("Only admin users can update PT setup.");
+      return;
+    }
+    if (!ptSetupForm.coachId || !ptSetupForm.startDate || !ptSetupForm.totalSessions) {
+      setActionError("Coach, start date, and total sessions are required.");
+      return;
+    }
+    const selectedCoach = coaches.find((coach) => String(coach.id) === String(ptSetupForm.coachId));
+    if (!selectedCoach?.email) {
+      setActionError("Selected coach email is required for PT setup.");
+      return;
+    }
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      const slotEndTime = addMinutesToTime(ptSetupForm.slotStartTime, PT_SLOT_DURATION_MINUTES);
+      await trainingService.provisionPtOperationalSetup(token, {
+        memberId: Number(memberId),
+        memberEmail: email || `${memberId}@members.fomotraining.internal`,
+        coachId: Number(ptSetupForm.coachId),
+        coachEmail: selectedCoach.email,
+        startDate: ptSetupForm.startDate,
+        endDate: ptSetupForm.endDate || undefined,
+        productVariantId: currentPtCommercialRecord?.productVariantId ? Number(currentPtCommercialRecord.productVariantId) : undefined,
+        packageName: currentPtCommercialRecord?.variantName || currentPtCommercialRecord?.productName || "Personal Training",
+        totalSessions: Number(ptSetupForm.totalSessions),
+        rescheduleLimit: derivePtRescheduleLimit(Number(currentPtCommercialVariant?.durationMonths || 0), hasUnlimitedPtReschedules),
+        slotDurationMinutes: PT_SLOT_DURATION_MINUTES,
+        slots: ptSetupForm.scheduleDays.map((day) => ({
+          dayOfWeek: day,
+          slotStartTime: ptSetupForm.slotStartTime,
+          slotEndTime,
+        })),
+      });
+      await reloadPtTab();
+      setActionSuccess("PT setup saved.");
+      setActionModal(null);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Unable to save PT setup.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handlePtManualEntrySave = async () => {
+    if (!token) {
+      return;
+    }
+    if (!canManagePtAdminControls) {
+      setActionError("Only admin users can add PT session entries.");
+      return;
+    }
+    if (!ptManualEntryForm.assignmentId || !ptManualEntryForm.sessionDate || !ptManualEntryForm.sessionTime) {
+      setActionError("Assignment, session date, and session time are required.");
+      return;
+    }
+    if (!ptManualAssignedSlotTime) {
+      setActionError("No assigned slot exists for this date. Update PT setup first.");
+      return;
+    }
+    if (ptManualEntryForm.assignmentId !== currentPtContext.assignmentId) {
+      setActionError("Missed sessions can be added only against the current active PT package.");
+      return;
+    }
+    if (!ptManualEntryForm.exerciseType) {
+      setActionError("Exercise type is required.");
+      return;
+    }
+    if (!ptManualEntryForm.notes.trim()) {
+      setActionError("Notes are required for missed session entries.");
+      return;
+    }
+    const duplicateSession = currentPtSessions.some((session) => {
+      const record = toRecord(session);
+      const sessionDate = pickString(record, ["sessionDate"]);
+      const status = (pickString(record, ["status"]) || "").toUpperCase();
+      return sessionDate === ptManualEntryForm.sessionDate && status !== "CANCELLED" && status !== "CANCELED";
+    });
+    if (duplicateSession) {
+      setActionError("A PT session is already recorded for this date in the current package.");
+      return;
+    }
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await trainingService.recordManualPtSession(token, {
+        assignmentId: Number(ptManualEntryForm.assignmentId),
+        sessionDate: ptManualEntryForm.sessionDate,
+        sessionTime: ptManualEntryForm.sessionTime,
+        status: ptManualEntryForm.status,
+        exerciseType: ptManualEntryForm.exerciseType || undefined,
+        notes: ptManualEntryForm.notes || undefined,
+      });
+      await reloadPtTab();
+      await reloadShell();
+      setActionSuccess("PT session entry recorded.");
+      setActionModal(null);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Unable to record PT session entry.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const openPtRescheduleModal = async (session: RecordLike) => {
     if (!token) {
       return;
     }
-    const sessionId = pickString(session, ["id"]);
     const coachId = pickString(session, ["coachId"]) || pickString(activePtAssignmentRecord, ["coachId"]);
-    if (!sessionId || !coachId) {
+    if (!coachId) {
       setActionError("Coach or session details are missing for reschedule.");
       return;
     }
@@ -4833,6 +5516,10 @@ export default function MemberProfilePage() {
     setActionBusy(true);
     setActionError(null);
     try {
+      const sessionId = await materializeVirtualPtSession(
+        session as Record<string, unknown>,
+        "Created from assigned PT slot for reschedule.",
+      );
       await loadPtSchedulingContext(coachId);
       setPtRescheduleForm({
         sessionId,
@@ -4854,10 +5541,9 @@ export default function MemberProfilePage() {
     if (!token) {
       return;
     }
-    const sessionId = pickString(session, ["id"]);
     const coachId = pickString(session, ["coachId"]) || pickString(activePtAssignmentRecord, ["coachId"]);
     const currentDate = pickString(session, ["sessionDate"]) || "";
-    if (!sessionId || !coachId || !currentDate) {
+    if (!coachId || !currentDate) {
       setActionError("Coach or session details are missing for cancellation.");
       return;
     }
@@ -4876,6 +5562,10 @@ export default function MemberProfilePage() {
     setActionBusy(true);
     setActionError(null);
     try {
+      const sessionId = await materializeVirtualPtSession(
+        session as Record<string, unknown>,
+        "Created from assigned PT slot for cancellation.",
+      );
       await loadPtSchedulingContext(coachId);
       setPtCancelForm({
         sessionId,
@@ -4942,20 +5632,89 @@ export default function MemberProfilePage() {
     }
   };
 
+  const openPtDeleteSessionsModal = (sessionIds: string[]) => {
+    if (!canManagePtAdminControls) {
+      setActionError("Only admin users can delete PT session entries.");
+      return;
+    }
+    const ids = sessionIds.filter(Boolean);
+    if (!ids.length) {
+      return;
+    }
+    setPtDeleteSessionIds(ids);
+    setActionError(null);
+    setActionModal("pt-delete-sessions");
+  };
+
+  const handlePtDeleteSessions = async () => {
+    if (!token || ptDeleteSessionIds.length === 0) {
+      return;
+    }
+    if (!canManagePtAdminControls) {
+      setActionError("Only admin users can delete PT session entries.");
+      return;
+    }
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await trainingService.deletePtSessions(token, ptDeleteSessionIds);
+      setSelectedPtSessionIds((current) => current.filter((id) => !ptDeleteSessionIds.includes(id)));
+      setPtDeleteSessionIds([]);
+      await reloadPtTab();
+      await reloadShell();
+      setActionSuccess("PT session entries deleted.");
+      setActionModal(null);
+    } catch (error) {
+      setActionError(error instanceof Error ? error.message : "Unable to delete PT session entries.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const handleUpdatePtSessionCount = async () => {
     if (!token || !ptSessionCountForm.assignmentId) {
       return;
     }
     const totalSessions = Number(ptSessionCountForm.totalSessions || 0);
+    const importedCompletedSessions = Number(ptSessionCountForm.importedCompletedSessions || 0);
+    const importedPendingSessions = Number(ptSessionCountForm.importedPendingSessions || 0);
+    const importedNoShowSessions = Number(ptSessionCountForm.importedNoShowSessions || 0);
+    const importedCancelledSessions = Number(ptSessionCountForm.importedCancelledSessions || 0);
+    const importedReschedulesUsed = Number(ptSessionCountForm.importedReschedulesUsed || 0);
     if (!Number.isFinite(totalSessions) || totalSessions < 0) {
       setActionError("Enter a valid total PT session count.");
+      return;
+    }
+    if (!canManagePtAdminControls) {
+      setActionError("Only admin users can update PT session counters.");
+      return;
+    }
+    if (
+      !Number.isFinite(importedCompletedSessions) || importedCompletedSessions < 0
+      || !Number.isFinite(importedPendingSessions) || importedPendingSessions < 0
+      || !Number.isFinite(importedNoShowSessions) || importedNoShowSessions < 0
+      || !Number.isFinite(importedCancelledSessions) || importedCancelledSessions < 0
+      || !Number.isFinite(importedReschedulesUsed) || importedReschedulesUsed < 0
+    ) {
+      setActionError("Enter valid completed and pending session counts.");
+      return;
+    }
+    if (importedCompletedSessions + importedNoShowSessions + importedPendingSessions > totalSessions) {
+      setActionError("Completed plus no-show plus pending sessions cannot exceed total sessions.");
       return;
     }
 
     setActionBusy(true);
     setActionError(null);
     try {
-      await trainingService.updateAssignmentSessionCount(token, ptSessionCountForm.assignmentId, Math.round(totalSessions));
+      await trainingService.updateAssignmentSessionCount(token, ptSessionCountForm.assignmentId, {
+        totalSessions: Math.round(totalSessions),
+        importedCompletedSessions: Math.round(importedCompletedSessions),
+        importedPendingSessions: Math.round(importedPendingSessions),
+        importedNoShowSessions: Math.round(importedNoShowSessions),
+        importedCancelledSessions: Math.round(importedCancelledSessions),
+        importedReschedulesUsed: Math.round(importedReschedulesUsed),
+      });
       await reloadPtTab();
       setActionSuccess("PT session count updated.");
       setActionModal(null);
@@ -5063,16 +5822,15 @@ export default function MemberProfilePage() {
           <ProfilePanel title="Personal Details" subtitle="Core member identity and contact information" accent="slate">
             {(() => {
               const personalDetails = [
-                { label: "Mobile Number", value: phone || "-" },
+                { label: "Member Code", value: memberCode },
                 { label: "Email Address", value: email || "-" },
                 { label: "Date Of Birth", value: formatDateOnly(dateOfBirth || undefined) },
                 { label: "Date Of Enquiry", value: formatDateTime(inquiryDate || undefined) },
-                { label: "Client Representative", value: clientRepName },
-                ...(!isFlexPlan ? [{ label: trainerLabel, value: assignedTrainer }] : []),
+                { label: "Client Representative", value: resolvedClientRepName },
+                ...(!isFlexPlan ? [{ label: trainerLabel, value: resolvedAssignedTrainer }] : []),
                 ...(interestedIn !== "-" ? [{ label: "Interested In", value: interestedIn }] : []),
                 { label: "Emergency Contact", value: emergencyContact },
                 ...(referredBy !== "-" ? [{ label: "Referral Source", value: referredBy }] : []),
-                { label: "Member Code", value: memberCode },
                 { label: "Home Branch", value: branchLabel },
               ];
 
@@ -5107,8 +5865,8 @@ export default function MemberProfilePage() {
                     membership.family === "PT"
                       ? activePtCoachName
                       : membership.family === "GROUP_CLASS"
-                        ? assignedTrainer
-                        : assignedTrainer;
+                        ? resolvedAssignedTrainer
+                        : resolvedAssignedTrainer;
                   return (
                     <div key={membership.subscriptionId} className="rounded-[24px] border border-white/8 bg-white/[0.03] p-5">
                       <div className="flex flex-wrap items-center gap-3">
@@ -5219,8 +5977,8 @@ export default function MemberProfilePage() {
         <div className="grid gap-6">
           <ProfilePanel title="Billing Contacts" accent="slate">
             <div className="grid gap-3 sm:grid-cols-2">
-              <StatPill label="Billing Representative" value={billingRepName} />
-              <StatPill label="Client Representative" value={clientRepName} />
+              <StatPill label="Billing Representative" value={resolvedBillingRepName} />
+              <StatPill label="Client Representative" value={resolvedClientRepName} />
               <StatPill label="Latest Receipt" value={normalizedStats.latestReceipt || "-"} />
               <StatPill label="Payment Status" value={humanizeLabel(paymentStatus)} />
             </div>
@@ -5324,6 +6082,7 @@ export default function MemberProfilePage() {
                   <tr className="border-b border-white/8 bg-white/[0.03] text-left text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">
                     <th className="px-4 py-3">Receipt</th>
                     <th className="px-4 py-3">Amount</th>
+                    <th className="px-4 py-3">Status</th>
                     <th className="px-4 py-3">Mode</th>
                     <th className="px-4 py-3">Paid At</th>
                     <th className="px-4 py-3">Actions</th>
@@ -5333,7 +6092,8 @@ export default function MemberProfilePage() {
                   {receipts.map((receipt) => (
                     <tr key={receipt.id} className="hover:bg-white/[0.02]">
                       <td className="px-4 py-3 font-medium text-white">{receipt.receiptNumber}</td>
-                      <td className="px-4 py-3 text-slate-200">{formatRoundedInr(receipt.amount)}</td>
+                      <td className="px-4 py-3 text-right tabular-nums text-slate-200">{formatRoundedInr(receipt.amount)}</td>
+                      <td className="px-4 py-3 text-slate-200">Paid</td>
                       <td className="px-4 py-3 text-slate-200">{String(receipt.paymentMode || "-").toUpperCase()}</td>
                       <td className="px-4 py-3 text-slate-200">{formatDateTime(receipt.paidAt)}</td>
                       <td className="px-4 py-3">
@@ -5575,15 +6335,69 @@ export default function MemberProfilePage() {
             },
           ];
         })();
+        const subscriptionHistoryRows = toArray<RecordLike>(data.history)
+          .map((entry) => {
+            const subscriptionId = pickString(entry, ["memberSubscriptionId", "subscriptionId", "id"]);
+            const planName = normalizeDisplayPlanName(pickString(entry, ["planName", "variantName", "productName"]) || "-");
+            const status = pickString(entry, ["status"]) || "-";
+            const startDate = pickString(entry, ["startDate"]);
+            const endDate = pickString(entry, ["endDate"]);
+            const invoiceNumber = pickString(entry, ["invoiceNumber"]);
+            const invoiceId = pickString(entry, ["invoiceId"]);
+            const receiptId = pickString(entry, ["receiptId"]);
+            const paymentConfirmed = pickBoolean(entry, ["paymentConfirmed"]);
+            const durationMonths = pickNumber(entry, ["durationMonths"]);
+            const validityDays = pickNumber(entry, ["validityDays"]);
+            const variantId = pickString(entry, ["productVariantId"]);
+            const variantCode = pickString(entry, ["variantCode"]);
+            const productCode = pickString(entry, ["productCode"]);
+            const matchingVariant =
+              catalogVariants.find((variant) => String(variant.variantId) === variantId)
+              || catalogVariants.find((variant) => variant.variantCode === variantCode)
+              || catalogVariants.find((variant) => variant.productCode === productCode && variant.variantName === pickString(entry, ["planName", "variantName"]));
+            const sortKey = endDate || startDate || pickString(entry, ["createdAt"]) || "";
+            return {
+              id: subscriptionId || `${planName}-${startDate}-${endDate}-${invoiceId}`,
+              planName,
+              status,
+              startDate,
+              endDate,
+              invoiceNumber,
+              invoiceId,
+              receiptId,
+              receiptNumber: pickString(entry, ["receiptNumber"]),
+              paymentConfirmed,
+              durationLabel: formatPlanDuration(
+                durationMonths || matchingVariant?.durationMonths || 0,
+                validityDays || matchingVariant?.validityDays || 0,
+              ),
+              includedPtSessions: pickNumber(entry, ["includedPtSessions"]),
+              isPt: /\bPT\b|PERSONAL TRAINING|REFORM|TRANSFORM/i.test(planName),
+              sortKey,
+            };
+          })
+          .sort((left, right) => right.sortKey.localeCompare(left.sortKey));
         const shouldShowEntitlementsPanel = displayedEntitlementRecords.length > 0;
-        const ptCompletedSessions = ptSessions.filter((session) => {
+        const rawPtCompletedSessions = currentPtSessions.filter((session) => {
           const status = pickString(toRecord(session), ["status"]).toUpperCase();
           return status === "COMPLETED" || status === "DONE";
         }).length;
-        const ptConsumedSessions = ptSessions.filter((session) => {
+        const rawPtConsumedSessions = currentPtSessions.filter((session) => {
           const status = pickString(toRecord(session), ["status"]).toUpperCase();
           return status === "COMPLETED" || status === "DONE" || status === "NO_SHOW";
         }).length;
+        const shouldUseSubscriptionPtSnapshot =
+          currentPtContext.totalSessions > 0
+          && (currentPtContext.importedCompletedSessions > 0 || currentPtContext.importedPendingSessions > 0)
+          && currentPtContext.importedCompletedSessions + currentPtContext.importedPendingSessions <= currentPtContext.totalSessions;
+        const ptCompletedSessions = shouldUseSubscriptionPtSnapshot ? currentPtContext.importedCompletedSessions : rawPtCompletedSessions;
+        const subscriptionNoShowSessions = currentPtSessions.filter((session) => {
+          const status = pickString(toRecord(session), ["status"]).toUpperCase();
+          return status === "NO_SHOW";
+        }).length;
+        const ptConsumedSessions = shouldUseSubscriptionPtSnapshot
+          ? currentPtContext.importedCompletedSessions + subscriptionNoShowSessions
+          : rawPtConsumedSessions;
         const entitlementsUsagePanel = shouldShowEntitlementsPanel ? (
           <ProfilePanel title="Entitlements & Usage" subtitle="Tracked benefits available on this membership" accent="cyan">
               <div className="space-y-3">
@@ -5812,7 +6626,11 @@ export default function MemberProfilePage() {
                         <StatPill label="Expiry Date" value={formatDateOnly(membership.expiryDate || undefined)} />
                         {membership.family === "PT" ? (
                           <>
-                            <StatPill label="Coach" value={activePtCoachName} />
+                            <StatPill
+                              label="Coach"
+                              value={activePtCoachName}
+                              onClick={fallbackPtCoachId ? () => router.push(`/portal/trainers/${fallbackPtCoachId}`) : undefined}
+                            />
                             <StatPill label="Sessions" value={ptTotalSessions ? `${ptUsedSessions} / ${ptTotalSessions}` : String(ptCompletedSessions)} />
                           </>
                         ) : null}
@@ -5887,6 +6705,148 @@ export default function MemberProfilePage() {
                 {entitlementsUsagePanel}
               </div>
             ) : null}
+            <ProfilePanel
+              title="Subscription History"
+              subtitle="All historical and current memberships imported for this member, including PT."
+              accent="slate"
+            >
+              {subscriptionHistoryRows.length ? (
+                <div className="overflow-x-auto">
+                  <table className="min-w-full text-sm">
+                    <thead>
+                      <tr className="text-left text-[11px] uppercase tracking-[0.18em] text-slate-400">
+                        <th className="px-3 py-2.5">Plan</th>
+                        <th className="px-3 py-2.5">Status</th>
+                        <th className="px-3 py-2.5">Duration</th>
+                        <th className="px-3 py-2.5">Start</th>
+                        <th className="px-3 py-2.5">End</th>
+                        <th className="px-3 py-2.5">Invoice</th>
+                        <th className="px-3 py-2.5">Receipt</th>
+                        <th className="px-3 py-2.5">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody className="divide-y divide-white/8">
+                      {subscriptionHistoryRows.map((row) => (
+                        <tr key={row.id}>
+                          <td className="px-3 py-2.5 text-white">
+                            <div className="flex items-center gap-2">
+                              <span>{row.planName}</span>
+                              {row.isPt ? (
+                                <span className="rounded-full border border-rose-400/30 bg-rose-500/15 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.16em] text-rose-100">
+                                  PT
+                                </span>
+                              ) : null}
+                            </div>
+                          </td>
+                          <td className="px-3 py-2.5">
+                            <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] ${
+                              String(row.status).toUpperCase() === "ACTIVE"
+                                ? "border-emerald-400/30 bg-emerald-500/15 text-emerald-100"
+                                : String(row.status).toUpperCase() === "PAUSED"
+                                  ? "border-amber-400/30 bg-amber-500/15 text-amber-100"
+                                  : "border-white/10 bg-white/[0.04] text-slate-300"
+                            }`}>
+                              {humanizeLabel(row.status)}
+                            </span>
+                          </td>
+                          <td className="px-3 py-2.5 text-slate-300">{row.durationLabel || "-"}</td>
+                          <td className="px-3 py-2.5 text-slate-300">{formatDateOnly(row.startDate || undefined)}</td>
+                          <td className="px-3 py-2.5 text-slate-300">{formatDateOnly(row.endDate || undefined)}</td>
+                          <td className="px-3 py-2.5 text-slate-300">{row.invoiceNumber || (row.invoiceId ? `#${row.invoiceId}` : "-")}</td>
+                          <td className="px-3 py-2.5 text-slate-300">{row.receiptNumber || (row.receiptId ? `#${row.receiptId}` : row.paymentConfirmed ? "Paid" : "-")}</td>
+                          <td className="px-3 py-2.5">
+                            <div className="flex flex-wrap gap-2">
+                              {row.invoiceId ? (
+                                <>
+                                  <button
+                                    type="button"
+                                    onClick={() => void printDocumentPdf("invoice", row.invoiceId)}
+                                    disabled={documentBusyKey === `invoice-print-${row.invoiceId}`}
+                                    className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
+                                    title={`Print invoice ${row.invoiceNumber || row.invoiceId}`}
+                                  >
+                                    <Printer className="h-4 w-4" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void downloadDocumentPdf("invoice", row.invoiceId, row.invoiceNumber || `invoice-${row.invoiceId}`)}
+                                    disabled={documentBusyKey === `invoice-download-${row.invoiceId}`}
+                                    className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
+                                    title={`Download invoice ${row.invoiceNumber || row.invoiceId}`}
+                                  >
+                                    <Download className="h-4 w-4" />
+                                  </button>
+                                  <button
+                                    type="button"
+                                    onClick={() => void shareDocumentPdf("invoice", row.invoiceId, row.invoiceNumber || `invoice-${row.invoiceId}`, `Invoice ${row.invoiceNumber || row.invoiceId}`)}
+                                    disabled={documentBusyKey === `invoice-share-${row.invoiceId}`}
+                                    className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs font-semibold text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
+                                    title={`Share invoice ${row.invoiceNumber || row.invoiceId}`}
+                                  >
+                                    <Share2 className="h-4 w-4" />
+                                  </button>
+                                  {row.receiptId ? (
+                                    <>
+                                      <button
+                                        type="button"
+                                        onClick={() => void printDocumentPdf("receipt", row.receiptId!)}
+                                        disabled={documentBusyKey === `receipt-print-${row.receiptId}`}
+                                        className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/15 disabled:opacity-50"
+                                        title={`Print receipt ${row.receiptNumber || row.receiptId}`}
+                                      >
+                                        <Printer className="h-4 w-4" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => void downloadDocumentPdf("receipt", row.receiptId!, row.receiptNumber || `receipt-${row.receiptId}`)}
+                                        disabled={documentBusyKey === `receipt-download-${row.receiptId}`}
+                                        className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/15 disabled:opacity-50"
+                                        title={`Download receipt ${row.receiptNumber || row.receiptId}`}
+                                      >
+                                        <Download className="h-4 w-4" />
+                                      </button>
+                                      <button
+                                        type="button"
+                                        onClick={() => void shareDocumentPdf("receipt", row.receiptId!, row.receiptNumber || `receipt-${row.receiptId}`, `Receipt ${row.receiptNumber || row.receiptId}`)}
+                                        disabled={documentBusyKey === `receipt-share-${row.receiptId}`}
+                                        className="rounded-lg border border-emerald-400/20 bg-emerald-500/10 px-2.5 py-1 text-xs font-semibold text-emerald-100 hover:bg-emerald-500/15 disabled:opacity-50"
+                                        title={`Share receipt ${row.receiptNumber || row.receiptId}`}
+                                      >
+                                        <Share2 className="h-4 w-4" />
+                                      </button>
+                                    </>
+                                  ) : null}
+                                  {row.isPt && row.id !== currentPtCommercialRecord?.subscriptionId ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => void openPtHistoryModal({
+                                        id: row.id,
+                                        planName: row.planName,
+                                        startDate: row.startDate || undefined,
+                                        endDate: row.endDate || undefined,
+                                        totalSessions: row.includedPtSessions,
+                                      })}
+                                      className="rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-xs font-semibold text-slate-100 hover:bg-white/[0.08]"
+                                      title={`Open session history for ${row.planName}`}
+                                    >
+                                      <CircleFadingArrowUp className="h-4 w-4" />
+                                    </button>
+                                  ) : null}
+                                </>
+                              ) : (
+                                <span className="text-xs text-slate-500">No invoice</span>
+                              )}
+                            </div>
+                          </td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <p className="text-sm text-slate-300">No subscription history available for this member.</p>
+              )}
+            </ProfilePanel>
           </div>
         );
       }
@@ -6056,27 +7016,27 @@ export default function MemberProfilePage() {
       case "recovery-services":
         return null;
       case "personal-training": {
-        const completedSessions = ptSessions.filter((s) => {
+        const completedSessions = currentPtSessions.filter((s) => {
           const status = pickString(toRecord(s), ["status"])?.toUpperCase();
           return status === "COMPLETED" || status === "DONE";
         }).length;
-        const scheduledSessions = ptSessions.filter((s) => {
+        const scheduledSessions = currentPtSessions.filter((s) => {
           const status = pickString(toRecord(s), ["status"])?.toUpperCase();
           return status === "SCHEDULED" || status === "UPCOMING" || status === "PENDING";
         }).length;
-        const inProgressSessions = ptSessions.filter((s) => {
+        const inProgressSessions = currentPtSessions.filter((s) => {
           const status = pickString(toRecord(s), ["status"])?.toUpperCase();
           return status === "IN_PROGRESS";
         }).length;
-        const noShowSessions = ptSessions.filter((s) => {
+        const noShowSessions = currentPtSessions.filter((s) => {
           const status = pickString(toRecord(s), ["status"])?.toUpperCase();
           return status === "NO_SHOW";
         }).length;
-        const cancelledSessions = ptSessions.filter((s) => {
+        const cancelledSessions = currentPtSessions.filter((s) => {
           const status = pickString(toRecord(s), ["status"])?.toUpperCase();
           return status === "CANCELLED" || status === "CANCELED";
         }).length;
-        const totalSessions = ptSessions.length;
+        const totalSessions = currentPtSessions.length;
         const ptMembershipRecord = portfolioMembershipItems.find((entry) => entry.family === "PT") || null;
         const transformationMembershipRecord = portfolioMembershipItems.find((entry) => entry.family === "TRANSFORMATION") || null;
         const commercialPtRecord = ptMembershipRecord || (isTransformationPlan ? transformationMembershipRecord : null);
@@ -6097,17 +7057,61 @@ export default function MemberProfilePage() {
           commercialPtRecord?.variantName
           || commercialPtRecord?.productName
           || (isTransformationPlan ? "Transformation PT Bundle" : "Personal Training");
-        const includedPtSessions = Math.max(
-          Number(commercialPtRecord?.includedPtSessions || 0),
-          Number(commercialPtCatalogVariant?.includedPtSessions || 0),
-          Number(pickNumber(activeAssignRec, ["sessionCount", "includedSessions", "totalSessions"]) || 0),
+        const includedPtSessions = currentPtContext.totalSessions;
+        const ptSlots = Array.isArray((tabData["personal-training"] as Record<string, unknown>)?.slots)
+          ? ((tabData["personal-training"] as Record<string, unknown>).slots as unknown[])
+          : [];
+        const DAY_ORDER = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"];
+        const sortedSlots = [...ptSlots].sort((a, b) => {
+          const dayA = DAY_ORDER.indexOf(pickString(toRecord(a), ["dayOfWeek"]) || "");
+          const dayB = DAY_ORDER.indexOf(pickString(toRecord(b), ["dayOfWeek"]) || "");
+          return dayA - dayB;
+        });
+        const activeAssignStartDate = pickString(activeAssignRec || {}, ["startDate"]);
+        const activeAssignEndDate = pickString(activeAssignRec || {}, ["endDate"]);
+        const existingSessionKeys = new Set(
+          currentPtSessions
+            .map((session) => toRecord(session))
+            .map((session) => `${pickString(session, ["sessionDate"])}-${pickString(session, ["slotStartTime", "sessionTime"])}`),
         );
+        const virtualScheduleDates = [todayIsoDate];
+        const virtualDueSessions = Boolean(activeAssignId)
+          ? virtualScheduleDates.flatMap((dateIso) => {
+              if ((activeAssignStartDate && activeAssignStartDate > dateIso) || (activeAssignEndDate && activeAssignEndDate < dateIso)) {
+                return [];
+              }
+              const dayOfWeek = DAY_ORDER[(new Date(`${dateIso}T00:00:00`).getDay() + 6) % 7];
+              return sortedSlots
+                .map((slot) => toRecord(slot))
+                .filter((slot) => (pickString(slot, ["dayOfWeek"]) || "").toUpperCase() === dayOfWeek)
+                .filter((slot) => {
+                  const slotStart = pickString(slot, ["slotStartTime"]);
+                  return Boolean(slotStart) && !existingSessionKeys.has(`${dateIso}-${slotStart}`);
+                })
+                .map((slot) => {
+                  const slotStart = pickString(slot, ["slotStartTime"]) || "";
+                  const slotEnd = pickString(slot, ["slotEndTime"]) || addMinutesToTime(slotStart, PT_SLOT_DURATION_MINUTES);
+                  return {
+                    virtualSession: true,
+                    assignmentId: activeAssignId,
+                    coachId: pickString(activeAssignRec || {}, ["coachId"]),
+                    memberId,
+                    sessionDate: dateIso,
+                    sessionTime: slotStart,
+                    slotStartTime: slotStart,
+                    slotEndTime: slotEnd,
+                    durationMinutes: String(PT_SLOT_DURATION_MINUTES),
+                    status: "SCHEDULED",
+                  };
+                });
+            })
+          : [];
         const actionableStatuses = new Set(["SCHEDULED", "UPCOMING", "PENDING", "IN_PROGRESS"]);
-        const recordedSessionsCount = ptSessions.filter((session) => {
+        const rawRecordedSessionsCount = currentPtSessions.filter((session) => {
           const status = pickString(toRecord(session), ["status"])?.toUpperCase();
           return Boolean(status) && !["SCHEDULED", "UPCOMING", "PENDING"].includes(status);
         }).length;
-        const actionableSessions = [...ptSessions]
+        const actionableSessions = [...currentPtSessions, ...virtualDueSessions]
           .map((session) => toRecord(session))
           .filter((session) => actionableStatuses.has((pickString(session, ["status"]) || "SCHEDULED").toUpperCase()))
           .sort((left, right) => getPtSessionSortTimestamp(left) - getPtSessionSortTimestamp(right));
@@ -6117,14 +7121,14 @@ export default function MemberProfilePage() {
             return true;
           }
           const sessionDate = pickString(session, ["sessionDate"]);
-          return Boolean(sessionDate) && sessionDate <= todayIsoDate;
+          return Boolean(sessionDate) && sessionDate === todayIsoDate;
         });
-        const sessionRegisterRows = (actionableDueSessions.length > 0 ? actionableDueSessions : actionableSessions.slice(0, 1))
+        const sessionRegisterRows = actionableDueSessions
           .sort((left, right) => getPtSessionSortTimestamp(left) - getPtSessionSortTimestamp(right));
         const sessionRegisterKeys = new Set(
           sessionRegisterRows.map((session) => pickString(session, ["id"]) || `${pickString(session, ["sessionDate"])}-${pickString(session, ["slotStartTime", "sessionTime"])}`),
         );
-        const sessionHistoryRows = [...ptSessions]
+        const sessionHistoryRows = [...currentPtSessions]
           .map((session) => toRecord(session))
           .filter((session) => {
             const key = pickString(session, ["id"]) || `${pickString(session, ["sessionDate"])}-${pickString(session, ["slotStartTime", "sessionTime"])}`;
@@ -6133,31 +7137,34 @@ export default function MemberProfilePage() {
             }
             const status = (pickString(session, ["status"]) || "SCHEDULED").toUpperCase();
             if (actionableStatuses.has(status)) {
-              const sessionDate = pickString(session, ["sessionDate"]);
-              return Boolean(sessionDate) && sessionDate < todayIsoDate;
+              return false;
             }
             return true;
           })
           .sort((left, right) => getPtSessionSortTimestamp(right) - getPtSessionSortTimestamp(left));
-        const remainingPtSessions = includedPtSessions > 0 ? Math.max(includedPtSessions - (completedSessions + noShowSessions), 0) : 0;
-        const trainerCountedSessions = completedSessions; // Only COMPLETED counts for trainer
-        const memberConsumedSessions = completedSessions + noShowSessions; // COMPLETED + NO_SHOW for member
-        const pendingSessions = includedPtSessions > 0
-          ? Math.max(includedPtSessions - memberConsumedSessions, 0)
-          : actionableSessions.length;
-        const attendancePct = totalSessions > 0 ? Math.round((completedSessions / totalSessions) * 100) : 0;
-
-        // PT slot data from tabData
-        const ptSlots = Array.isArray((tabData["personal-training"] as Record<string, unknown>)?.slots)
-          ? ((tabData["personal-training"] as Record<string, unknown>).slots as unknown[])
-          : [];
-
-        const DAY_ORDER = ["MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY", "SUNDAY"];
-        const sortedSlots = [...ptSlots].sort((a, b) => {
-          const dayA = DAY_ORDER.indexOf(pickString(toRecord(a), ["dayOfWeek"]) || "");
-          const dayB = DAY_ORDER.indexOf(pickString(toRecord(b), ["dayOfWeek"]) || "");
-          return dayA - dayB;
-        });
+        const importedCompletedSessions = currentPtContext.importedCompletedSessions;
+        const importedPendingSessions = currentPtContext.importedPendingSessions;
+        const importedNoShowSessions = currentPtContext.importedNoShowSessions;
+        const importedCancelledSessions = currentPtContext.importedCancelledSessions;
+        const shouldUseImportedPtSnapshot =
+          Boolean(activeAssignRec)
+          && (importedCompletedSessions > 0 || importedPendingSessions > 0)
+          && importedCompletedSessions + importedNoShowSessions + importedPendingSessions <= includedPtSessions;
+        const displayedNoShowSessions = shouldUseImportedPtSnapshot ? importedNoShowSessions : noShowSessions;
+        const displayedCancelledSessions = shouldUseImportedPtSnapshot ? importedCancelledSessions : cancelledSessions;
+        const memberConsumedSessions = shouldUseImportedPtSnapshot
+          ? importedCompletedSessions + displayedNoShowSessions
+          : completedSessions + displayedNoShowSessions; // COMPLETED + NO_SHOW for member
+        const trainerCountedSessions = shouldUseImportedPtSnapshot
+          ? importedCompletedSessions
+          : completedSessions; // Only COMPLETED counts for trainer
+        const remainingPtSessions = shouldUseImportedPtSnapshot
+          ? importedPendingSessions
+          : (includedPtSessions > 0 ? Math.max(includedPtSessions - memberConsumedSessions, 0) : 0);
+        const pendingSessions = includedPtSessions > 0 ? remainingPtSessions : actionableSessions.length;
+        const recordedSessionsCount = shouldUseImportedPtSnapshot ? importedCompletedSessions : rawRecordedSessionsCount;
+        const attendanceDenominator = includedPtSessions > 0 ? includedPtSessions : totalSessions;
+        const attendancePct = attendanceDenominator > 0 ? Math.round((trainerCountedSessions / attendanceDenominator) * 100) : 0;
 
         const statusBadge = (status: string) => {
           const s = status?.toUpperCase();
@@ -6170,6 +7177,31 @@ export default function MemberProfilePage() {
             RESCHEDULED: "border-purple-400/20 bg-purple-500/10 text-purple-200",
           };
           return map[s] || "border-slate-400/20 bg-slate-500/10 text-slate-200";
+        };
+
+        const openPtSessionCountersModal = () => {
+          if (!activeAssignId) {
+            return;
+          }
+          const total = Math.max(
+            includedPtSessions,
+            Number(pickNumber(activeAssignRec!, ["totalSessions", "sessionCount", "includedSessions"]) || 0),
+          );
+          const completed = shouldUseImportedPtSnapshot ? importedCompletedSessions : completedSessions;
+          const pending = shouldUseImportedPtSnapshot
+            ? importedPendingSessions
+            : Math.max(total - (completedSessions + noShowSessions), 0);
+          setPtSessionCountForm({
+            assignmentId: activeAssignId,
+            totalSessions: String(total),
+            importedCompletedSessions: String(completed),
+            importedPendingSessions: String(pending),
+            importedNoShowSessions: String(shouldUseImportedPtSnapshot ? importedNoShowSessions : noShowSessions),
+            importedCancelledSessions: String(shouldUseImportedPtSnapshot ? importedCancelledSessions : cancelledSessions),
+            importedReschedulesUsed: String(currentPtContext.importedReschedulesUsed),
+          });
+          setActionError(null);
+          setActionModal("pt-session-count");
         };
 
         return (
@@ -6187,12 +7219,18 @@ export default function MemberProfilePage() {
             {/* Assignment info */}
             <ProfilePanel title="Personal Training Assignment" accent="slate">
               {activePtAssignment ? (
-                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-                  <StatPill label="Coach" value={activePtCoachName} />
-                  <StatPill label="Training Type" value={humanizeLabel(pickString(activeAssignRec!, ["trainingType"]) || "PERSONAL_TRAINING")} />
-                  <StatPill label="Start Date" value={formatDateOnly(pickString(activeAssignRec!, ["startDate"]))} />
-                  <StatPill label="End Date" value={formatDateOnly(pickString(activeAssignRec!, ["endDate"])) || "Ongoing"} />
-                  <StatPill label="Status" value={pickBoolean(activeAssignRec!, ["active"]) ? "Active" : "Inactive"} />
+                <div className="space-y-4">
+                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                      <StatPill
+                        label="Coach"
+                        value={activePtCoachName}
+                      onClick={fallbackPtCoachId ? () => router.push(`/portal/trainers/${fallbackPtCoachId}`) : undefined}
+                      />
+                    <StatPill label="Training Type" value={humanizeLabel(pickString(activeAssignRec!, ["trainingType"]) || "PERSONAL_TRAINING")} />
+                    <StatPill label="Start Date" value={formatDateOnly(pickString(activeAssignRec!, ["startDate"]))} />
+                    <StatPill label="End Date" value={formatDateOnly(pickString(activeAssignRec!, ["endDate"])) || "Ongoing"} />
+                    <StatPill label="Status" value={pickBoolean(activeAssignRec!, ["active"]) ? "Active" : "Inactive"} />
+                  </div>
                 </div>
               ) : hasPtCommercialMembership ? (
                 <div className="space-y-4">
@@ -6200,7 +7238,7 @@ export default function MemberProfilePage() {
                     <StatPill label="PT Package" value={trimMembershipCardTitle(ptPackageName)} />
                     <StatPill label="Duration" value={ptPackageDurationLabel} />
                     <StatPill label="Total Sessions" value={includedPtSessions > 0 ? String(includedPtSessions) : "-"} />
-                    <StatPill label="Assigned Trainer" value={assignedTrainer || "-"} />
+                    <StatPill label="Assigned Trainer" value={resolvedAssignedTrainer} />
                   </div>
                   <div className="rounded-xl border border-amber-400/20 bg-amber-500/10 px-4 py-3">
                     <p className="text-sm font-medium text-amber-100">
@@ -6212,6 +7250,17 @@ export default function MemberProfilePage() {
                         : "Complete the trainer assignment, weekly slot schedule, workout plan, and diet plan before using the session register."}
                     </p>
                   </div>
+                  {canManagePtAdminControls ? (
+                  <div className="flex justify-end">
+                    <button
+                      type="button"
+                      onClick={openPtSetupModal}
+                      className="rounded-xl border border-sky-400/30 bg-sky-500/10 px-4 py-2 text-sm font-semibold text-sky-100 hover:bg-sky-500/20"
+                    >
+                      Complete PT Setup
+                    </button>
+                  </div>
+                  ) : null}
                 </div>
               ) : (
                 <p className="text-sm text-slate-400">No active PT assignment. Assign a trainer to start tracking sessions.</p>
@@ -6238,46 +7287,58 @@ export default function MemberProfilePage() {
                     })}
                   </div>
                 ) : (
-                  <p className="text-sm text-slate-400">No slot schedule configured yet. Add time slots for automatic session generation.</p>
+                  <p className="text-sm text-slate-400">No slot schedule configured yet. Add time slots to enable same-day session actions.</p>
                 )}
               </ProfilePanel>
             ) : null}
 
+            {activeAssignId && canManagePtAdminControls ? (
+              <ProfilePanel
+                title="Admin PT Corrections"
+                subtitle="Use only for migrated or corrected PT records. Daily operations should happen in Today's Session Register."
+                accent="amber"
+              >
+                <div className="grid gap-3 md:grid-cols-3">
+                  <button
+                    type="button"
+                    onClick={openPtSetupModal}
+                    className="rounded-2xl border border-sky-400/30 bg-sky-500/10 px-4 py-3 text-left text-sm font-semibold text-sky-100 hover:bg-sky-500/20"
+                  >
+                    Update Coach, Slot & Schedule
+                    <span className="mt-1 block text-xs font-normal text-sky-100/70">Change trainer, timing, weekdays, validity, or total entitlement.</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openPtSessionCountersModal}
+                    className="rounded-2xl border border-lime-400/30 bg-lime-500/10 px-4 py-3 text-left text-sm font-semibold text-lime-100 hover:bg-lime-500/20"
+                  >
+                    Edit Session Counters
+                    <span className="mt-1 block text-xs font-normal text-lime-100/70">Correct total, recorded/completed, pending, and remaining counts.</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={openPtManualEntryModal}
+                    className="rounded-2xl border border-emerald-400/30 bg-emerald-500/10 px-4 py-3 text-left text-sm font-semibold text-emerald-100 hover:bg-emerald-500/20"
+                  >
+                    Add Missed Session
+                    <span className="mt-1 block text-xs font-normal text-emerald-100/70">Add expired, old, no-show, cancelled, or completed entries manually.</span>
+                  </button>
+                </div>
+              </ProfilePanel>
+            ) : null}
+
             {/* Session Summary */}
-            {totalSessions > 0 ? (
+            {includedPtSessions > 0 || totalSessions > 0 ? (
               <ProfilePanel title="Session Tracker" subtitle="Session counts — NO_SHOW counts as consumed for member but NOT for trainer payment" accent="lime">
-                {activeAssignId ? (
-                  <div className="mb-4 flex justify-end">
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setPtSessionCountForm({
-                          assignmentId: activeAssignId,
-                          totalSessions: String(
-                            Math.max(
-                              includedPtSessions,
-                              Number(pickNumber(activeAssignRec!, ["totalSessions", "sessionCount", "includedSessions"]) || 0),
-                            ),
-                          ),
-                        });
-                        setActionError(null);
-                        setActionModal("pt-session-count");
-                      }}
-                      className="rounded-xl border border-lime-400/30 bg-lime-500/10 px-4 py-2 text-sm font-semibold text-lime-100 hover:bg-lime-500/20"
-                    >
-                      Edit Total PT Sessions
-                    </button>
-                  </div>
-                ) : null}
                 <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                   <StatPill label="Total PT Sessions" value={includedPtSessions > 0 ? String(includedPtSessions) : String(totalSessions)} />
                   <StatPill label="Total Recorded Sessions" value={String(recordedSessionsCount)} />
                   <StatPill label="Pending PT Sessions" value={String(pendingSessions)} />
                   <StatPill label="Client Show" value={String(completedSessions)} />
-                  <StatPill label="Client No-Show" value={String(noShowSessions)} />
+                  <StatPill label="Client No-Show" value={String(displayedNoShowSessions)} />
                   <StatPill label="Remaining Sessions" value={includedPtSessions > 0 ? String(remainingPtSessions) : "-"} />
-                  <StatPill label="Cancelled" value={String(cancelledSessions)} />
-                  <StatPill label="Reschedules Used" value={ptHasUnlimitedReschedules ? `${ptUsedReschedules} / Unlimited` : `${ptUsedReschedules} / ${ptAssignmentRescheduleLimit}`} />
+                  <StatPill label="Cancelled" value={String(displayedCancelledSessions)} />
+                  <StatPill label="Cancel Allowance Used" value={ptHasUnlimitedReschedules ? `${ptUsedReschedules} / Unlimited` : `${ptUsedReschedules} / ${ptAssignmentRescheduleLimit}`} />
                   <StatPill label="Trainer Counted" value={String(trainerCountedSessions)} />
                   <StatPill label="Member Consumed" value={String(memberConsumedSessions)} />
                 </div>
@@ -6293,20 +7354,20 @@ export default function MemberProfilePage() {
               </ProfilePanel>
             ) : null}
 
-            {/* Session Register with Actions */}
+            {/* Today's Session Register with Actions */}
             {sessionRegisterRows.length > 0 ? (
               <div ref={sessionRegisterRef}>
-              <ProfilePanel title="Session Register" subtitle="Only due or currently actionable PT sessions are shown here. Older and completed items move to history." accent="slate">
+              <ProfilePanel title="Today's Session Register" subtitle="Only today's assigned PT slot and any in-progress PT session are shown here. Historical or missed sessions must be added manually by admin." accent="slate">
                 <div className="mb-4 grid gap-3 lg:grid-cols-3">
                   <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
                     <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Cancel Policy</p>
                     <p className="mt-2 text-sm text-white">Cancel is allowed until {PT_CANCEL_CUTOFF_HOURS} hours before the booked slot.</p>
-                    <p className="mt-1 text-xs text-slate-500">Valid cancel keeps the member session available for a future make-up slot.</p>
+                    <p className="mt-1 text-xs text-slate-500">Valid cancel frees the slot and keeps the member session available for manual make-up scheduling later.</p>
                   </div>
                   <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
-                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Reschedule Policy</p>
-                    <p className="mt-2 text-sm text-white">Reschedule is same-day only and closes {PT_RESCHEDULE_CUTOFF_HOURS} hours before the original slot.</p>
-                    <p className="mt-1 text-xs text-slate-500">If no same-day slot is free, use cancel while the 8-hour window is still open.</p>
+                    <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Cancel Allowance</p>
+                    <p className="mt-2 text-sm text-white">Members can use only {ptHasUnlimitedReschedules ? "unlimited" : ptAssignmentRescheduleLimit || 0} valid cancels on this PT package.</p>
+                    <p className="mt-1 text-xs text-slate-500">The existing allowance counter is being used for portal-only cancel tracking until member and coach apps are introduced.</p>
                   </div>
                   <div className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
                     <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Late Window</p>
@@ -6314,12 +7375,26 @@ export default function MemberProfilePage() {
                     <p className="mt-1 text-xs text-slate-500">No Show consumes the member session but does not count for trainer payout.</p>
                   </div>
                 </div>
+                {canManagePtAdminControls && selectedPtSessionIds.length > 0 ? (
+                  <div className="mb-4 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => openPtDeleteSessionsModal(selectedPtSessionIds)}
+                      className="inline-flex items-center gap-2 rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/20"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete selected ({selectedPtSessionIds.length})
+                    </button>
+                  </div>
+                ) : null}
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm">
                     <thead>
                       <tr className="border-b border-white/10 text-xs uppercase tracking-wider text-slate-400">
+                        {canManagePtAdminControls ? <th className="px-3 py-2">Select</th> : null}
                         <th className="px-3 py-2">Date</th>
                         <th className="px-3 py-2">Slot</th>
+                        <th className="px-3 py-2">Exercise</th>
                         <th className="px-3 py-2">Status</th>
                         <th className="px-3 py-2">Started</th>
                         <th className="px-3 py-2">Duration</th>
@@ -6336,30 +7411,35 @@ export default function MemberProfilePage() {
                         const actualStart = pickString(rec, ["actualStartTime"]) || "";
                         const dur = pickString(rec, ["durationMinutes"]) || "";
                         const startBy = pickString(rec, ["startedBy"]) || "";
+                        const isVirtualSession = pickBoolean(rec, ["virtualSession"]);
                         const startAllowed = canStartPtSessionNow(rec);
-                        const sessionActionBusy = sessionActionBusyId === sessId;
-                        const sameDaySlotOptions = buildAvailablePtSlotsForDate({
-                          dateIso: pickString(rec, ["sessionDate"]) || "",
-                          availability: ptAvailabilityOptions,
-                          calendarEntries: ptCalendarEntries,
-                          excludeSessionId: sessId,
-                        }).filter((slot) => slot !== slotS);
-                        const hasSameDayRescheduleOptions = sameDaySlotOptions.length > 0;
-                        const rescheduleMessage = getPtRescheduleAvailabilityMessage({
-                          session: rec,
-                          hasUnlimitedReschedules: ptHasUnlimitedReschedules,
-                          remainingReschedules: ptRemainingReschedules || 0,
-                          hasSameDayRescheduleOptions,
-                        });
+                        const sessionEnded = hasPtSessionEnded(rec);
+                        const virtualSessionBusyKey = `virtual-${pickString(rec, ["assignmentId"])}-${pickString(rec, ["sessionDate"])}-${slotS}`;
+                        const sessionActionBusy = sessionActionBusyId === sessId || (isVirtualSession && sessionActionBusyId === virtualSessionBusyKey);
                         const cancelMessage = getPtCancelAvailabilityMessage(rec);
-                        const canReschedule = canReschedulePtSessionInTime(rec)
-                          && (ptHasUnlimitedReschedules || (ptRemainingReschedules || 0) > 0)
-                          && hasSameDayRescheduleOptions;
-                        const canCancel = canCancelPtSessionInTime(rec);
+                        const canCancel = (Boolean(sessId) || isVirtualSession) && canCancelPtSessionInTime(rec) && (ptHasUnlimitedReschedules || (ptRemainingReschedules ?? 0) > 0);
+                        const showNoShow = (Boolean(sessId) || isVirtualSession) && isLateNoShowWindow(rec);
                         return (
                           <tr key={idx} className="border-b border-white/5 hover:bg-white/[0.02]">
+                            {canManagePtAdminControls ? (
+                            <td className="px-3 py-2.5">
+                              {sessId ? (
+                                <input
+                                  type="checkbox"
+                                  checked={selectedPtSessionIds.includes(sessId)}
+                                  onChange={(event) => setSelectedPtSessionIds((current) => (
+                                    event.target.checked
+                                      ? Array.from(new Set([...current, sessId]))
+                                      : current.filter((id) => id !== sessId)
+                                  ))}
+                                  className="h-4 w-4 rounded border-white/20 bg-white/[0.04]"
+                                />
+                              ) : null}
+                            </td>
+                            ) : null}
                             <td className="px-3 py-2.5 text-white">{formatDateOnly(pickString(rec, ["sessionDate"]))}</td>
                             <td className="px-3 py-2.5 text-slate-300">{formatClockTime(slotS)}{slotE ? ` - ${formatClockTime(slotE)}` : ""}</td>
+                            <td className="px-3 py-2.5 text-slate-300">{humanizeLabel(pickString(rec, ["exerciseType"]) || "-")}</td>
                             <td className="px-3 py-2.5">
                               <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-semibold ${statusBadge(sessStatus)}`}>
                                 {sessStatus.replace("_", " ")}
@@ -6370,56 +7450,82 @@ export default function MemberProfilePage() {
                             <td className="px-3 py-2.5 text-slate-400">{startBy || "-"}</td>
                             <td className="px-3 py-2.5">
                               <div className="flex flex-wrap gap-1">
-                                {["SCHEDULED", "UPCOMING", "PENDING"].includes(sessStatus) && sessId ? (
+                                {canOperatePtSessionControls && ["SCHEDULED", "UPCOMING", "PENDING"].includes(sessStatus) && (sessId || isVirtualSession) ? (
                                   <>
                                     {startAllowed ? (
-                                      <button type="button" onClick={() => void handlePtSessionAction(sessId, "start")} disabled={sessionActionBusy}
+                                      <button
+                                        type="button"
+                                        onClick={() => {
+                                          if (sessId) {
+                                            void handlePtSessionAction(sessId, "start");
+                                          } else {
+                                            void handlePtVirtualSessionStart(rec);
+                                          }
+                                        }}
+                                        disabled={sessionActionBusy}
                                         className="rounded-lg bg-blue-500/20 px-2 py-1 text-xs font-semibold text-blue-200 hover:bg-blue-500/30">
                                         {sessionActionBusy ? "Starting..." : "Start"}
+                                      </button>
+                                    ) : sessionEnded ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => void handlePtMaterializedSessionAction(rec, "complete", "Session marked completed after the slot ended.")}
+                                        disabled={sessionActionBusy}
+                                        className="rounded-lg bg-emerald-500/20 px-2 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/30">
+                                        {sessionActionBusy ? "Saving..." : "Mark Completed"}
                                       </button>
                                     ) : (
                                       <span className="rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-400">
                                         Start in slot window
                                       </span>
                                     )}
-                                    {canReschedule ? (
-                                      <button type="button" onClick={() => void openPtRescheduleModal(rec)}
-                                        className="rounded-lg bg-violet-500/20 px-2 py-1 text-xs font-semibold text-violet-200 hover:bg-violet-500/30">
-                                        Reschedule
+                                    {showNoShow ? (
+                                      <button
+                                        type="button"
+                                        onClick={() => void handlePtMaterializedSessionAction(rec, "no-show", "Created from assigned PT slot for no-show.")}
+                                        disabled={sessionActionBusy}
+                                        className="rounded-lg bg-rose-500/20 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-500/30">
+                                        No Show
                                       </button>
-                                    ) : (
-                                      <span className="rounded-lg border border-white/10 px-2 py-1 text-xs text-slate-400">
-                                        {rescheduleMessage}
-                                      </span>
-                                    )}
-                                    <button type="button" onClick={() => void handlePtSessionAction(sessId, "no-show")} disabled={sessionActionBusy}
-                                      className="rounded-lg bg-rose-500/20 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-500/30">
-                                      No Show
-                                    </button>
+                                    ) : null}
                                     {canCancel ? (
-                                      <button type="button" onClick={() => void openPtCancelModal(rec)}
+                                      <button type="button" onClick={() => void handlePtMaterializedSessionAction(rec, "cancel", "Created from assigned PT slot for cancellation.")}
                                         className="rounded-lg bg-orange-500/20 px-2 py-1 text-xs font-semibold text-orange-200 hover:bg-orange-500/30">
                                         Cancel
                                       </button>
-                                    ) : (
-                                      <button type="button" onClick={() => void handlePtSessionAction(sessId, "cancel")} disabled={sessionActionBusy}
-                                        className="rounded-lg bg-orange-500/20 px-2 py-1 text-xs font-semibold text-orange-200 hover:bg-orange-500/30">
-                                        Late Cancel
-                                      </button>
-                                    )}
+                                    ) : null}
                                     <div className="basis-full pt-1 text-[11px] text-slate-500">
                                       <span>{describePtHoursRemaining(rec)}.</span>{" "}
                                       <span>{cancelMessage}.</span>
                                     </div>
                                   </>
-                                ) : sessStatus === "IN_PROGRESS" && sessId ? (
-                                  <button type="button" onClick={() => void handlePtSessionAction(sessId, "end")}
-                                    className="rounded-lg bg-emerald-500/20 px-2 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/30">
-                                    End Session
-                                  </button>
+                                ) : canOperatePtSessionControls && sessStatus === "IN_PROGRESS" && sessId ? (
+                                  sessionEnded ? (
+                                    <button
+                                      type="button"
+                                      onClick={() => void handlePtSessionAction(sessId, "end")}
+                                      className="rounded-lg bg-emerald-500/20 px-2 py-1 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/30"
+                                    >
+                                      Mark Completed
+                                    </button>
+                                  ) : (
+                                    <span className="rounded-lg border border-blue-400/20 bg-blue-500/10 px-2 py-1 text-xs font-semibold text-blue-200">
+                                      In Progress
+                                    </span>
+                                  )
                                 ) : (
                                   <span className="text-xs text-slate-500">—</span>
                                 )}
+                                {canManagePtAdminControls && sessId ? (
+                                  <button
+                                    type="button"
+                                    onClick={() => openPtDeleteSessionsModal([sessId])}
+                                    className="rounded-lg bg-rose-500/10 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-500/20"
+                                    title="Delete session entry"
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </button>
+                                ) : null}
                               </div>
                             </td>
                           </tr>
@@ -6432,10 +7538,10 @@ export default function MemberProfilePage() {
               </div>
             ) : activePtAssignment || hasPtCommercialMembership ? (
               <div ref={sessionRegisterRef}>
-              <ProfilePanel title="Session Register" accent="slate">
+              <ProfilePanel title="Today's Session Register" accent="slate">
                 <p className="text-sm text-slate-400">
                   {activePtAssignment
-                    ? "No due PT session is available yet. The next actionable session will appear here on the scheduled day and slot."
+                    ? "No PT session is due today. The register will show the assigned same-day slot only on the scheduled day."
                     : hasAssignedTrainer
                       ? "PT is billed and a trainer is already linked. Sessions will appear here after the weekly slot schedule is configured."
                       : "PT is billed for this member, but sessions will appear here only after the trainer assignment and weekly slot schedule are configured."}
@@ -6446,20 +7552,36 @@ export default function MemberProfilePage() {
 
             {sessionHistoryRows.length > 0 ? (
               <ProfilePanel title="Session History" subtitle="Completed, cancelled, no-show, and previously scheduled PT sessions." accent="slate">
+                {canManagePtAdminControls && selectedPtSessionIds.length > 0 ? (
+                  <div className="mb-4 flex justify-end">
+                    <button
+                      type="button"
+                      onClick={() => openPtDeleteSessionsModal(selectedPtSessionIds)}
+                      className="inline-flex items-center gap-2 rounded-xl border border-rose-400/30 bg-rose-500/10 px-4 py-2 text-sm font-semibold text-rose-100 hover:bg-rose-500/20"
+                    >
+                      <Trash2 className="h-4 w-4" />
+                      Delete selected ({selectedPtSessionIds.length})
+                    </button>
+                  </div>
+                ) : null}
                 <div className="overflow-x-auto">
                   <table className="w-full text-left text-sm">
                     <thead>
                       <tr className="border-b border-white/10 text-xs uppercase tracking-wider text-slate-400">
+                        {canManagePtAdminControls ? <th className="px-3 py-2">Select</th> : null}
                         <th className="px-3 py-2">Date</th>
                         <th className="px-3 py-2">Slot</th>
+                        <th className="px-3 py-2">Exercise</th>
                         <th className="px-3 py-2">Status</th>
                         <th className="px-3 py-2">Started</th>
                         <th className="px-3 py-2">Duration</th>
                         <th className="px-3 py-2">By</th>
+                        {canManagePtAdminControls ? <th className="px-3 py-2">Actions</th> : null}
                       </tr>
                     </thead>
                     <tbody>
                       {sessionHistoryRows.map((rec, idx) => {
+                        const sessId = pickString(rec, ["id"]);
                         const sessStatus = (pickString(rec, ["status"]) || "SCHEDULED").toUpperCase();
                         const slotS = pickString(rec, ["slotStartTime", "sessionTime"]) || "";
                         const slotE = pickString(rec, ["slotEndTime"]) || addMinutesToTime(slotS, PT_SLOT_DURATION_MINUTES);
@@ -6468,8 +7590,25 @@ export default function MemberProfilePage() {
                         const startBy = pickString(rec, ["startedBy"]) || "";
                         return (
                           <tr key={idx} className="border-b border-white/5 hover:bg-white/[0.02]">
+                            {canManagePtAdminControls ? (
+                            <td className="px-3 py-2.5">
+                              {canManagePtAdminControls && sessId ? (
+                                <input
+                                  type="checkbox"
+                                  checked={selectedPtSessionIds.includes(sessId)}
+                                  onChange={(event) => setSelectedPtSessionIds((current) => (
+                                    event.target.checked
+                                      ? Array.from(new Set([...current, sessId]))
+                                      : current.filter((id) => id !== sessId)
+                                  ))}
+                                  className="h-4 w-4 rounded border-white/20 bg-white/[0.04]"
+                                />
+                              ) : null}
+                            </td>
+                            ) : null}
                             <td className="px-3 py-2.5 text-white">{formatDateOnly(pickString(rec, ["sessionDate"]))}</td>
                             <td className="px-3 py-2.5 text-slate-300">{formatClockTime(slotS)}{slotE ? ` - ${formatClockTime(slotE)}` : ""}</td>
+                            <td className="px-3 py-2.5 text-slate-300">{humanizeLabel(pickString(rec, ["exerciseType"]) || "-")}</td>
                             <td className="px-3 py-2.5">
                               <span className={`inline-block rounded-full border px-2.5 py-0.5 text-xs font-semibold ${statusBadge(sessStatus)}`}>
                                 {sessStatus.replace("_", " ")}
@@ -6478,6 +7617,20 @@ export default function MemberProfilePage() {
                             <td className="px-3 py-2.5 text-slate-300">{actualStart ? formatDateTime(actualStart) : "-"}</td>
                             <td className="px-3 py-2.5 text-slate-300">{dur ? `${dur} min` : "-"}</td>
                             <td className="px-3 py-2.5 text-slate-400">{startBy || "-"}</td>
+                            {canManagePtAdminControls ? (
+                            <td className="px-3 py-2.5">
+                              {sessId ? (
+                                <button
+                                  type="button"
+                                  onClick={() => openPtDeleteSessionsModal([sessId])}
+                                  className="rounded-lg bg-rose-500/10 px-2 py-1 text-xs font-semibold text-rose-200 hover:bg-rose-500/20"
+                                  title="Delete session entry"
+                                >
+                                  <Trash2 className="h-3.5 w-3.5" />
+                                </button>
+                              ) : null}
+                            </td>
+                            ) : null}
                           </tr>
                         );
                       })}
@@ -6487,18 +7640,6 @@ export default function MemberProfilePage() {
               </ProfilePanel>
             ) : null}
 
-            {/* Action buttons */}
-            {canShowPtActions && !hasPtCommercialMembership ? (
-              <div className="flex flex-wrap gap-2">
-                <button
-                  type="button"
-                  onClick={() => openActionModal("pt")}
-                  className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white hover:bg-[#a71f23]"
-                >
-                  {activePtAssignment ? "Renew Personal Training" : "Assign Personal Training"}
-                </button>
-              </div>
-            ) : null}
           </div>
         );
       }
@@ -6809,6 +7950,88 @@ export default function MemberProfilePage() {
           Loading member profile...
         </div>
       ) : null}
+      {ptHistoryModal ? (
+        <Modal
+          open={Boolean(ptHistoryModal)}
+          onClose={() => setPtHistoryModal(null)}
+          title={`${ptHistoryModal.label} Session History`}
+          size="xl"
+          footer={
+            <button
+              type="button"
+              onClick={() => setPtHistoryModal(null)}
+              className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300"
+            >
+              Close
+            </button>
+          }
+        >
+          {(() => {
+            const completed = ptHistoryModalSessions.filter((session) => {
+              const status = pickString(toRecord(session), ["status"]).toUpperCase();
+              return status === "COMPLETED" || status === "DONE";
+            }).length;
+            const noShow = ptHistoryModalSessions.filter((session) => pickString(toRecord(session), ["status"]).toUpperCase() === "NO_SHOW").length;
+            const cancelled = ptHistoryModalSessions.filter((session) => pickString(toRecord(session), ["status"]).toUpperCase() === "CANCELLED").length;
+            const totalSessions = Number(ptHistoryModal.totalSessions || 0);
+            const consumed = completed + noShow;
+            const pending = totalSessions > 0 ? Math.max(totalSessions - consumed, 0) : 0;
+            return (
+              <div className="space-y-5">
+                <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+                  <StatPill label="Total Sessions" value={totalSessions > 0 ? String(totalSessions) : "-"} />
+                  <StatPill label="Recorded Sessions" value={String(ptHistoryModalSessions.length)} />
+                  <StatPill label="Client Show" value={String(completed)} />
+                  <StatPill label="No Show" value={String(noShow)} />
+                  <StatPill label="Pending" value={totalSessions > 0 ? String(pending) : "-"} />
+                </div>
+                <div className="rounded-xl border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-slate-300">
+                  {formatDateOnly(ptHistoryModal.startDate)} to {formatDateOnly(ptHistoryModal.endDate)}
+                </div>
+                <div className="overflow-x-auto">
+                  <table className="w-full text-left text-sm">
+                    <thead>
+                      <tr className="border-b border-white/10 text-xs uppercase tracking-wider text-slate-400">
+                        <th className="px-3 py-2">Date</th>
+                        <th className="px-3 py-2">Slot</th>
+                        <th className="px-3 py-2">Exercise</th>
+                        <th className="px-3 py-2">Status</th>
+                        <th className="px-3 py-2">Started</th>
+                        <th className="px-3 py-2">Duration</th>
+                        <th className="px-3 py-2">By</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {ptHistoryModalSessions.length === 0 ? (
+                        <tr>
+                          <td className="px-3 py-3 text-slate-400" colSpan={7}>No session history found for this subscription period.</td>
+                        </tr>
+                      ) : (
+                        ptHistoryModalSessions.map((session, idx) => {
+                          const record = toRecord(session);
+                          const slotS = pickString(record, ["slotStartTime", "sessionTime"]) || "";
+                          const slotE = pickString(record, ["slotEndTime"]) || addMinutesToTime(slotS, PT_SLOT_DURATION_MINUTES);
+                          return (
+                            <tr key={`${pickString(record, ["id"]) || idx}`} className="border-b border-white/5 hover:bg-white/[0.02]">
+                              <td className="px-3 py-2.5 text-white">{formatDateOnly(pickString(record, ["sessionDate"]))}</td>
+                              <td className="px-3 py-2.5 text-slate-300">{formatClockTime(slotS)}{slotE ? ` - ${formatClockTime(slotE)}` : ""}</td>
+                              <td className="px-3 py-2.5 text-slate-300">{humanizeLabel(pickString(record, ["exerciseType"]) || "-")}</td>
+                              <td className="px-3 py-2.5 text-slate-300">{humanizeLabel(pickString(record, ["status"]) || "-")}</td>
+                              <td className="px-3 py-2.5 text-slate-300">{formatDateTime(pickString(record, ["actualStartTime"]))}</td>
+                              <td className="px-3 py-2.5 text-slate-300">{pickString(record, ["durationMinutes"]) ? `${pickString(record, ["durationMinutes"])} min` : "-"}</td>
+                              <td className="px-3 py-2.5 text-slate-400">{pickString(record, ["startedBy"]) || "-"}</td>
+                            </tr>
+                          );
+                        })
+                      )}
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            );
+          })()}
+        </Modal>
+      ) : null}
 
       {!loadingShell && shell ? (
         <>
@@ -6826,11 +8049,9 @@ export default function MemberProfilePage() {
                         {displayMembershipStatus}
                       </span>
                     </div>
-                    <p className="text-sm font-medium uppercase tracking-[0.24em] text-slate-400">
-                      Member Code: {memberCode}
-                    </p>
+                    <p className="text-sm font-medium uppercase tracking-[0.24em] text-slate-400">{phone || "-"}</p>
                     <p className="text-sm text-slate-300">
-                      Client Rep: <span className="font-medium text-white">{clientRepName}</span>
+                      Client Rep: <span className="font-medium text-white">{resolvedClientRepName}</span>
                     </p>
                     <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
                       <StatPill label="Join Date" value={formatDateOnly(joinDate)} />
@@ -6894,7 +8115,7 @@ export default function MemberProfilePage() {
                           <UserRound className="h-5 w-5 text-slate-300" />
                           <div>
                             <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">{trainerLabel}</p>
-                            <p className="mt-1 text-base font-semibold text-white">{assignedTrainer}</p>
+                            <p className="mt-1 text-base font-semibold text-white">{resolvedAssignedTrainer}</p>
                           </div>
                         </div>
                       </div>
@@ -7938,7 +9159,15 @@ export default function MemberProfilePage() {
                         <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Product</span>
                         <select
                           value={ptForm.productCode}
-                          onChange={(event) => setPtForm((current) => ({ ...current, productCode: event.target.value, productVariantId: "", totalSessions: "", sellingPrice: "", discountPercent: "" }))}
+                          onChange={(event) => setPtForm((current) => ({
+                            ...current,
+                            productCode: event.target.value,
+                            productVariantId: "",
+                            totalSessions: "",
+                            sellingPrice: "",
+                            discountPercent: "",
+                            partnerMemberId: "",
+                          }))}
                           className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
                         >
                           <option value="">Select Product</option>
@@ -7984,6 +9213,21 @@ export default function MemberProfilePage() {
                           ))}
                         </select>
                       </label>
+                      {isCouplePt ? (
+                        <label className="space-y-2">
+                          <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Partner Member</span>
+                          <select
+                            value={ptForm.partnerMemberId}
+                            onChange={(event) => setPtForm((current) => ({ ...current, partnerMemberId: event.target.value }))}
+                            className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                          >
+                            <option value="">Select Partner</option>
+                            {couplePartnerOptions.map((partner) => (
+                              <option key={partner.id} value={partner.id}>{partner.label}</option>
+                            ))}
+                          </select>
+                        </label>
+                      ) : null}
                       <label className="space-y-2">
                         <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Start Date</span>
                         <input
@@ -8232,6 +9476,112 @@ export default function MemberProfilePage() {
           </Modal>
 
           <Modal
+            open={actionModal === "pt-setup"}
+            onClose={() => setActionModal(null)}
+            title="PT Setup"
+            size="lg"
+            footer={
+              <>
+                <button type="button" onClick={() => setActionModal(null)} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Cancel</button>
+                <button type="button" onClick={() => void handlePtSetupSave()} disabled={actionBusy} className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                  {actionBusy ? "Saving..." : "Save PT Setup"}
+                </button>
+              </>
+            }
+          >
+            <div className="space-y-4">
+              {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Coach</span>
+                  <select
+                    value={ptSetupForm.coachId}
+                    onChange={(event) => setPtSetupForm((current) => ({ ...current, coachId: event.target.value }))}
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                  >
+                    <option value="">Select Coach</option>
+                    {ptEligibleCoaches.map((coach) => (
+                      <option key={coach.id} value={coach.id}>{coach.name}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="space-y-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Total Sessions</span>
+                  <input
+                    value={ptSetupForm.totalSessions}
+                    onChange={(event) => setPtSetupForm((current) => ({ ...current, totalSessions: sanitizeIntegerString(event.target.value) }))}
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                    inputMode="numeric"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Start Date</span>
+                  <input
+                    type="date"
+                    value={ptSetupForm.startDate}
+                    onChange={(event) => setPtSetupForm((current) => ({ ...current, startDate: event.target.value }))}
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                  />
+                </label>
+                <label className="space-y-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">End Date</span>
+                  <input
+                    type="date"
+                    value={ptSetupForm.endDate}
+                    onChange={(event) => setPtSetupForm((current) => ({ ...current, endDate: event.target.value }))}
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                  />
+                </label>
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Slot</span>
+                  <select
+                    value={ptSetupForm.slotStartTime}
+                    onChange={(event) => setPtSetupForm((current) => ({ ...current, slotStartTime: event.target.value }))}
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                  >
+                    {ptTimeSlotOptions.map((slot) => (
+                      <option key={slot} value={slot}>{formatClockTime(slot)} - {formatClockTime(addMinutesToTime(slot, PT_SLOT_DURATION_MINUTES))}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="space-y-2">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Weekdays</span>
+                <div className="flex flex-wrap gap-2">
+                  {PT_WEEKDAY_OPTIONS.map((day) => {
+                    const selected = ptSetupForm.scheduleDays.includes(day.code);
+                    return (
+                      <button
+                        key={day.code}
+                        type="button"
+                        onClick={() => setPtSetupForm((current) => ({
+                          ...current,
+                          scheduleDays: PT_MWF_DAY_CODES.includes(day.code as typeof PT_MWF_DAY_CODES[number])
+                            ? [...PT_MWF_DAY_CODES]
+                            : PT_TTS_DAY_CODES.includes(day.code as typeof PT_TTS_DAY_CODES[number])
+                              ? [...PT_TTS_DAY_CODES]
+                              : current.scheduleDays.includes(day.code)
+                                ? current.scheduleDays.filter((code) => code !== day.code)
+                                : [...current.scheduleDays, day.code],
+                        }))}
+                        className={`rounded-full border px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] transition ${
+                          selected
+                            ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
+                            : "border-white/10 bg-[#0f141d] text-slate-400 hover:border-white/20"
+                        }`}
+                      >
+                        {day.label}
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
+            </div>
+          </Modal>
+
+          <Modal
             open={actionModal === "pt-session-count"}
             onClose={() => setActionModal(null)}
             title="Edit Total PT Sessions"
@@ -8249,18 +9599,186 @@ export default function MemberProfilePage() {
               {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
               <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
                 <p className="text-sm text-slate-300">
-                  Update the member&apos;s total PT entitlement. This cannot be lower than the sessions already consumed.
+                  Update the admin PT counter snapshot. Remaining, pending, trainer counted, and member consumed values are derived from these numbers.
                 </p>
-                <label className="mt-4 block space-y-2">
-                  <span className="text-xs font-medium text-slate-300">Total PT Sessions</span>
+                <div className="mt-4 grid gap-4 md:grid-cols-3">
+                  <label className="block space-y-2">
+                    <span className="text-xs font-medium text-slate-300">Total PT Sessions</span>
+                    <input
+                      value={ptSessionCountForm.totalSessions}
+                      onChange={(event) => setPtSessionCountForm((current) => ({ ...current, totalSessions: sanitizeIntegerString(event.target.value) }))}
+                      className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                      inputMode="numeric"
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="block space-y-2">
+                    <span className="text-xs font-medium text-slate-300">Client Show / Trainer Counted</span>
+                    <input
+                      value={ptSessionCountForm.importedCompletedSessions}
+                      onChange={(event) => setPtSessionCountForm((current) => ({ ...current, importedCompletedSessions: sanitizeIntegerString(event.target.value) }))}
+                      className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                      inputMode="numeric"
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="block space-y-2">
+                    <span className="text-xs font-medium text-slate-300">Client No-Show</span>
+                    <input
+                      value={ptSessionCountForm.importedNoShowSessions}
+                      onChange={(event) => setPtSessionCountForm((current) => ({ ...current, importedNoShowSessions: sanitizeIntegerString(event.target.value) }))}
+                      className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                      inputMode="numeric"
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="block space-y-2">
+                    <span className="text-xs font-medium text-slate-300">Pending / Remaining</span>
+                    <input
+                      value={ptSessionCountForm.importedPendingSessions}
+                      onChange={(event) => setPtSessionCountForm((current) => ({ ...current, importedPendingSessions: sanitizeIntegerString(event.target.value) }))}
+                      className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                      inputMode="numeric"
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="block space-y-2">
+                    <span className="text-xs font-medium text-slate-300">Cancelled</span>
+                    <input
+                      value={ptSessionCountForm.importedCancelledSessions}
+                      onChange={(event) => setPtSessionCountForm((current) => ({ ...current, importedCancelledSessions: sanitizeIntegerString(event.target.value) }))}
+                      className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                      inputMode="numeric"
+                      placeholder="0"
+                    />
+                  </label>
+                  <label className="block space-y-2">
+                    <span className="text-xs font-medium text-slate-300">Cancel Allowance Used</span>
+                    <input
+                      value={ptSessionCountForm.importedReschedulesUsed}
+                      onChange={(event) => setPtSessionCountForm((current) => ({ ...current, importedReschedulesUsed: sanitizeIntegerString(event.target.value) }))}
+                      className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                      inputMode="numeric"
+                      placeholder="0"
+                    />
+                  </label>
+                </div>
+              </div>
+            </div>
+          </Modal>
+
+          <Modal
+            open={actionModal === "pt-manual-entry"}
+            onClose={() => setActionModal(null)}
+            title="Add PT Session Entry"
+            size="lg"
+            footer={
+              <>
+                <button type="button" onClick={() => setActionModal(null)} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Cancel</button>
+                <button type="button" onClick={() => void handlePtManualEntrySave()} disabled={actionBusy} className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                  {actionBusy ? "Saving..." : "Save Entry"}
+                </button>
+              </>
+            }
+          >
+            <div className="space-y-4">
+              {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
+              <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-sm text-slate-300">
+                Use this when a PT session happened earlier and needs to be recorded manually, including late updates for completed sessions or no-shows.
+              </div>
+              <div className="grid gap-4 md:grid-cols-2">
+                <label className="space-y-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Session Date</span>
                   <input
-                    value={ptSessionCountForm.totalSessions}
-                    onChange={(event) => setPtSessionCountForm((current) => ({ ...current, totalSessions: sanitizeIntegerString(event.target.value) }))}
+                    type="date"
+                    value={ptManualEntryForm.sessionDate}
+                    onChange={(event) => {
+                      const selectedDate = event.target.value;
+                      const assignedSlot = getAssignedPtSlotForDate(rawPtSlots, selectedDate);
+                      const assignedTime = pickString(assignedSlot || {}, ["slotStartTime"]);
+                      setPtManualEntryForm((current) => ({
+                        ...current,
+                        sessionDate: selectedDate,
+                        sessionTime: assignedTime || current.sessionTime,
+                        useCustomTime: false,
+                      }));
+                    }}
                     className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
-                    inputMode="numeric"
-                    placeholder="0"
                   />
                 </label>
+                <div className="space-y-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Slot</span>
+                  <div className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white">
+                    {ptManualEntryForm.sessionTime
+                      ? `${formatClockTime(ptManualEntryForm.sessionTime)} - ${formatClockTime(addMinutesToTime(ptManualEntryForm.sessionTime, PT_SLOT_DURATION_MINUTES))}`
+                      : "-"}
+                  </div>
+                  {!ptManualAssignedSlotTime ? (
+                    <p className="text-xs text-amber-200">No assigned slot exists for this date. Update PT setup first, then add the missed session.</p>
+                  ) : null}
+                </div>
+                <label className="space-y-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Outcome</span>
+                  <select
+                    value={ptManualEntryForm.status}
+                    onChange={(event) => setPtManualEntryForm((current) => ({
+                      ...current,
+                      status: event.target.value as "COMPLETED" | "NO_SHOW" | "CANCELLED" | "SCHEDULED",
+                    }))}
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                  >
+                    <option value="COMPLETED">Completed</option>
+                    <option value="NO_SHOW">No Show</option>
+                    <option value="CANCELLED">Cancelled</option>
+                    <option value="SCHEDULED">Scheduled</option>
+                  </select>
+                </label>
+                <label className="space-y-2">
+                  <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Exercise Type</span>
+                  <select
+                    value={ptManualEntryForm.exerciseType}
+                    onChange={(event) => setPtManualEntryForm((current) => ({ ...current, exerciseType: event.target.value }))}
+                    className="w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white"
+                  >
+                    {PT_EXERCISE_TYPE_OPTIONS.map((option) => (
+                      <option key={option.value} value={option.value}>{option.label}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div className="rounded-xl border border-white/10 bg-white/[0.03] px-3 py-3 text-sm text-slate-300">
+                Current PT package: <span className="font-semibold text-white">{ptManualAssignmentLabel}</span>
+              </div>
+              <label className="block space-y-2">
+                <span className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Notes *</span>
+                <textarea
+                  value={ptManualEntryForm.notes}
+                  onChange={(event) => setPtManualEntryForm((current) => ({ ...current, notes: event.target.value }))}
+                  placeholder="Required note for this missed session entry"
+                  className="min-h-[96px] w-full rounded-xl border border-white/10 bg-white/[0.04] px-3 py-3 text-sm text-white placeholder:text-slate-500"
+                />
+              </label>
+            </div>
+          </Modal>
+
+          <Modal
+            open={actionModal === "pt-delete-sessions"}
+            onClose={() => setActionModal(null)}
+            title="Delete PT Session Entries"
+            size="sm"
+            footer={
+              <>
+                <button type="button" onClick={() => setActionModal(null)} className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300">Cancel</button>
+                <button type="button" onClick={() => void handlePtDeleteSessions()} disabled={actionBusy} className="rounded-xl bg-rose-600 px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+                  {actionBusy ? "Deleting..." : "Delete"}
+                </button>
+              </>
+            }
+          >
+            <div className="space-y-4">
+              {actionError ? <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{actionError}</div> : null}
+              <div className="rounded-2xl border border-rose-400/20 bg-rose-500/10 p-4 text-sm text-rose-100">
+                This will permanently delete {ptDeleteSessionIds.length} PT session entr{ptDeleteSessionIds.length === 1 ? "y" : "ies"}. Completed and no-show counters will be adjusted for this PT assignment.
               </div>
             </div>
           </Modal>
@@ -8549,7 +10067,7 @@ export default function MemberProfilePage() {
                   { label: "Total Sessions", value: selectedPtSessionCount > 0 ? selectedPtSessionCount : "-" },
                   { label: "Schedule", value: selectedPtDays.map((day) => formatPtDayLabel(day)).join(", ") || "-" },
                   { label: "Slot", value: `${formatClockTime(ptForm.slotStartTime)} - ${formatClockTime(ptSlotEndTime)}` },
-                  { label: "Billing Representative", value: billingRepName || clientRepName, fullWidth: true },
+                  { label: "Billing Representative", value: resolvedBillingRepName, fullWidth: true },
                 ]}
                 lineItems={[
                   {

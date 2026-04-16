@@ -2,9 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "next/navigation";
-import { CheckCircle2, MessageCircle, PhoneCall } from "lucide-react";
+import { Filter, History, PlusCircle } from "lucide-react";
+import { Modal } from "@/components/common/modal";
 import { PageLoader } from "@/components/common/page-loader";
 import { SectionCard } from "@/components/common/section-card";
+import { ToastBanner } from "@/components/common/toast-banner";
 import { useAuth } from "@/contexts/auth-context";
 import { useBranch } from "@/contexts/branch-context";
 import { subscriptionFollowUpService } from "@/lib/api/services/subscription-followup-service";
@@ -16,7 +18,6 @@ import { usersService } from "@/lib/api/services/users-service";
 import { FollowUpRecord, FollowUpType } from "@/types/follow-up";
 import { InquiryConvertibility, InquiryRecord, InquiryResponseType, InquiryStatus } from "@/types/inquiry";
 
-type QueueScope = "BRANCH" | "MINE";
 type DashboardView = "ALL" | "EXPECTED" | "DONE";
 type ClientTypeFilter = "ALL" | "INQUIRY" | "MEMBER";
 
@@ -186,19 +187,10 @@ function getRequirement(item: Pick<FollowUpRecord, "notes" | "outcomeNotes">, in
   return fromNotes || fromInquiryComment || fromInquiryRemarks || "No requirement added.";
 }
 
-function getWhatsAppMessage(item: Pick<FollowUpRecord, "notes" | "outcomeNotes">, inquiry?: InquiryRecord): string {
-  return getRequirement(item, inquiry);
-}
-
-function toWhatsAppPhoneNumber(value: string): string {
-  const digits = value.replace(/[^0-9]/g, "");
-  if (digits.length === 10) {
-    return `91${digits}`;
-  }
-  if (digits.length === 11 && digits.startsWith("0")) {
-    return `91${digits.slice(1)}`;
-  }
-  return digits;
+function extractExpectedAmount(item: Pick<FollowUpRecord, "notes" | "outcomeNotes">, inquiry?: InquiryRecord): string {
+  const source = `${item.notes || ""} ${item.outcomeNotes || ""} ${inquiry?.followUpComment || ""}`;
+  const match = source.match(/(?:₹|rs\.?\s*)(\d[\d,]*(?:\.\d{1,2})?)/i);
+  return match?.[1] ? `₹${match[1]}` : "";
 }
 
 function formatLeadStatus(status?: string): string {
@@ -216,6 +208,24 @@ function formatStaffDisplayName(value?: string, fallbackId?: string): string {
     return `Staff ${fallbackId}`;
   }
   return "Unassigned";
+}
+
+function extractLegacyMetadataValue(source: string | null | undefined, label: string): string {
+  const text = String(source || "");
+  const match = text.match(new RegExp(`${label}:\\s*([^|\\n]+)`, "i"));
+  return match?.[1]?.trim() || "";
+}
+
+function getLegacyInquiryHandledBy(inquiry?: InquiryRecord): string {
+  return extractLegacyMetadataValue(inquiry?.remarks, "Legacy Handled By");
+}
+
+function getLegacyFollowUpAssignedTo(source: string | null | undefined): string {
+  return extractLegacyMetadataValue(source, "Assigned To");
+}
+
+function getLegacyFollowUpClientRep(source: string | null | undefined): string {
+  return extractLegacyMetadataValue(source, "Client Rep");
 }
 
 function statusClass(status?: string): string {
@@ -256,7 +266,6 @@ export default function FollowUpsPage() {
   const focusInquiryId = Number(searchParams.get("inquiryId") || 0) || null;
   const focusFollowUpType = searchParams.get("followUpType");
 
-  const [queueScope, setQueueScope] = useState<QueueScope>("BRANCH");
   const [dashboardView, setDashboardView] = useState<DashboardView>("EXPECTED");
   const [followUps, setFollowUps] = useState<FollowUpRecord[]>([]);
   const [inquiriesById, setInquiriesById] = useState<Record<number, InquiryRecord>>({});
@@ -264,7 +273,6 @@ export default function FollowUpsPage() {
   const [staffDirectoryOptions, setStaffDirectoryOptions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
-  const [savingId, setSavingId] = useState<number | null>(null);
 
   const [searchTerm, setSearchTerm] = useState("");
   const [followUpTypeFilter, setFollowUpTypeFilter] = useState("ALL");
@@ -279,6 +287,20 @@ export default function FollowUpsPage() {
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
   const [currentPage, setCurrentPage] = useState(1);
+  const [filtersOpen, setFiltersOpen] = useState(false);
+  const [historyFor, setHistoryFor] = useState<{ inquiryId: number; clientName: string } | null>(null);
+  const [historyRows, setHistoryRows] = useState<FollowUpRecord[]>([]);
+  const [historyLoading, setHistoryLoading] = useState(false);
+  const [addFollowUpFor, setAddFollowUpFor] = useState<{ inquiryId: number; clientName: string; assignedToStaffId?: string } | null>(null);
+  const [toast, setToast] = useState<{ kind: "success" | "error"; message: string } | null>(null);
+  const [addFollowUpForm, setAddFollowUpForm] = useState({
+    dueAt: "",
+    assignedToStaffId: "",
+    channel: "CALL" as FollowUpRecord["channel"],
+    followUpType: "ENQUIRY" as FollowUpType,
+    responseType: "NEEDS_DETAILS" as InquiryResponseType,
+    notes: "",
+  });
 
   const loadQueue = useCallback(async () => {
     if (!token) {
@@ -289,23 +311,15 @@ export default function FollowUpsPage() {
     setError(null);
 
     try {
-      const staffId = resolveStaffId(user);
       const queueBaseQuery =
         focusInquiryId
           ? {
               inquiryId: focusInquiryId,
-              ...(queueScope === "MINE" && staffId ? { assignedToStaffId: staffId } : {}),
             }
-          : queueScope === "MINE" && staffId
-            ? {
-                assignedToStaffId: staffId,
-                branchId: effectiveBranchId,
-                branchCode: selectedBranchCode || undefined,
-              }
-            : {
-                branchId: effectiveBranchId,
-                branchCode: selectedBranchCode || undefined,
-              };
+          : {
+              branchId: effectiveBranchId,
+              branchCode: selectedBranchCode || undefined,
+            };
 
       const [branchUsers, admins] = await Promise.all([
         usersService.searchUsers(token, {
@@ -380,7 +394,18 @@ export default function FollowUpsPage() {
             try {
               return await usersService.getUserById(token, staffId);
             } catch {
-              return null;
+              try {
+                const matches = await usersService.searchUsers(token, { query: staffId, active: true });
+                return (
+                  matches.find(
+                    (entry) =>
+                      String(entry.id || "").trim() === String(staffId).trim()
+                      || String(entry.mobile || "").replace(/[^0-9]/g, "") === String(staffId).replace(/[^0-9]/g, ""),
+                  ) || null
+                );
+              } catch {
+                return null;
+              }
             }
           }),
         );
@@ -406,7 +431,7 @@ export default function FollowUpsPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, user, queueScope, effectiveBranchId, selectedBranchCode, focusInquiryId]);
+  }, [token, user, effectiveBranchId, selectedBranchCode, focusInquiryId]);
 
   useEffect(() => {
     void loadQueue();
@@ -416,7 +441,6 @@ export default function FollowUpsPage() {
     setCurrentPage(1);
   }, [
     dashboardView,
-    queueScope,
     searchTerm,
     followUpTypeFilter,
     assignedToFilter,
@@ -442,6 +466,13 @@ export default function FollowUpsPage() {
         const clientRepId = inquiry?.clientRepStaffId ? String(inquiry.clientRepStaffId) : "";
         const assignedToId = item.assignedToStaffId ? String(item.assignedToStaffId) : "";
         const scheduledById = item.createdByStaffId ? String(item.createdByStaffId) : "";
+        const legacyClientRepName =
+          getLegacyFollowUpClientRep(item.outcomeNotes) ||
+          getLegacyInquiryHandledBy(inquiry);
+        const legacyAssignedToName =
+          getLegacyFollowUpAssignedTo(item.outcomeNotes) ||
+          legacyClientRepName;
+        const legacyScheduledByName = legacyClientRepName || legacyAssignedToName;
 
         return {
           ...item,
@@ -451,11 +482,17 @@ export default function FollowUpsPage() {
           clientName: inquiry?.fullName || `Client #${item.memberId || item.inquiryId}`,
           mobileNumber: inquiry?.mobileNumber || "-",
           clientRepId,
-          clientRepName: formatStaffDisplayName(staffById[clientRepId], clientRepId),
+          clientRepName: isMeaningfulValue(staffById[clientRepId])
+            ? formatStaffDisplayName(staffById[clientRepId], clientRepId)
+            : legacyClientRepName || formatStaffDisplayName(staffById[clientRepId], clientRepId),
           assignedToId,
-          assignedToName: formatStaffDisplayName(staffById[assignedToId], assignedToId),
+          assignedToName: isMeaningfulValue(staffById[assignedToId])
+            ? formatStaffDisplayName(staffById[assignedToId], assignedToId)
+            : legacyAssignedToName || formatStaffDisplayName(staffById[assignedToId], assignedToId),
           scheduledById,
-          scheduledByName: formatStaffDisplayName(staffById[scheduledById], scheduledById),
+          scheduledByName: isMeaningfulValue(staffById[scheduledById])
+            ? formatStaffDisplayName(staffById[scheduledById], scheduledById)
+            : legacyScheduledByName || formatStaffDisplayName(staffById[scheduledById], scheduledById),
           leadStatus: inquiry?.status || "-",
           convertibility: inquiry?.convertibility || "-",
           gender: inquiry?.gender || "-",
@@ -487,9 +524,17 @@ export default function FollowUpsPage() {
       .filter((item) => {
         const dueTime = new Date(item.dueAt).getTime();
         const now = Date.now();
+        const todayStart = new Date();
+        todayStart.setHours(0, 0, 0, 0);
+        const todayStartMs = todayStart.getTime();
 
-        if (dashboardView === "EXPECTED" && item.status !== "SCHEDULED") {
-          return false;
+        if (dashboardView === "EXPECTED") {
+          if (item.status !== "SCHEDULED") {
+            return false;
+          }
+          if (Number.isNaN(dueTime) || dueTime < todayStartMs) {
+            return false;
+          }
         }
         if (dashboardView === "DONE" && item.status !== "COMPLETED") {
           return false;
@@ -567,9 +612,16 @@ export default function FollowUpsPage() {
           }
         }
 
-        return dashboardView !== "EXPECTED" || dueTime >= now || item.overdue || item.status === "SCHEDULED";
+        return dashboardView !== "EXPECTED" || dueTime >= now || item.status === "SCHEDULED";
       })
-      .sort((left, right) => new Date(left.dueAt).getTime() - new Date(right.dueAt).getTime());
+      .sort((left, right) => {
+        if (dashboardView === "DONE") {
+          const leftCompleted = new Date(left.completedAt || left.updatedAt || left.dueAt).getTime();
+          const rightCompleted = new Date(right.completedAt || right.updatedAt || right.dueAt).getTime();
+          return (Number.isNaN(rightCompleted) ? 0 : rightCompleted) - (Number.isNaN(leftCompleted) ? 0 : leftCompleted);
+        }
+        return new Date(left.dueAt).getTime() - new Date(right.dueAt).getTime();
+      });
   }, [
     enrichedFollowUps,
     dashboardView,
@@ -666,58 +718,74 @@ export default function FollowUpsPage() {
     URL.revokeObjectURL(url);
   }, [filteredFollowUps]);
 
-  const completeFollowUp = async (followUp: Pick<FollowUpRecord, "followUpId">) => {
+  const staffSelectOptions = useMemo(
+    () =>
+      Object.entries(staffById)
+        .map(([id, name]) => ({ id, name }))
+        .sort((left, right) => left.name.localeCompare(right.name)),
+    [staffById],
+  );
+
+  const openHistory = useCallback(async (item: { inquiryId: number; clientName: string }) => {
     if (!token) {
       return;
     }
+    setHistoryFor(item);
+    setHistoryLoading(true);
+    try {
+      const rows = await subscriptionFollowUpService.listInquiryFollowUps(token, item.inquiryId);
+      setHistoryRows(
+        [...rows].sort((left, right) => new Date(right.createdAt).getTime() - new Date(left.createdAt).getTime()),
+      );
+    } catch (historyError) {
+      const message = historyError instanceof Error ? historyError.message : "Unable to load follow-up history";
+      setToast({ kind: "error", message });
+      setHistoryRows([]);
+    } finally {
+      setHistoryLoading(false);
+    }
+  }, [token]);
 
-    const staffId = resolveStaffId(user);
-    if (staffId === null) {
-      setError("Numeric staff ID is required to complete follow-ups.");
+  const submitAdditionalFollowUp = useCallback(async () => {
+    if (!token || !addFollowUpFor) {
+      return;
+    }
+    const createdByStaffId = resolveStaffId(user);
+    if (!createdByStaffId) {
+      setToast({ kind: "error", message: "Unable to resolve current staff identity." });
+      return;
+    }
+    if (!addFollowUpForm.assignedToStaffId || !addFollowUpForm.dueAt) {
+      setToast({ kind: "error", message: "Assigned staff and follow-up date/time are required." });
       return;
     }
 
-    setSavingId(followUp.followUpId);
     try {
-      await subscriptionFollowUpService.completeFollowUp(token, followUp.followUpId, {
-        completedByStaffId: staffId,
+      await subscriptionFollowUpService.createFollowUp(token, addFollowUpFor.inquiryId, {
+        assignedToStaffId: Number(addFollowUpForm.assignedToStaffId),
+        createdByStaffId,
+        dueAt: addFollowUpForm.dueAt,
+        channel: addFollowUpForm.channel,
+        followUpType: addFollowUpForm.followUpType,
+        responseType: addFollowUpForm.responseType,
+        notes: addFollowUpForm.notes.trim() || undefined,
+      });
+      setToast({ kind: "success", message: "Follow-up added." });
+      setAddFollowUpFor(null);
+      setAddFollowUpForm({
+        dueAt: "",
+        assignedToStaffId: "",
+        channel: "CALL",
+        followUpType: "ENQUIRY",
+        responseType: "NEEDS_DETAILS",
+        notes: "",
       });
       await loadQueue();
-    } catch (updateError) {
-      const message = updateError instanceof Error ? updateError.message : "Unable to complete follow-up";
-      setError(message);
-    } finally {
-      setSavingId(null);
+    } catch (createError) {
+      const message = createError instanceof Error ? createError.message : "Unable to add follow-up";
+      setToast({ kind: "error", message });
     }
-  };
-
-  const onCallNow = (inquiry?: InquiryRecord) => {
-    const mobile = inquiry?.mobileNumber?.trim();
-    if (!mobile) {
-      setError("Mobile number missing for this follow-up.");
-      return;
-    }
-
-    const sanitized = mobile.replace(/[^0-9]/g, "");
-    if (!sanitized) {
-      setError("Mobile number is invalid.");
-      return;
-    }
-
-    window.open(`tel:${sanitized}`, "_self");
-  };
-
-  const onMessage = (item: Pick<FollowUpRecord, "notes" | "outcomeNotes">, inquiry?: InquiryRecord) => {
-    const mobile = inquiry?.mobileNumber?.trim();
-    if (!mobile) {
-      setError("Mobile number missing for this follow-up.");
-      return;
-    }
-
-    const sanitized = toWhatsAppPhoneNumber(mobile);
-    const message = getWhatsAppMessage(item, inquiry);
-    window.open(`https://wa.me/${sanitized}?text=${encodeURIComponent(message)}`, "_blank", "noopener,noreferrer");
-  };
+  }, [token, addFollowUpFor, addFollowUpForm, user, loadQueue]);
 
   if (loading) {
     return <PageLoader label="Loading follow-ups..." />;
@@ -725,32 +793,15 @@ export default function FollowUpsPage() {
 
   return (
     <div className="space-y-8">
+      {toast ? <ToastBanner kind={toast.kind} message={toast.message} onClose={() => setToast(null)} /> : null}
       <div>
         <h1 className="text-2xl font-bold text-white">Follow-up Dashboard</h1>
-        <p className="text-slate-400">Branch queue, staff queue, reporting filters, and quick follow-up actions.</p>
+        <p className="text-slate-400">Access-scoped follow-up queue with quick actions, history, and filtering.</p>
       </div>
 
       {error ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
 
       <div className="flex flex-wrap items-center gap-3">
-        <div className="inline-flex rounded-xl border border-white/10 bg-white/[0.03] p-1">
-          {[
-            { value: "BRANCH", label: "Branch Queue" },
-            { value: "MINE", label: "My Queue" },
-          ].map((option) => {
-            const active = queueScope === option.value;
-            return (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => setQueueScope(option.value as QueueScope)}
-                className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${active ? "bg-[#c42924] text-white" : "text-slate-300 hover:bg-white/[0.05]"}`}
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
         <div className="inline-flex rounded-xl border border-white/10 bg-white/[0.03] p-1">
           {[
             { value: "ALL", label: "All Follow-ups" },
@@ -794,6 +845,14 @@ export default function FollowUpsPage() {
           <div className="flex flex-wrap gap-2">
             <button
               type="button"
+              onClick={() => setFiltersOpen((current) => !current)}
+              className="inline-flex items-center gap-2 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
+            >
+              <Filter className="h-4 w-4" />
+              Filters
+            </button>
+            <button
+              type="button"
               onClick={exportCsv}
               className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
             >
@@ -817,6 +876,8 @@ export default function FollowUpsPage() {
             onChange={(event) => setSearchTerm(event.target.value)}
           />
 
+          {filtersOpen ? (
+          <>
           <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
             <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
               Follow-up Type
@@ -897,6 +958,8 @@ export default function FollowUpsPage() {
               <input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60" />
             </label>
           </div>
+          </>
+          ) : null}
         </div>
 
         <div className="mt-5 overflow-hidden rounded-[24px] border border-white/8 bg-[#111821]">
@@ -921,8 +984,10 @@ export default function FollowUpsPage() {
                   </tr>
                 ) : (
                   paginatedRows.map((item) => {
-                    const busy = savingId === item.followUpId;
-                    const canContact = Boolean(item.inquiry?.mobileNumber?.trim());
+                    const isRenewal =
+                      item.followUpType === "MEMBERSHIP_RENEWAL" ||
+                      item.followUpType === "PT_RENEWAL";
+                    const expectedAmount = isRenewal ? extractExpectedAmount(item, item.inquiry) : "";
                     return (
                       <tr key={item.followUpId} className="align-top hover:bg-white/[0.02]">
                         <td className="px-4 py-4">
@@ -962,12 +1027,20 @@ export default function FollowUpsPage() {
                           </div>
                         </td>
                         <td className="px-4 py-4 text-slate-300">
-                          <p className="max-w-sm text-sm leading-6">{item.requirement}</p>
+                          <div className="max-w-sm space-y-1 text-sm leading-6">
+                            <p>{item.requirement}</p>
+                            {isRenewal ? (
+                              <p className="text-xs text-slate-500">
+                                Expected date: {formatDateTime(item.dueAt)}
+                                {expectedAmount ? ` • Expected amount: ${expectedAmount}` : ""}
+                              </p>
+                            ) : null}
+                          </div>
                         </td>
                         <td className="px-4 py-4 text-slate-300">
                           <div className="space-y-1">
-                            <p>{formatDateTime(item.dueAt)}</p>
-                            <p className="text-xs text-slate-500">Created {formatDateTime(item.createdAt)}</p>
+                            <p>Next: {formatDateTime(item.dueAt)}</p>
+                            <p className="text-xs text-slate-500">Commented: {formatDateTime(item.createdAt)}</p>
                           </div>
                         </td>
                         <td className="px-4 py-4 text-slate-300">
@@ -982,28 +1055,32 @@ export default function FollowUpsPage() {
                           <div className="flex justify-end gap-2">
                             <button
                               type="button"
-                              disabled={!canContact}
-                              onClick={() => onCallNow(item.inquiry)}
-                              className="inline-flex items-center gap-1 rounded-xl bg-[#c42924] px-3 py-2 text-xs font-semibold text-white hover:bg-[#a51f1b] disabled:cursor-not-allowed disabled:bg-[#c42924]/40"
+                              onClick={() => void openHistory({ inquiryId: item.inquiryId, clientName: item.clientName })}
+                              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-white/[0.08]"
                             >
-                              <PhoneCall className="h-4 w-4" />
-                              Call
+                              <History className="h-4 w-4" />
+                              History
                             </button>
                             <button
                               type="button"
-                              disabled={!canContact}
-                              onClick={() => onMessage(item, item.inquiry)}
-                              className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
+                              onClick={() => {
+                                setAddFollowUpFor({
+                                  inquiryId: item.inquiryId,
+                                  clientName: item.clientName,
+                                  assignedToStaffId: item.assignedToId || undefined,
+                                });
+                                setAddFollowUpForm((current) => ({
+                                  ...current,
+                                  assignedToStaffId: item.assignedToId || "",
+                                  followUpType: (item.followUpType as FollowUpType) || "ENQUIRY",
+                                  dueAt: "",
+                                  notes: "",
+                                }));
+                              }}
+                              className="inline-flex items-center gap-2 rounded-xl border border-[#c42924]/30 bg-[#c42924]/12 px-3 py-2 text-xs font-semibold text-white hover:bg-[#c42924]/20"
                             >
-                              <MessageCircle className="h-4 w-4" />
-                            </button>
-                            <button
-                              type="button"
-                              disabled={busy || item.status === "COMPLETED"}
-                              onClick={() => void completeFollowUp(item)}
-                              className="inline-flex h-10 w-10 items-center justify-center rounded-xl border border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
-                            >
-                              <CheckCircle2 className="h-4 w-4" />
+                              <PlusCircle className="h-4 w-4" />
+                              Follow-up Response
                             </button>
                           </div>
                         </td>
@@ -1028,6 +1105,128 @@ export default function FollowUpsPage() {
           </div>
         </div>
       </SectionCard>
+
+      <Modal
+        open={Boolean(historyFor)}
+        title={historyFor ? `Follow-up History · ${historyFor.clientName}` : "Follow-up History"}
+        onClose={() => {
+          setHistoryFor(null);
+          setHistoryRows([]);
+        }}
+      >
+        {historyLoading ? (
+          <p className="text-sm text-slate-300">Loading history...</p>
+        ) : historyRows.length === 0 ? (
+          <p className="text-sm text-slate-400">No follow-up history found.</p>
+        ) : (
+          <div className="space-y-3">
+            {historyRows.map((row) => (
+              <div key={row.followUpId} className="rounded-2xl border border-white/10 bg-[#111821] p-4 text-sm text-slate-200">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${statusClass(row.status)}`}>
+                    {humanizeText(row.status)}
+                  </span>
+                  <span className="text-xs text-slate-400">{formatDateTime(row.dueAt)}</span>
+                </div>
+                <p className="mt-2 text-sm font-medium text-white">{formatFollowUpType(deriveFollowUpType(row, inquiriesById[row.inquiryId]))}</p>
+                <p className="mt-1 text-sm text-slate-300">{row.notes || row.outcomeNotes || "No notes added."}</p>
+                <p className="mt-2 text-xs text-slate-500">
+                  Scheduled by {
+                    isMeaningfulValue(staffById[String(row.createdByStaffId || "")])
+                      ? formatStaffDisplayName(staffById[String(row.createdByStaffId || "")], String(row.createdByStaffId || ""))
+                      : getLegacyFollowUpClientRep(row.outcomeNotes) ||
+                        getLegacyFollowUpAssignedTo(row.outcomeNotes) ||
+                        getLegacyInquiryHandledBy(inquiriesById[row.inquiryId]) ||
+                        formatStaffDisplayName(staffById[String(row.createdByStaffId || "")], String(row.createdByStaffId || ""))
+                  }
+                </p>
+              </div>
+            ))}
+          </div>
+        )}
+      </Modal>
+
+      <Modal
+        open={Boolean(addFollowUpFor)}
+        title={addFollowUpFor ? `Add Follow-up · ${addFollowUpFor.clientName}` : "Add Follow-up"}
+        onClose={() => setAddFollowUpFor(null)}
+      >
+        <div className="space-y-4">
+          <label className="block space-y-2">
+            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Due At</span>
+            <input
+              type="datetime-local"
+              className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60"
+              value={addFollowUpForm.dueAt}
+              onChange={(event) => setAddFollowUpForm((current) => ({ ...current, dueAt: event.target.value }))}
+            />
+          </label>
+          <label className="block space-y-2">
+            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Assigned Staff</span>
+            <select
+              className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60"
+              value={addFollowUpForm.assignedToStaffId}
+              onChange={(event) => setAddFollowUpForm((current) => ({ ...current, assignedToStaffId: event.target.value }))}
+            >
+              <option value="">Select assignee</option>
+              {staffSelectOptions.map((option) => (
+                <option key={option.id} value={option.id}>{option.name}</option>
+              ))}
+            </select>
+          </label>
+          <div className="grid gap-4 md:grid-cols-2">
+            <label className="block space-y-2">
+              <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Follow-up Type</span>
+              <select
+                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60"
+                value={addFollowUpForm.followUpType}
+                onChange={(event) => setAddFollowUpForm((current) => ({ ...current, followUpType: event.target.value as FollowUpType }))}
+              >
+                {followUpTypeOptions.map((option) => (
+                  <option key={option} value={option}>{option}</option>
+                ))}
+              </select>
+            </label>
+            <label className="block space-y-2">
+              <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Channel</span>
+              <select
+                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60"
+                value={addFollowUpForm.channel}
+                onChange={(event) => setAddFollowUpForm((current) => ({ ...current, channel: event.target.value as FollowUpRecord["channel"] }))}
+              >
+                {["CALL", "WHATSAPP", "SMS", "EMAIL", "VISIT"].map((option) => (
+                  <option key={option} value={option}>{humanizeText(option)}</option>
+                ))}
+              </select>
+            </label>
+          </div>
+          <label className="block space-y-2">
+            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Notes</span>
+            <textarea
+              rows={4}
+              className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60"
+              value={addFollowUpForm.notes}
+              onChange={(event) => setAddFollowUpForm((current) => ({ ...current, notes: event.target.value }))}
+            />
+          </label>
+          <div className="flex justify-end gap-3">
+            <button
+              type="button"
+              onClick={() => setAddFollowUpFor(null)}
+              className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void submitAdditionalFollowUp()}
+              className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white hover:bg-[#a51f1b]"
+            >
+              Save Follow-up
+            </button>
+          </div>
+        </div>
+      </Modal>
     </div>
   );
 }

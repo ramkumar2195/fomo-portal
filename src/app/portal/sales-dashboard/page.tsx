@@ -2,8 +2,9 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { ComponentType, SVGProps, useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowRight, Clock3, ShieldAlert, Sparkles, Target, Users2 } from "lucide-react";
+import { ArrowRight, Clock3, Play, ShieldAlert, Sparkles, Target, Users2 } from "lucide-react";
 import {
   ActiveMembersIcon,
   BiometricIcon,
@@ -23,9 +24,12 @@ import { useAuth } from "@/contexts/auth-context";
 import { useBranch } from "@/contexts/branch-context";
 import { engagementService } from "@/lib/api/services/engagement-service";
 import { subscriptionFollowUpService } from "@/lib/api/services/subscription-followup-service";
+import { trainingService, TrainerScheduleEntry } from "@/lib/api/services/training-service";
+import { usersService } from "@/lib/api/services/users-service";
 import { formatCurrency, formatPercent } from "@/lib/formatters";
 import { resolveStaffId } from "@/lib/staff-id";
 import { UserDesignation } from "@/types/auth";
+import { UserDirectoryItem } from "@/types/models";
 import { AdminOverviewMetrics, DashboardMetrics, LeaderboardEntry } from "@/types/models";
 
 const AdminDashboardContent = dynamic(() => import("@/app/(admin)/admin/dashboard/page"), {
@@ -88,6 +92,12 @@ type OperationalDesignation =
   | "SALES_EXECUTIVE"
   | "FRONT_DESK_EXECUTIVE"
   | "FITNESS_MANAGER";
+
+interface GymManagerSessionRow {
+  key: string;
+  trainer: UserDirectoryItem;
+  entry: TrainerScheduleEntry;
+}
 
 const EMPTY_STATE: DashboardState = {
   metrics: {
@@ -727,6 +737,305 @@ function AlertsSection({ overview }: { overview: AdminOverviewMetrics }) {
   );
 }
 
+function toDateKey(date: Date): string {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function entryDateKey(entry: TrainerScheduleEntry): string {
+  return String(entry.startAt || "").slice(0, 10);
+}
+
+function entryTime(entry: TrainerScheduleEntry, field: "startAt" | "endAt"): string {
+  return String(entry[field] || "").slice(11, 16);
+}
+
+function formatQuickTime(value: string): string {
+  if (!value || value === "-") return "-";
+  const [hourPart, minutePart = "00"] = value.split(":");
+  const hour = Number(hourPart);
+  const minute = Number(minutePart);
+  if (!Number.isFinite(hour) || !Number.isFinite(minute)) {
+    return value;
+  }
+  const suffix = hour >= 12 ? "PM" : "AM";
+  const hour12 = hour % 12 || 12;
+  return `${hour12}:${String(minute).padStart(2, "0")} ${suffix}`;
+}
+
+function entryTimeLabel(entry: TrainerScheduleEntry, field: "startAt" | "endAt"): string {
+  return formatQuickTime(entryTime(entry, field));
+}
+
+function parseEntryDate(entry: TrainerScheduleEntry, field: "startAt" | "endAt"): Date | null {
+  const value = entry[field];
+  if (!value) return null;
+  const parsed = new Date(value);
+  return Number.isNaN(parsed.getTime()) ? null : parsed;
+}
+
+function isPendingPtEntry(entry: TrainerScheduleEntry): boolean {
+  const status = String(entry.status || "SCHEDULED").toUpperCase();
+  return ["", "SCHEDULED", "UPCOMING", "PENDING", "SCHEDULED_SLOT", "PT_SLOT"].includes(status);
+}
+
+function canStartQuickPtSession(entry: TrainerScheduleEntry): boolean {
+  const now = new Date();
+  const start = parseEntryDate(entry, "startAt");
+  const end = parseEntryDate(entry, "endAt");
+  return Boolean(start && end && now >= start && now <= end && isPendingPtEntry(entry));
+}
+
+function canCancelQuickPtSession(entry: TrainerScheduleEntry): boolean {
+  const start = parseEntryDate(entry, "startAt");
+  if (!start || !isPendingPtEntry(entry)) return false;
+  const hoursUntilStart = (start.getTime() - Date.now()) / (1000 * 60 * 60);
+  return hoursUntilStart >= 8;
+}
+
+function hasQuickPtSessionEnded(entry: TrainerScheduleEntry): boolean {
+  const end = parseEntryDate(entry, "endAt");
+  return Boolean(end && Date.now() > end.getTime());
+}
+
+function quickSessionStatus(entry: TrainerScheduleEntry): string {
+  return String(entry.status || "SCHEDULED").toUpperCase();
+}
+
+function primaryQuickActionLabel(entry: TrainerScheduleEntry): string {
+  const status = quickSessionStatus(entry);
+  if (status === "IN_PROGRESS") return "In Progress";
+  if (["COMPLETED", "CANCELLED", "CANCELED", "NO_SHOW"].includes(status)) return status.replace("_", " ");
+  if (canCancelQuickPtSession(entry)) return "Cancel";
+  if (canStartQuickPtSession(entry)) return "Start";
+  if (hasQuickPtSessionEnded(entry) && isPendingPtEntry(entry)) return "Mark Completed / No Show";
+  const start = entryTime(entry, "startAt");
+  return start ? `Start at ${formatQuickTime(start)}` : "Scheduled";
+}
+
+function quickActionSortRank(entry: TrainerScheduleEntry): number {
+  const status = quickSessionStatus(entry);
+  if (status === "IN_PROGRESS" || canStartQuickPtSession(entry)) return 0;
+  if (isPendingPtEntry(entry) && !hasQuickPtSessionEnded(entry)) return 1;
+  if (hasQuickPtSessionEnded(entry) && isPendingPtEntry(entry)) return 2;
+  return 3;
+}
+
+function GymManagerQuickActions({
+  token,
+  userName,
+}: {
+  token: string;
+  userName?: string;
+}) {
+  const router = useRouter();
+  const [rows, setRows] = useState<GymManagerSessionRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [busyKey, setBusyKey] = useState<string | null>(null);
+
+  const loadRows = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const today = toDateKey(new Date());
+      const trainers = await usersService.searchUsers(token, { role: "COACH", active: true });
+      const schedules = await Promise.all(
+        trainers.map(async (trainer) => ({
+          trainer,
+          schedule: await trainingService.getTrainerSchedule(token, trainer.id, today, today).catch(() => null),
+        })),
+      );
+      const nextRows = schedules.flatMap(({ trainer, schedule }) =>
+        (schedule?.entries || [])
+          .filter((entry) => (entry.entryType === "PT_SESSION" || entry.entryType === "PT_SLOT") && entryDateKey(entry) === today)
+          .map((entry) => ({
+            key: `${trainer.id}-${entry.entryType}-${entry.referenceId || entry.assignmentId || entry.startAt}`,
+            trainer,
+            entry,
+          })),
+      );
+      nextRows.sort((left, right) => {
+        const rankDiff = quickActionSortRank(left.entry) - quickActionSortRank(right.entry);
+        if (rankDiff !== 0) return rankDiff;
+        return entryTime(left.entry, "startAt").localeCompare(entryTime(right.entry, "startAt"));
+      });
+      setRows(nextRows);
+    } catch (quickActionError) {
+      setError(quickActionError instanceof Error ? quickActionError.message : "Unable to load PT quick actions.");
+    } finally {
+      setLoading(false);
+    }
+  }, [token]);
+
+  useEffect(() => {
+    void loadRows();
+  }, [loadRows]);
+
+  const materializeSession = async (row: GymManagerSessionRow): Promise<number> => {
+    const { entry, trainer } = row;
+    if (entry.entryType === "PT_SESSION" && entry.referenceId) {
+      return Number(entry.referenceId);
+    }
+    const assignmentId = Number(entry.assignmentId || 0);
+    const memberId = Number(entry.memberId || 0);
+    const sessionDate = entryDateKey(entry);
+    const sessionTime = entryTime(entry, "startAt");
+    if (!assignmentId || !memberId || !sessionDate || !sessionTime) {
+      throw new Error("PT slot is missing assignment or member details.");
+    }
+    const created = await trainingService.createPtSession(token, {
+      assignmentId,
+      coachId: Number(trainer.id),
+      memberId,
+      sessionDate,
+      sessionTime,
+      notes: "Created from gym manager quick actions.",
+    });
+    const record = typeof created === "object" && created !== null ? (created as Record<string, unknown>) : {};
+    const createdId = Number(record.id || record.sessionId || 0);
+    if (!createdId) {
+      throw new Error("PT session was created but no session ID was returned.");
+    }
+    return createdId;
+  };
+
+  const runSessionAction = async (
+    row: GymManagerSessionRow,
+    action: "start" | "cancel" | "complete" | "no-show",
+  ) => {
+    setBusyKey(row.key);
+    setError(null);
+    try {
+      const sessionId = await materializeSession(row);
+      if (action === "start") {
+        await trainingService.startSession(token, sessionId, userName || "GYM_MANAGER");
+      } else if (action === "cancel") {
+        await trainingService.cancelPtSession(token, sessionId);
+      } else if (action === "complete") {
+        await trainingService.markSessionComplete(token, sessionId);
+      } else {
+        await trainingService.markSessionNoShow(token, sessionId);
+      }
+      await loadRows();
+    } catch (actionError) {
+      setError(actionError instanceof Error ? actionError.message : "Unable to update PT session.");
+    } finally {
+      setBusyKey(null);
+    }
+  };
+
+  const openRegister = (entry: TrainerScheduleEntry) => {
+    if (!entry.memberId) return;
+    const assignmentQuery = entry.assignmentId ? `&assignmentId=${entry.assignmentId}` : "";
+    router.push(`/admin/members/${entry.memberId}?tab=personal-training&section=session-register${assignmentQuery}`);
+  };
+
+  return (
+    <SectionCard title="Today’s PT Control" subtitle="Compact session actions for the gym manager">
+      {error ? <p className="mb-3 rounded-xl border border-rose-200 bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
+      {loading ? (
+        <p className="text-sm text-slate-500">Loading today&apos;s PT sessions...</p>
+      ) : rows.length === 0 ? (
+        <p className="text-sm text-slate-500">No PT sessions are scheduled for today.</p>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[760px] text-left text-sm">
+            <thead>
+              <tr className="border-b border-slate-200 text-xs uppercase tracking-[0.18em] text-slate-500">
+                <th className="px-3 py-2">Time</th>
+                <th className="px-3 py-2">Trainer</th>
+                <th className="px-3 py-2">Client</th>
+                <th className="px-3 py-2 text-right">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.slice(0, 8).map((row) => {
+                const { entry } = row;
+                const memberLabel = entry.couple && entry.secondaryMemberName
+                  ? `${entry.memberName || "Client"} & ${entry.secondaryMemberName}`
+                  : entry.memberName || "Client";
+                const canCancel = canCancelQuickPtSession(entry);
+                const canStart = canStartQuickPtSession(entry);
+                const canResolvePast = hasQuickPtSessionEnded(entry) && isPendingPtEntry(entry);
+                const label = primaryQuickActionLabel(entry);
+                return (
+                  <tr key={row.key} className="border-b border-slate-100 last:border-b-0">
+                    <td className="px-3 py-3 font-semibold text-slate-900">
+                      {entryTimeLabel(entry, "startAt")} - {entryTimeLabel(entry, "endAt")}
+                    </td>
+                    <td className="px-3 py-3 text-slate-700">{row.trainer.name}</td>
+                    <td className="px-3 py-3">
+                      <p className="font-semibold text-slate-900">{memberLabel}</p>
+                      <button
+                        type="button"
+                        onClick={() => openRegister(entry)}
+                        className="mt-1 text-xs font-semibold text-[#C42429] hover:underline"
+                      >
+                        Open register
+                      </button>
+                    </td>
+                    <td className="px-3 py-3">
+                      <div className="flex justify-end gap-2">
+                        {canCancel ? (
+                          <button
+                            type="button"
+                            onClick={() => void runSessionAction(row, "cancel")}
+                            disabled={busyKey === row.key}
+                            className="rounded-lg bg-orange-100 px-3 py-1.5 text-xs font-semibold text-orange-700 hover:bg-orange-200 disabled:opacity-50"
+                          >
+                            {busyKey === row.key ? "Saving..." : "Cancel"}
+                          </button>
+                        ) : canStart ? (
+                          <button
+                            type="button"
+                            onClick={() => void runSessionAction(row, "start")}
+                            disabled={busyKey === row.key}
+                            className="inline-flex items-center gap-1 rounded-lg bg-[#C42429] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#a61e22] disabled:opacity-50"
+                          >
+                            <Play className="h-3.5 w-3.5" />
+                            {busyKey === row.key ? "Starting..." : "Start"}
+                          </button>
+                        ) : canResolvePast ? (
+                          <>
+                            <button
+                              type="button"
+                              onClick={() => void runSessionAction(row, "complete")}
+                              disabled={busyKey === row.key}
+                              className="rounded-lg bg-emerald-100 px-3 py-1.5 text-xs font-semibold text-emerald-700 hover:bg-emerald-200 disabled:opacity-50"
+                            >
+                              Completed
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => void runSessionAction(row, "no-show")}
+                              disabled={busyKey === row.key}
+                              className="rounded-lg bg-rose-100 px-3 py-1.5 text-xs font-semibold text-rose-700 hover:bg-rose-200 disabled:opacity-50"
+                            >
+                              No Show
+                            </button>
+                          </>
+                        ) : (
+                          <span className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-semibold text-slate-500">
+                            {label}
+                          </span>
+                        )}
+                      </div>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+      )}
+      {rows.length > 8 ? <p className="mt-3 text-xs text-slate-500">Showing first 8 sessions. Open trainer schedule for the full day.</p> : null}
+    </SectionCard>
+  );
+}
+
 function LeaderboardSection({ leaderboard }: { leaderboard: LeaderboardEntry[] }) {
   if (leaderboard.length === 0) {
     return (
@@ -870,11 +1179,14 @@ export default function UnifiedDashboardPage() {
 
   if (isGymManager) {
     return (
-      <AdminDashboardContent
-        branchScoped
-        headingTitle={`${selectedBranchName || "Branch"} Dashboard`}
-        headingSubtitle={`${selectedBranchName || "Selected branch"} overview`}
-      />
+      <div className="space-y-8 pb-12">
+        {token ? <GymManagerQuickActions token={token} userName={user?.name} /> : null}
+        <AdminDashboardContent
+          branchScoped
+          headingTitle={`${selectedBranchName || "Branch"} Dashboard`}
+          headingSubtitle={`${selectedBranchName || "Selected branch"} overview`}
+        />
+      </div>
     );
   }
 

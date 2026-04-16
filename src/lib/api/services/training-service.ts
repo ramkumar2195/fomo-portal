@@ -50,8 +50,57 @@ export interface ClientAssignmentRequest {
   productVariantId?: number;
   packageName?: string;
   totalSessions?: number;
+  importedCompletedSessions?: number;
+  importedPendingSessions?: number;
+  importedNoShowSessions?: number;
+  importedCancelledSessions?: number;
+  importedReschedulesUsed?: number;
   rescheduleLimit?: number;
   slotDurationMinutes?: number;
+}
+
+export interface UpdateClientAssignmentRequest {
+  coachId?: number;
+  coachEmail?: string;
+  trainingType?: "GENERAL" | "PERSONAL_TRAINING";
+  startDate?: string;
+  endDate?: string;
+  productVariantId?: number;
+  packageName?: string;
+  totalSessions?: number;
+  importedCompletedSessions?: number;
+  importedPendingSessions?: number;
+  importedNoShowSessions?: number;
+  importedCancelledSessions?: number;
+  importedReschedulesUsed?: number;
+  rescheduleLimit?: number;
+  slotDurationMinutes?: number;
+  active?: boolean;
+  paymentPending?: boolean;
+}
+
+export interface InternalPtProvisionRequest {
+  memberId: number;
+  memberEmail: string;
+  coachId: number;
+  coachEmail: string;
+  startDate: string;
+  endDate?: string;
+  productVariantId?: number;
+  packageName?: string;
+  totalSessions?: number;
+  importedCompletedSessions?: number;
+  importedPendingSessions?: number;
+  importedNoShowSessions?: number;
+  importedCancelledSessions?: number;
+  importedReschedulesUsed?: number;
+  rescheduleLimit?: number;
+  slotDurationMinutes?: number;
+  slots: Array<{
+    dayOfWeek: string;
+    slotStartTime: string;
+    slotEndTime: string;
+  }>;
 }
 
 export interface TrainerLeaveWindow {
@@ -68,11 +117,16 @@ export interface TrainerScheduleEntry {
   entryType: string;
   label: string;
   referenceId?: number;
+  assignmentId?: number;
   startAt?: string;
   endAt?: string;
   status?: string;
   memberId?: number;
   memberName?: string;
+  secondaryMemberId?: number;
+  secondaryMemberName?: string;
+  coupleGroupId?: number;
+  couple?: boolean;
   notes?: string;
 }
 
@@ -163,6 +217,16 @@ function toOptionalNumber(payload: JsonRecord, keys: string[]): number | undefin
 function toOptionalString(payload: JsonRecord, keys: string[]): string | undefined {
   const value = toString(payload, keys);
   return value || undefined;
+}
+
+function toOptionalBoolean(payload: JsonRecord, keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    if (payload[key] === undefined || payload[key] === null) {
+      continue;
+    }
+    return toBoolean(payload, [key]);
+  }
+  return undefined;
 }
 
 function mapAssessmentStatus(payload: unknown): MemberAssessmentStatusResponse {
@@ -295,11 +359,16 @@ function mapTrainerScheduleEntry(payload: unknown): TrainerScheduleEntry {
     entryType: toString(record, ["entryType"]) || "ENTRY",
     label: toString(record, ["label"]) || "Schedule",
     referenceId: toOptionalNumber(record, ["referenceId"]),
+    assignmentId: toOptionalNumber(record, ["assignmentId"]),
     startAt: toOptionalString(record, ["startAt"]),
     endAt: toOptionalString(record, ["endAt"]),
     status: toOptionalString(record, ["status"]),
     memberId: toOptionalNumber(record, ["memberId"]),
     memberName: toOptionalString(record, ["memberName"]),
+    secondaryMemberId: toOptionalNumber(record, ["secondaryMemberId"]),
+    secondaryMemberName: toOptionalString(record, ["secondaryMemberName"]),
+    coupleGroupId: toOptionalNumber(record, ["coupleGroupId"]),
+    couple: toOptionalBoolean(record, ["couple"]),
     notes: toOptionalString(record, ["notes"]),
   };
 }
@@ -350,13 +419,48 @@ export const trainingService = {
     }
   },
 
-  async updateAssignmentSessionCount(token: string, assignmentId: string, totalSessions: number): Promise<unknown> {
+  async updateAssignmentSessionCount(
+    token: string,
+    assignmentId: string,
+    payload: {
+      totalSessions: number;
+      importedCompletedSessions?: number;
+      importedPendingSessions?: number;
+      importedNoShowSessions?: number;
+      importedCancelledSessions?: number;
+      importedReschedulesUsed?: number;
+    },
+  ): Promise<unknown> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "training",
       path: `/api/training/assignments/${assignmentId}/session-count`,
       token,
       method: "PATCH",
-      body: { totalSessions },
+      body: payload,
+    });
+
+    return unwrapData<unknown>(response);
+  },
+
+  async updateAssignment(token: string, assignmentId: string, payload: UpdateClientAssignmentRequest): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/assignments/${assignmentId}`,
+      token,
+      method: "PATCH",
+      body: payload,
+    });
+
+    return unwrapData<unknown>(response);
+  },
+
+  async provisionPtOperationalSetup(token: string, payload: InternalPtProvisionRequest): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: "/api/training/internal/pt-provision",
+      token,
+      method: "POST",
+      body: payload,
     });
 
     return unwrapData<unknown>(response);
@@ -371,6 +475,49 @@ export const trainingService = {
 
     const payload = unwrapData<unknown>(response);
     return Array.isArray(payload) ? payload : [];
+  },
+
+  async createPtSession(
+    token: string,
+    payload: {
+      assignmentId: number;
+      sessionDate: string;
+      sessionTime: string;
+      coachId: number;
+      memberId: number;
+      notes?: string;
+      exerciseType?: string;
+    },
+  ): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: "/api/training/pt-sessions",
+      method: "POST",
+      token,
+      body: payload,
+    });
+    return unwrapData<unknown>(response);
+  },
+
+  async recordManualPtSession(
+    token: string,
+    payload: {
+      assignmentId: number;
+      sessionDate: string;
+      sessionTime: string;
+      status: "COMPLETED" | "NO_SHOW" | "CANCELLED" | "SCHEDULED";
+      exerciseType?: string;
+      notes?: string;
+    },
+  ): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: "/api/training/pt-sessions/manual-entry",
+      method: "POST",
+      token,
+      body: payload,
+    });
+    return unwrapData<unknown>(response);
   },
 
   async listPrograms(token: string, page = 0, size = 20, branchId?: number | string): Promise<SpringPage<TrainingProgramSummary>> {
@@ -593,6 +740,38 @@ export const trainingService = {
       token,
       method: "POST",
       body: payload,
+    });
+
+    return unwrapData<unknown>(response);
+  },
+
+  async createPtSlot(
+    token: string,
+    payload: {
+      memberId: number;
+      assignmentId: number;
+      dayOfWeek: string;
+      slotStartTime: string;
+      slotEndTime: string;
+    },
+  ): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: "/api/training/pt-slots",
+      token,
+      method: "POST",
+      body: payload,
+    });
+
+    return unwrapData<unknown>(response);
+  },
+
+  async deletePtSlot(token: string, slotId: string | number): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/pt-slots/${slotId}`,
+      token,
+      method: "DELETE",
     });
 
     return unwrapData<unknown>(response);
@@ -824,6 +1003,27 @@ export const trainingService = {
     return unwrapData<unknown>(response);
   },
 
+  async deletePtSession(token: string, sessionId: number | string): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: `/api/training/pt-sessions/${sessionId}`,
+      method: "DELETE",
+      token,
+    });
+    return unwrapData<unknown>(response);
+  },
+
+  async deletePtSessions(token: string, sessionIds: Array<number | string>): Promise<unknown> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: "/api/training/pt-sessions/delete",
+      method: "POST",
+      token,
+      body: { sessionIds: sessionIds.map((id) => Number(id)) },
+    });
+    return unwrapData<unknown>(response);
+  },
+
   async getSessionSummaryByAssignment(
     token: string,
     assignmentId: number | string,
@@ -927,21 +1127,6 @@ export const trainingService = {
       body: { endedBy, notes },
     });
     return unwrapData<unknown>(response);
-  },
-
-  async generateSessionsFromSlots(
-    token: string,
-    payload: { assignmentId: number; fromDate: string; toDate: string; maxSessions?: number },
-  ): Promise<unknown[]> {
-    const response = await apiRequest<unknown | { data: unknown }>({
-      service: "training",
-      path: "/api/training/pt-sessions/generate",
-      method: "POST",
-      token,
-      body: payload,
-    });
-    const data = unwrapData<unknown>(response);
-    return Array.isArray(data) ? data : [];
   },
 
   async processNoShows(token: string): Promise<unknown> {

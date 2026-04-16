@@ -281,6 +281,7 @@ export default function MembersPage() {
                       <td className="px-4 py-3">
                         <p className="font-semibold text-slate-700">{member.fullName || member.memberId}</p>
                         <p className="text-xs text-slate-500">{member.mobileNumber || "-"}</p>
+                        <p className="text-xs text-slate-400">{member.gender || "-"}</p>
                       </td>
                       <td className="px-4 py-3">
                         <p className="text-slate-700">{member.branchName || "-"}</p>

@@ -1,12 +1,12 @@
 "use client";
-import { useRouter } from "next/navigation";
+import { useRouter, useSearchParams } from "next/navigation";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { AlertTriangle, ChevronDown, ChevronUp, MoreHorizontal, Settings2, ShieldCheck, Users, XCircle } from "lucide-react";
 import { PageLoader } from "@/components/common/page-loader";
 import { SectionCard } from "@/components/common/section-card";
 import { useAuth } from "@/contexts/auth-context";
 import { useBranch } from "@/contexts/branch-context";
-import { hasCapability } from "@/lib/access-policy";
+import { canAccessRoute, hasCapability } from "@/lib/access-policy";
 import { engagementService } from "@/lib/api/services/engagement-service";
 import { subscriptionService } from "@/lib/api/services/subscription-service";
 import { trainingService } from "@/lib/api/services/training-service";
@@ -332,9 +332,11 @@ async function fetchMemberSummary(
     addedByLabel: addedByName || (addedByStaffId ? staffNameById[addedByStaffId] || `Staff #${addedByStaffId}` : "-"),
     checkInStatus: resolveCheckInStatus(attendance),
     gender:
-      inquiry && typeof inquiry.gender === "string" && inquiry.gender.trim().length > 0
-        ? formatDisplayLabel(inquiry.gender.trim())
-        : "-",
+      member.gender && member.gender.trim().length > 0
+        ? formatDisplayLabel(member.gender.trim())
+        : inquiry && typeof inquiry.gender === "string" && inquiry.gender.trim().length > 0
+          ? formatDisplayLabel(inquiry.gender.trim())
+          : "-",
     serviceTypes,
     membershipNames,
     trainerNames: fallbackTrainerName && isMeaningfulDisplayValue(fallbackTrainerName) ? [fallbackTrainerName] : trainerNames,
@@ -346,9 +348,12 @@ async function fetchMemberSummary(
 
 export default function MembersPage() {
   const router = useRouter();
+  const searchParams = useSearchParams();
   const { token, user, accessMetadata } = useAuth();
   const { effectiveBranchId } = useBranch();
-  const canViewMembers = hasCapability(user, accessMetadata, CAPABILITIES.viewMembers, true);
+  const canViewMembers =
+    canAccessRoute("/portal/members", user, accessMetadata) ||
+    hasCapability(user, accessMetadata, CAPABILITIES.viewMembers, true);
 
   const [members, setMembers] = useState<UserDirectoryItem[]>([]);
   const [searchTerm, setSearchTerm] = useState("");
@@ -364,10 +369,28 @@ export default function MembersPage() {
   const [error, setError] = useState<string | null>(null);
   const [detailsByMemberId, setDetailsByMemberId] = useState<Record<string, MemberDetailSummary>>({});
   const [staffNameById, setStaffNameById] = useState<Record<string, string>>({});
-  const [currentPage, setCurrentPage] = useState(1);
+  const [currentPage, setCurrentPage] = useState(() => {
+    const page = Number(searchParams.get("page") || "1");
+    return Number.isFinite(page) && page > 0 ? page : 1;
+  });
   const [openMenuMemberId, setOpenMenuMemberId] = useState<string | null>(null);
   const [filtersOpen, setFiltersOpen] = useState(false);
   const pageSize = 10;
+  useEffect(() => {
+    const page = Number(searchParams.get("page") || "1");
+    const nextPage = Number.isFinite(page) && page > 0 ? page : 1;
+    setCurrentPage(nextPage);
+  }, [searchParams]);
+
+  useEffect(() => {
+    const params = new URLSearchParams(searchParams.toString());
+    const existingPage = params.get("page") || "1";
+    if (existingPage === String(currentPage)) {
+      return;
+    }
+    params.set("page", String(currentPage));
+    router.replace(`/portal/members?${params.toString()}`, { scroll: false });
+  }, [currentPage, router, searchParams]);
   const dateRangeError = useMemo(() => {
     if (!fromDate || !toDate) {
       return "";
@@ -1098,13 +1121,10 @@ export default function MembersPage() {
                             {formatDisplayLabel(subscriptionState)}
                           </span>
                           <span className="text-xs text-slate-400">
-                            {details?.activePlan || (loadingSummaries ? "Loading..." : "-")}
+                            {details?.membershipNames?.length
+                              ? details.membershipNames.join(", ")
+                              : details?.activePlan || (loadingSummaries ? "Loading..." : "-")}
                           </span>
-                          {details?.membershipNames && details.membershipNames.length > 1 ? (
-                            <span className="text-[11px] text-slate-500">
-                              Also: {details.membershipNames.filter((name) => name !== details.activePlan).join(", ")}
-                            </span>
-                          ) : null}
                         </div>
                       </td>
                       <td className="px-4 py-3 text-slate-300">{details?.gender || "-"}</td>

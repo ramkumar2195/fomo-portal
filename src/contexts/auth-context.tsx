@@ -16,6 +16,7 @@ interface AuthContextValue {
   isAuthenticated: boolean;
   isBootstrapping: boolean;
   login: (payload: LoginRequest) => Promise<AuthUser>;
+  refreshCurrentUser: () => Promise<AuthUser | null>;
   logout: () => void;
 }
 
@@ -218,6 +219,23 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     return resolvedUser;
   }, [clearSession]);
 
+  const refreshCurrentUser = useCallback(async (): Promise<AuthUser | null> => {
+    if (!token || !user) {
+      return null;
+    }
+
+    const refreshedUser = await usersService.getMe(token, user);
+    setUser(refreshedUser);
+    saveToStorage(STORAGE_KEYS.user, refreshedUser);
+    setCookie(COOKIE_KEYS.role, refreshedUser.role);
+    if (refreshedUser.designation) {
+      setCookie(COOKIE_KEYS.designation, refreshedUser.designation);
+    } else {
+      clearCookie(COOKIE_KEYS.designation);
+    }
+    return refreshedUser;
+  }, [token, user]);
+
   const logout = useCallback(() => {
     clearSession();
   }, [clearSession]);
@@ -231,9 +249,10 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       isAuthenticated: Boolean(user && token),
       isBootstrapping,
       login,
+      refreshCurrentUser,
       logout,
     }),
-    [user, token, refreshToken, accessMetadata, isBootstrapping, login, logout],
+    [user, token, refreshToken, accessMetadata, isBootstrapping, login, refreshCurrentUser, logout],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

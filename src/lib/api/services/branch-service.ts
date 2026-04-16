@@ -303,6 +303,7 @@ function mapDirectoryMemberRow(payload: unknown): BranchDirectoryMemberRow {
     memberId: toString(record, ["memberId", "id"]),
     fullName: toString(record, ["fullName", "memberName", "name"]),
     mobileNumber: toString(record, ["mobileNumber", "mobile", "phone"]),
+    gender: toString(record, ["gender"]) || undefined,
     activePlan: toString(record, ["activePlan", "planName"]),
     attendancePercent: toNumber(record, ["attendancePercent"]),
     memberStatus: toString(record, ["memberStatus", "status"]),

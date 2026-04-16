@@ -14,7 +14,7 @@ export default function AddStaffPage() {
   return (
     <UserOnboardForm
       title="Add Staff"
-      subtitle="Create a STAFF user via users-service register API"
+      subtitle="Create a staff profile with role, shift, and basic employment details."
       targetRole="STAFF"
       designationOptions={[
         { label: "GYM_MANAGER", value: "GYM_MANAGER" },

@@ -27,6 +27,12 @@ export interface UserDirectoryItem {
   emergencyContactName?: string;
   emergencyContactPhone?: string;
   emergencyContactRelation?: string;
+  dateOfJoining?: string;
+  totalExperienceYears?: number;
+  maxClientCapacity?: number;
+  shiftTimings?: string;
+  assignedCategory?: string;
+  profileImageUrl?: string;
   createdAt?: string;
 }
 
@@ -97,6 +103,7 @@ export interface SuperAdminDashboardSubscriptions {
   expiringIn7Days: number;
   expiringIn30Days: number;
   expiredSubscriptions: number;
+  inactiveSubscriptions?: number;
   balanceDueInvoices: number;
   balanceDueAmount: number;
 }
@@ -153,6 +160,9 @@ export interface SuperAdminDashboardSummaryRevenue {
 
 export interface SuperAdminDashboardSummarySubscriptions {
   activeSubscriptions: number;
+  inactiveSubscriptions?: number;
+  balanceDueInvoices: number;
+  balanceDueAmount: number;
 }
 
 export interface SuperAdminDashboardSummaryNewMembers {
@@ -200,6 +210,9 @@ export type DashboardDrilldownMetricKey =
   | "TOTAL_COACHES"
   | "ACTIVE_COACHES"
   | "ACTIVE_SUBSCRIPTIONS"
+  | "INACTIVE_SUBSCRIPTIONS"
+  | "EXPIRING_SOON"
+  | "PENDING_REVENUE"
   | "NEW_MEMBERS_TODAY"
   | "NEW_MEMBERS_THIS_MONTH";
 
@@ -210,6 +223,7 @@ export interface DashboardDrilldownMemberRow {
   branchId?: string;
   branchName?: string;
   activePlan?: string;
+  assignedTrainerName?: string;
   memberStatus?: string;
   paymentStatus?: string;
   attendancePercent?: number;
@@ -347,6 +361,7 @@ export interface Inquiry {
 export interface InvoiceSummary {
   id: string;
   invoiceNumber: string;
+  billedByStaffId?: string;
   receiptId?: string;
   amount: number;
   status: string;

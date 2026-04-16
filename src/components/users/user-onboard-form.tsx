@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 import { SectionCard } from "@/components/common/section-card";
@@ -50,11 +49,27 @@ interface FormState {
   designation: UserDesignation;
   dataScope: DataScope;
   active: boolean;
+  dateOfBirth: string;
+  gender: string;
+  dateOfJoining: string;
+  totalExperienceYears: string;
+  maxClientCapacity: string;
+  shiftTimings: string;
+  assignedCategory: string;
+  profileImageUrl: string;
+  address: string;
 }
 
 function toOptionalString(value: string): string | undefined {
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : undefined;
+}
+
+function formatEnumLabel(value: string): string {
+  return value
+    .split("_")
+    .map((part) => part.charAt(0).toUpperCase() + part.slice(1).toLowerCase())
+    .join(" ");
 }
 
 function resolveMemberId(createdUser: UserDirectoryItem): number | null {
@@ -99,9 +114,11 @@ export function UserOnboardForm({
 }: UserOnboardFormProps) {
   const router = useRouter();
   const { token, user, accessMetadata } = useAuth();
-  const { selectedBranchId } = useBranch();
+  const { selectedBranchId, branches } = useBranch();
   const canCreate = hasCapability(user, accessMetadata, requiredCapabilities, true);
   const isMemberFlow = targetRole === "MEMBER";
+  const isCoachFlow = targetRole === "COACH";
+  const isStaffFlow = targetRole === "STAFF";
   const hasSourceInquiryId = isMemberFlow ? Number.isFinite(Number(sourceInquiryId)) && Number(sourceInquiryId) > 0 : true;
   const sourceId = hasSourceInquiryId ? Number(sourceInquiryId) : null;
 
@@ -134,6 +151,15 @@ export function UserOnboardForm({
     designation: defaults.designation,
     dataScope: defaults.dataScope,
     active: true,
+    dateOfBirth: "",
+    gender: "",
+    dateOfJoining: "",
+    totalExperienceYears: "",
+    maxClientCapacity: "",
+    shiftTimings: "",
+    assignedCategory: "",
+    profileImageUrl: "",
+    address: "",
   }));
   const [isSubmitting, setIsSubmitting] = useState(false);
   const [createdUser, setCreatedUser] = useState<UserDirectoryItem | null>(null);
@@ -222,6 +248,19 @@ export function UserOnboardForm({
         designation: form.designation,
         dataScope: form.dataScope,
         active: form.active,
+        dateOfBirth: toOptionalString(form.dateOfBirth),
+        gender: toOptionalString(form.gender),
+        dateOfJoining: toOptionalString(form.dateOfJoining),
+        totalExperienceYears: toOptionalString(form.totalExperienceYears)
+          ? Number(form.totalExperienceYears)
+          : undefined,
+        maxClientCapacity: toOptionalString(form.maxClientCapacity)
+          ? Number(form.maxClientCapacity)
+          : undefined,
+        shiftTimings: toOptionalString(form.shiftTimings),
+        assignedCategory: toOptionalString(form.assignedCategory),
+        profileImageUrl: toOptionalString(form.profileImageUrl),
+        address: toOptionalString(form.address),
         ...(isMemberFlow && sourceId ? { sourceInquiryId: sourceId } : {}),
       };
 
@@ -248,6 +287,15 @@ export function UserOnboardForm({
             designation: defaults.designation,
             dataScope: defaults.dataScope,
             active: true,
+            dateOfBirth: "",
+            gender: "",
+            dateOfJoining: "",
+            totalExperienceYears: "",
+            maxClientCapacity: "",
+            shiftTimings: "",
+            assignedCategory: "",
+            profileImageUrl: "",
+            address: "",
           });
           router.push("/portal/inquiries");
           return;
@@ -275,6 +323,15 @@ export function UserOnboardForm({
         designation: defaults.designation,
         dataScope: defaults.dataScope,
         active: true,
+        dateOfBirth: "",
+        gender: "",
+        dateOfJoining: "",
+        totalExperienceYears: "",
+        maxClientCapacity: "",
+        shiftTimings: "",
+        assignedCategory: "",
+        profileImageUrl: "",
+        address: "",
       });
       setToast({ kind: "success", message: successLabel });
     } catch (submitError) {
@@ -296,28 +353,6 @@ export function UserOnboardForm({
       <SectionCard
         title={title}
         subtitle={subtitle}
-        actions={
-          <div className="flex flex-wrap gap-2">
-            <Link
-              href="/portal/members/add"
-              className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-            >
-              Add Member
-            </Link>
-            <Link
-              href="/portal/trainers/add"
-              className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-            >
-              Add Trainer
-            </Link>
-            <Link
-              href="/portal/staff/add"
-              className="rounded-lg border border-slate-300 px-3 py-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
-            >
-              Add Staff
-            </Link>
-          </div>
-        }
       >
         {!canCreate ? (
           <p className="rounded-lg bg-amber-50 px-3 py-2 text-sm text-amber-700">
@@ -328,7 +363,7 @@ export function UserOnboardForm({
             Member creation requires enquiry conversion. Go to Enquiries and use the Convert action.
           </p>
         ) : (
-          <form className="grid gap-3 md:grid-cols-2" onSubmit={onSubmit}>
+          <form className="space-y-4" onSubmit={onSubmit}>
             {isMemberFlow && sourceId ? (
               <div className="md:col-span-2 rounded-lg border border-emerald-200 bg-emerald-50 px-3 py-2 text-xs font-semibold text-emerald-800">
                 Source Enquiry ID: {sourceId}
@@ -373,23 +408,30 @@ export function UserOnboardForm({
             </div>
 
             <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-600">Email (optional)</label>
+              <label className="mb-1 block text-xs font-semibold text-slate-600">Email</label>
               <input
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
                 type="email"
                 value={form.email}
                 onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))}
+                required={!isMemberFlow}
               />
             </div>
 
             <div>
-              <label className="mb-1 block text-xs font-semibold text-slate-600">Default Branch ID (optional)</label>
-              <input
+              <label className="mb-1 block text-xs font-semibold text-slate-600">Default Branch</label>
+              <select
                 className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
                 value={form.defaultBranchId}
                 onChange={(event) => setForm((prev) => ({ ...prev, defaultBranchId: event.target.value }))}
-                placeholder={user?.defaultBranchId || "branch id"}
-              />
+              >
+                <option value="">Select branch</option>
+                {branches.map((branch) => (
+                  <option key={branch.id} value={String(branch.id)}>
+                    {branch.name}
+                  </option>
+                ))}
+              </select>
             </div>
 
             <div>
@@ -406,11 +448,59 @@ export function UserOnboardForm({
               >
                 {employmentTypeOptions.map((option) => (
                   <option key={`employment-${option.value}`} value={option.value}>
-                    {option.label}
+                    {formatEnumLabel(option.label)}
                   </option>
                 ))}
               </select>
             </div>
+
+            {!isMemberFlow ? (
+              <>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-600">Date of Birth</label>
+                  <input
+                    type="date"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    value={form.dateOfBirth}
+                    onChange={(event) => setForm((prev) => ({ ...prev, dateOfBirth: event.target.value }))}
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-600">Gender</label>
+                  <select
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    value={form.gender}
+                    onChange={(event) => setForm((prev) => ({ ...prev, gender: event.target.value }))}
+                  >
+                    <option value="">Select gender</option>
+                    <option value="Male">Male</option>
+                    <option value="Female">Female</option>
+                    <option value="Other">Other</option>
+                  </select>
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-600">Joining Date</label>
+                  <input
+                    type="date"
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    value={form.dateOfJoining}
+                    onChange={(event) => setForm((prev) => ({ ...prev, dateOfJoining: event.target.value }))}
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-600">Shift Timings</label>
+                  <input
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    value={form.shiftTimings}
+                    onChange={(event) => setForm((prev) => ({ ...prev, shiftTimings: event.target.value }))}
+                    placeholder={isCoachFlow ? "6 AM to 10 AM, 5 PM to 9 PM" : "9 AM to 6 PM"}
+                  />
+                </div>
+              </>
+            ) : null}
 
             <div>
               <label className="mb-1 block text-xs font-semibold text-slate-600">Designation</label>
@@ -426,7 +516,7 @@ export function UserOnboardForm({
               >
                 {designationOptions.map((option) => (
                   <option key={`designation-${option.value}`} value={option.value}>
-                    {option.label}
+                    {formatEnumLabel(option.label)}
                   </option>
                 ))}
               </select>
@@ -446,11 +536,82 @@ export function UserOnboardForm({
               >
                 {dataScopeOptions.map((option) => (
                   <option key={`scope-${option.value}`} value={option.value}>
-                    {option.label}
+                    {option.value === "BRANCH"
+                      ? "Branch Only"
+                      : option.value === "ASSIGNED_ONLY"
+                        ? "Assigned Only"
+                        : "Global"}
                   </option>
                 ))}
               </select>
+              <p className="mt-1 text-xs text-slate-500">
+                {form.dataScope === "BRANCH"
+                  ? "User can work within the selected branch."
+                  : form.dataScope === "ASSIGNED_ONLY"
+                    ? "Use for coaches who should only see their assigned members."
+                    : "Use only for users who need access across all branches."}
+              </p>
             </div>
+
+            {isCoachFlow ? (
+              <>
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-600">Total Experience (Years)</label>
+                  <input
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    value={form.totalExperienceYears}
+                    onChange={(event) => setForm((prev) => ({ ...prev, totalExperienceYears: event.target.value.replace(/[^0-9]/g, "") }))}
+                    inputMode="numeric"
+                    placeholder="0"
+                  />
+                </div>
+
+                <div>
+                  <label className="mb-1 block text-xs font-semibold text-slate-600">Max Client Capacity</label>
+                  <input
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    value={form.maxClientCapacity}
+                    onChange={(event) => setForm((prev) => ({ ...prev, maxClientCapacity: event.target.value.replace(/[^0-9]/g, "") }))}
+                    inputMode="numeric"
+                    placeholder="20"
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="mb-1 block text-xs font-semibold text-slate-600">Assigned Category</label>
+                  <input
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    value={form.assignedCategory}
+                    onChange={(event) => setForm((prev) => ({ ...prev, assignedCategory: event.target.value }))}
+                    placeholder="PT, HIIT, CrossFit"
+                  />
+                </div>
+              </>
+            ) : null}
+
+            {(isCoachFlow || isStaffFlow) ? (
+              <>
+                <div className="md:col-span-2">
+                  <label className="mb-1 block text-xs font-semibold text-slate-600">Profile Image URL</label>
+                  <input
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    value={form.profileImageUrl}
+                    onChange={(event) => setForm((prev) => ({ ...prev, profileImageUrl: event.target.value }))}
+                    placeholder="https://..."
+                  />
+                </div>
+
+                <div className="md:col-span-2">
+                  <label className="mb-1 block text-xs font-semibold text-slate-600">Address</label>
+                  <textarea
+                    className="w-full rounded-lg border border-slate-300 px-3 py-2 text-sm"
+                    rows={3}
+                    value={form.address}
+                    onChange={(event) => setForm((prev) => ({ ...prev, address: event.target.value }))}
+                  />
+                </div>
+              </>
+            ) : null}
 
             <label className="mt-6 flex items-center gap-2 text-sm text-slate-700">
               <input
@@ -491,33 +652,6 @@ export function UserOnboardForm({
         ) : null}
       </SectionCard>
 
-      <SectionCard title="Last Created User" subtitle="Result from users-service register API">
-        {!createdUser ? (
-          <p className="text-sm text-slate-500">No user created in this session.</p>
-        ) : (
-          <div className="grid gap-2 text-sm text-slate-700 sm:grid-cols-2">
-            <p>
-              <span className="font-semibold text-slate-900">ID:</span> {createdUser.id || "-"}
-            </p>
-            <p>
-              <span className="font-semibold text-slate-900">Name:</span> {createdUser.name}
-            </p>
-            <p>
-              <span className="font-semibold text-slate-900">Mobile:</span> {createdUser.mobile}
-            </p>
-            <p>
-              <span className="font-semibold text-slate-900">Role:</span> {createdUser.role}
-            </p>
-            <p>
-              <span className="font-semibold text-slate-900">Designation:</span>{" "}
-              {createdUser.designation || "-"}
-            </p>
-            <p>
-              <span className="font-semibold text-slate-900">Data Scope:</span> {createdUser.dataScope || "-"}
-            </p>
-          </div>
-        )}
-      </SectionCard>
     </div>
   );
 }

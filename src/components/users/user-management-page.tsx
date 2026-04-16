@@ -3,11 +3,12 @@
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
+import { Modal } from "@/components/common/modal";
 import { PageLoader } from "@/components/common/page-loader";
 import { SectionCard } from "@/components/common/section-card";
 import { ToastBanner } from "@/components/common/toast-banner";
 import { useAuth } from "@/contexts/auth-context";
-import { hasCapability } from "@/lib/access-policy";
+import { canAccessRoute, hasCapability } from "@/lib/access-policy";
 import { engagementService } from "@/lib/api/services/engagement-service";
 import {
   CreateLeaveRequestPayload,
@@ -199,6 +200,12 @@ function buildUpdatePayload(item: UserDirectoryItem, active: boolean, role: Extr
     emergencyContactPhone: item.emergencyContactPhone,
     emergencyContactRelation: item.emergencyContactRelation,
     defaultTrainerStaffId: item.defaultTrainerStaffId,
+    dateOfJoining: item.dateOfJoining,
+    totalExperienceYears: item.totalExperienceYears,
+    maxClientCapacity: item.maxClientCapacity,
+    shiftTimings: item.shiftTimings,
+    assignedCategory: item.assignedCategory,
+    profileImageUrl: item.profileImageUrl,
   };
 }
 
@@ -230,9 +237,11 @@ export function UserManagementPage({
     return map;
   }, [branches]);
 
-  const canView = hasCapability(user, accessMetadata, requiredViewCapabilities, true);
-  const canUpdate = hasCapability(user, accessMetadata, requiredUpdateCapabilities, true);
-  const canCreate = hasCapability(user, accessMetadata, requiredCreateCapabilities, true);
+  const routeAllowsView = canAccessRoute(profileRoute || addHref, user, accessMetadata);
+  const staffCapabilityFallback = user?.role !== "STAFF" || user.designation !== "GYM_MANAGER";
+  const canView = routeAllowsView || hasCapability(user, accessMetadata, requiredViewCapabilities, true);
+  const canUpdate = hasCapability(user, accessMetadata, requiredUpdateCapabilities, staffCapabilityFallback);
+  const canCreate = hasCapability(user, accessMetadata, requiredCreateCapabilities, staffCapabilityFallback);
 
   const [users, setUsers] = useState<UserDirectoryItem[]>([]);
   const [loading, setLoading] = useState(true);
@@ -277,6 +286,7 @@ export function UserManagementPage({
   });
   const [leaveSubmitting, setLeaveSubmitting] = useState(false);
   const [statusSavingId, setStatusSavingId] = useState<string | null>(null);
+  const [deletingUser, setDeletingUser] = useState<UserDirectoryItem | null>(null);
 
   const { selectedBranchId, effectiveBranchId } = useBranch();
 
@@ -513,6 +523,29 @@ export function UserManagementPage({
     [canUpdate, role, token],
   );
 
+  const deleteManagedUser = useCallback(async () => {
+    if (!token || !deletingUser) {
+      return;
+    }
+    setStatusSavingId(deletingUser.id);
+    try {
+      await usersService.deleteUser(token, deletingUser.id);
+      setUsers((prev) => prev.filter((item) => item.id !== deletingUser.id));
+      setToast({
+        kind: "success",
+        message: `${role === "COACH" ? "Trainer" : "Staff"} deleted successfully.`,
+      });
+      setDeletingUser(null);
+    } catch (deleteError) {
+      setToast({
+        kind: "error",
+        message: deleteError instanceof Error ? deleteError.message : "Unable to delete user",
+      });
+    } finally {
+      setStatusSavingId(null);
+    }
+  }, [deletingUser, role, token]);
+
   const openEdit = (item: UserDirectoryItem) => {
     setEditingUser(item);
     setEditForm({
@@ -709,7 +742,7 @@ export function UserManagementPage({
               <tr className="bg-[#171d29] text-left text-xs font-semibold tracking-wide text-slate-400 uppercase">
                 <th className="px-4 py-3">Name</th>
                 <th className="px-4 py-3">Mobile</th>
-                <th className="px-4 py-3">Trainer Type</th>
+                <th className="px-4 py-3">{role === "COACH" ? "Trainer Type" : "Designation"}</th>
                 <th className="px-4 py-3">Employment</th>
                 <th className="px-4 py-3">Check-In</th>
                 <th className="px-4 py-3">Status</th>
@@ -727,7 +760,8 @@ export function UserManagementPage({
                 users.map((item) => (
                   <tr
                     key={item.id}
-                    className="hover:bg-white/5"
+                    className={`hover:bg-white/5 ${profileRoute ? "cursor-pointer" : ""}`}
+                    onClick={profileRoute ? () => router.push(`${profileRoute}/${item.id}`) : undefined}
                   >
                     <td className="px-4 py-3">
                       <p className="font-semibold text-white">{item.name}</p>
@@ -762,7 +796,10 @@ export function UserManagementPage({
                         {canUpdate ? (
                           <button
                             type="button"
-                            onClick={() => void toggleUserActive(item, item.active === false)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              void toggleUserActive(item, item.active === false);
+                            }}
                             className={`rounded-lg px-2 py-1 text-xs font-semibold ${
                               item.active === false
                                 ? "bg-emerald-600 text-white hover:bg-emerald-700"
@@ -773,21 +810,27 @@ export function UserManagementPage({
                             {statusSavingId === item.id ? "Saving..." : item.active === false ? "Activate" : "Deactivate"}
                           </button>
                         ) : null}
-                        {profileRoute ? (
+                        {canUpdate ? (
                           <button
                             type="button"
-                            onClick={() => router.push(`${profileRoute}/${item.id}`)}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              setDeletingUser(item);
+                            }}
+                            className="rounded-lg border border-rose-200 px-2 py-1 text-xs font-semibold text-rose-700 hover:bg-rose-50"
+                          >
+                            Delete
+                          </button>
+                        ) : profileRoute ? (
+                          <button
+                            type="button"
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              router.push(`${profileRoute}/${item.id}`);
+                            }}
                             className="rounded-lg border border-white/10 px-2 py-1 text-xs font-semibold text-slate-200 hover:bg-white/5"
                           >
                             Open Profile
-                          </button>
-                        ) : canUpdate ? (
-                          <button
-                            type="button"
-                            onClick={() => openEdit(item)}
-                            className="rounded-lg border border-white/10 px-2 py-1 text-xs font-semibold text-slate-200 hover:bg-white/5"
-                          >
-                            Edit
                           </button>
                         ) : (
                           <span className="text-xs text-gray-400">-</span>
@@ -1230,6 +1273,36 @@ export function UserManagementPage({
           </div>
         </div>
       ) : null}
+
+      <Modal
+        open={Boolean(deletingUser)}
+        onClose={() => setDeletingUser(null)}
+        title={deletingUser ? `Delete ${deletingUser.name}` : "Delete User"}
+      >
+        {!deletingUser ? null : (
+          <div className="space-y-4">
+            <div className="rounded-xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-800">
+              This permanently deletes the profile and login. Use deactivate if you only want to block access.
+            </div>
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={() => setDeletingUser(null)}
+                className="rounded-lg border border-slate-300 px-4 py-2 text-sm font-semibold text-slate-700 hover:bg-slate-50"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={() => void deleteManagedUser()}
+                className="rounded-lg bg-rose-600 px-4 py-2 text-sm font-semibold text-white hover:bg-rose-700"
+              >
+                Delete
+              </button>
+            </div>
+          </div>
+        )}
+      </Modal>
     </div>
   );
 }

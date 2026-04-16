@@ -910,7 +910,7 @@ export default function BranchDetailPage() {
                         <td className="px-4 py-3">
                           <button
                             type="button"
-                            onClick={() => router.push(`/admin/coaches/${coach.id}`)}
+                            onClick={() => router.push(`/portal/trainers/${coach.id}`)}
                             className="rounded-lg border border-slate-300 px-2.5 py-1 text-xs font-semibold text-slate-700 hover:bg-slate-100"
                           >
                             Open Profile

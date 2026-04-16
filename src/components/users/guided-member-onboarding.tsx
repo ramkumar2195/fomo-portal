@@ -119,6 +119,19 @@ interface CompletedOnboardingState {
   balanceDueFollowUpDueAt?: string;
 }
 
+const PT_ASSIGNABLE_DESIGNATIONS = new Set(["PT_COACH", "GENERAL_TRAINER", "HEAD_COACH"]);
+const FUTURE_START_DATE_MAX_OFFSET_DAYS = 2;
+
+function formatDateInputValue(date: Date): string {
+  return date.toISOString().slice(0, 10);
+}
+
+function addDaysToDateInput(dateInput: string, days: number): string {
+  const source = dateInput ? new Date(`${dateInput}T00:00:00`) : new Date();
+  source.setDate(source.getDate() + days);
+  return formatDateInputValue(source);
+}
+
 interface OnboardingDraftState {
   currentStep: OnboardingStep;
   memberForm: MemberFormState;
@@ -632,12 +645,11 @@ function formatClockTime(timeValue?: string): string {
 
 function buildPtTimeSlotOptions(): string[] {
   const windows = [
-    { start: 6 * 60, end: 10 * 60 },
-    { start: 17 * 60, end: 21 * 60 },
+    { start: 5 * 60, end: 22 * 60 },
   ];
   const options: string[] = [];
   windows.forEach((window) => {
-    for (let minute = window.start; minute + PT_SLOT_DURATION_MINUTES <= window.end; minute += PT_SLOT_DURATION_MINUTES) {
+    for (let minute = window.start; minute + PT_SLOT_DURATION_MINUTES <= window.end; minute += 30) {
       const hours = Math.floor(minute / 60);
       const mins = minute % 60;
       options.push(`${String(hours).padStart(2, "0")}:${String(mins).padStart(2, "0")}`);
@@ -1228,7 +1240,9 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   const shouldShowPtSetupSection = requiresBundledPtSetup || (canAddPtMembership && showPtComposer);
   const ptEligibleCoaches = useMemo(
     () =>
-      branchCoaches.filter((coach) => String(coach.designation || "").toUpperCase() === "PT_COACH"),
+      branchCoaches.filter((coach) =>
+        PT_ASSIGNABLE_DESIGNATIONS.has(String(coach.designation || "").toUpperCase()),
+      ),
     [branchCoaches],
   );
   const selectedPtCoach = useMemo(
@@ -1338,7 +1352,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
     const baseAmount = Number(lineItemCommercials.reduce((sum, item) => sum + item.baseAmount, 0).toFixed(2));
     const discountAmount = Number(lineItemCommercials.reduce((sum, item) => sum + item.discountAmount, 0).toFixed(2));
-    const netSaleAmount = Number((baseAmount - discountAmount).toFixed(2));
+    const netSaleAmount = Math.round(baseAmount - discountAmount);
     const effectiveDiscountPercent =
       baseAmount > 0 ? Number(((discountAmount / baseAmount) * 100).toFixed(2)) : 0;
     const gstRate = billingSettings.gstPercentage || 0;
@@ -1346,7 +1360,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     const sgstAmount = Math.round((netSaleAmount * gstRate) / 200);
     const gstAmount = cgstAmount + sgstAmount;
     const rawTotalPayable = netSaleAmount + gstAmount;
-    const totalPayable = rawTotalPayable;
+    const totalPayable = Math.round(rawTotalPayable);
     const enteredReceivedAmount = Math.max(0, Math.round(toNumber(subscriptionForm.receivedAmount) || 0));
     const receivedAmount = Math.max(0, Math.min(totalPayable, enteredReceivedAmount));
     const submittedReceivedAmount = receivedAmount;
@@ -1965,6 +1979,8 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
               <input
                 type="date"
                 className="w-full rounded-2xl border border-white/10 bg-[#111925] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                min={formatDateInputValue(new Date())}
+                max={addDaysToDateInput(formatDateInputValue(new Date()), FUTURE_START_DATE_MAX_OFFSET_DAYS)}
                 value={ptSetupForm.startDate}
                 onChange={(event) => setPtSetupForm((current) => ({ ...current, startDate: event.target.value }))}
               />
@@ -2985,6 +3001,8 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                 <input
                                   type="date"
                                   className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
+                                  min={formatDateInputValue(new Date())}
+                                  max={addDaysToDateInput(formatDateInputValue(new Date()), FUTURE_START_DATE_MAX_OFFSET_DAYS)}
                                   value={subscriptionForm.startDate}
                                   onChange={(event) => setSubscriptionForm((current) => ({ ...current, startDate: event.target.value }))}
                                   required

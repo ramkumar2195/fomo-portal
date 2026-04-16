@@ -6,7 +6,7 @@ import { SectionCard } from "@/components/common/section-card";
 import { ToastBanner } from "@/components/common/toast-banner";
 import { useAuth } from "@/contexts/auth-context";
 import { useBranch } from "@/contexts/branch-context";
-import { hasCapability } from "@/lib/access-policy";
+import { canAccessRoute, hasCapability } from "@/lib/access-policy";
 import { subscriptionFollowUpService } from "@/lib/api/services/subscription-followup-service";
 import { subscriptionService } from "@/lib/api/services/subscription-service";
 import { usersService } from "@/lib/api/services/users-service";
@@ -85,7 +85,102 @@ interface FollowUpPreview {
   channel?: FollowUpChannel;
   responseType?: InquiryResponseType;
   notes?: string | null;
+  outcomeNotes?: string | null;
+  createdAt?: string;
   overdue?: boolean;
+}
+
+function extractLegacyMetadataValue(source: string | null | undefined, label: string): string {
+  const text = String(source || "");
+  const match = text.match(new RegExp(`${label}:\\s*([^|]+)`, "i"));
+  return match?.[1]?.trim() || "";
+}
+
+function getLegacyInquiryHandledBy(inquiry: InquiryRecord): string {
+  return extractLegacyMetadataValue(inquiry.remarks, "Legacy Handled By");
+}
+
+function getLegacyFollowUpAssignedTo(source: string | null | undefined): string {
+  return extractLegacyMetadataValue(source, "Assigned To");
+}
+
+function getLegacyFollowUpClientRep(source: string | null | undefined): string {
+  return extractLegacyMetadataValue(source, "Client Rep");
+}
+
+function formatDateTimeDisplay(value?: string | null): string {
+  if (!value) {
+    return "-";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "-";
+  }
+  return parsed.toLocaleString("en-IN");
+}
+
+function formatDateDisplay(value?: string | null): string {
+  if (!value) {
+    return "-";
+  }
+  const parsed = new Date(value);
+  if (Number.isNaN(parsed.getTime())) {
+    return "-";
+  }
+  return parsed.toLocaleDateString("en-IN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  });
+}
+
+function isMeaningfulStaffId(value?: number | null): value is number {
+  return value !== null && value !== undefined && !Number.isNaN(Number(value));
+}
+
+function buildLegacyFollowUpRecord(inquiry: InquiryRecord): FollowUpRecord | null {
+  const notes = (inquiry.followUpComment || inquiry.remarks || inquiry.notes || "").trim();
+  const hasLegacySignal = Boolean(notes || inquiry.responseType || inquiry.customerStatus || inquiry.updatedAt || inquiry.createdAt || inquiry.inquiryAt);
+  if (!hasLegacySignal) {
+    return null;
+  }
+
+  return {
+    followUpId: -Math.abs(inquiry.inquiryId),
+    inquiryId: inquiry.inquiryId,
+    memberId: inquiry.memberId ?? null,
+    branchId: inquiry.branchId ?? null,
+    branchCode: inquiry.branchCode ?? null,
+    assignedToStaffId: inquiry.assignedToStaffId ?? inquiry.clientRepStaffId ?? null,
+    createdByStaffId: inquiry.clientRepStaffId ?? null,
+    channel: "CALL",
+    responseType: inquiry.responseType,
+    followUpType: "ENQUIRY",
+    dueAt: "",
+    notes: notes || "Legacy imported inquiry follow-up",
+    status: inquiry.converted || inquiry.status === "CONVERTED" ? "COMPLETED" : "SCHEDULED",
+    completedByStaffId: null,
+    completedAt: null,
+    outcomeNotes: inquiry.customerStatus ? formatStatusLabel(inquiry.customerStatus) : null,
+    overdue: false,
+    createdAt: inquiry.createdAt || inquiry.inquiryAt || new Date().toISOString(),
+    updatedAt: inquiry.updatedAt || inquiry.createdAt || inquiry.inquiryAt || new Date().toISOString(),
+  };
+}
+
+function legacyFollowUpPreview(inquiry: InquiryRecord): FollowUpPreview | null {
+  const legacy = buildLegacyFollowUpRecord(inquiry);
+  if (!legacy) return null;
+  return {
+    followUpId: legacy.followUpId,
+    dueAt: legacy.dueAt,
+    assignedToStaffId: legacy.assignedToStaffId,
+    status: "LEGACY",
+    channel: legacy.channel,
+    responseType: legacy.responseType,
+    notes: legacy.notes,
+    overdue: false,
+  };
 }
 
 interface QuickFollowUpForm {
@@ -130,19 +225,19 @@ function RequiredFieldIcon() {
 }
 
 function parseNumericFromDirectoryUser(user: UserDirectoryItem): number | null {
-  const mobileDigits = String(user.mobile ?? "").replace(/[^0-9]/g, "");
-  if (mobileDigits.length > 0) {
-    const fromMobile = Number(mobileDigits);
-    if (!Number.isNaN(fromMobile) && Number.isFinite(fromMobile)) {
-      return fromMobile;
-    }
-  }
-
   const idDigits = String(user.id ?? "").replace(/[^0-9]/g, "");
   if (idDigits.length > 0) {
     const fromId = Number(idDigits);
     if (!Number.isNaN(fromId) && Number.isFinite(fromId)) {
       return fromId;
+    }
+  }
+
+  const mobileDigits = String(user.mobile ?? "").replace(/[^0-9]/g, "");
+  if (mobileDigits.length > 0) {
+    const fromMobile = Number(mobileDigits);
+    if (!Number.isNaN(fromMobile) && Number.isFinite(fromMobile)) {
+      return fromMobile;
     }
   }
 
@@ -425,16 +520,19 @@ export default function InquiriesPage() {
   const searchParams = useSearchParams();
   const { token, user, accessMetadata } = useAuth();
   const { selectedBranchCode, effectiveBranchId } = useBranch();
-  const canViewInquiries = hasCapability(user, accessMetadata, CAPABILITIES.viewInquiries, true);
-  const canCreateInquiry = hasCapability(user, accessMetadata, CAPABILITIES.createInquiry, true);
-  const canUpdateInquiry = hasCapability(user, accessMetadata, CAPABILITIES.updateInquiry, true);
-  const canConvertInquiry = hasCapability(user, accessMetadata, CAPABILITIES.convertInquiry, true);
+  const routeAllowsInquiries = canAccessRoute("/portal/inquiries", user, accessMetadata);
+  const staffCapabilityFallback = user?.role !== "STAFF" || user.designation !== "GYM_MANAGER";
+  const canViewInquiries = routeAllowsInquiries || hasCapability(user, accessMetadata, CAPABILITIES.viewInquiries, true);
+  const canCreateInquiry = hasCapability(user, accessMetadata, CAPABILITIES.createInquiry, staffCapabilityFallback);
+  const canUpdateInquiry = hasCapability(user, accessMetadata, CAPABILITIES.updateInquiry, staffCapabilityFallback);
+  const canConvertInquiry = hasCapability(user, accessMetadata, CAPABILITIES.convertInquiry, staffCapabilityFallback);
 
   const initialStaffId = useMemo(() => resolveStaffId(user), [user]);
   const effectiveBranchCode = selectedBranchCode || "";
 
   const [inquiries, setInquiries] = useState<InquiryRecord[]>([]);
   const [analysisInquiries, setAnalysisInquiries] = useState<InquiryRecord[]>([]);
+  const [analysisMemberCount, setAnalysisMemberCount] = useState(0);
   const [filters, setFilters] = useState<InquiryFilterState>({
     query: "",
     status: "",
@@ -517,21 +615,32 @@ export default function InquiriesPage() {
         };
 
         const pageResult = await subscriptionService.searchInquiriesPaged(token, query, pageToLoad, PAGE_SIZE);
-        setInquiries(pageResult.content);
+        const sortedContent = [...pageResult.content].sort((left, right) => {
+          const leftTime = new Date(left.inquiryAt || left.createdAt || "").getTime();
+          const rightTime = new Date(right.inquiryAt || right.createdAt || "").getTime();
+          return (Number.isNaN(rightTime) ? 0 : rightTime) - (Number.isNaN(leftTime) ? 0 : leftTime);
+        });
+        setInquiries(sortedContent);
         setCurrentPage(pageResult.number + 1);
         setTotalPages(Math.max(pageResult.totalPages, 1));
         setTotalRows(pageResult.totalElements);
 
         const previewEntries = await Promise.all(
-          pageResult.content.map(async (inquiry) => {
+          sortedContent.map(async (inquiry) => {
             try {
               const history = await subscriptionFollowUpService.listInquiryFollowUps(token, inquiry.inquiryId);
+              const todayStart = new Date();
+              todayStart.setHours(0, 0, 0, 0);
               const sorted = [...history]
                 .filter((item) => item.status === "SCHEDULED")
-                .sort((a, b) => new Date(b.dueAt).getTime() - new Date(a.dueAt).getTime());
-              const next = sorted[0] || null;
+                .sort((a, b) => new Date(a.dueAt).getTime() - new Date(b.dueAt).getTime());
+              const nextUpcoming = sorted.find((item) => {
+                const dueTime = new Date(item.dueAt).getTime();
+                return !Number.isNaN(dueTime) && dueTime >= todayStart.getTime();
+              });
+              const next = nextUpcoming || null;
               if (!next) {
-                return [inquiry.inquiryId, null] as const;
+                return [inquiry.inquiryId, legacyFollowUpPreview(inquiry)] as const;
               }
 
               return [
@@ -548,7 +657,7 @@ export default function InquiriesPage() {
                 } satisfies FollowUpPreview,
               ] as const;
             } catch {
-              return [inquiry.inquiryId, null] as const;
+              return [inquiry.inquiryId, legacyFollowUpPreview(inquiry)] as const;
             }
           }),
         );
@@ -605,33 +714,45 @@ export default function InquiriesPage() {
 
   const loadInquiryAnalysis = useCallback(async () => {
     if (!token || !canViewInquiries) {
+      setAnalysisMemberCount(0);
       return;
     }
 
     try {
       const aggregated: InquiryRecord[] = [];
-      let page = 0;
       const size = 200;
+      const branchFilter = effectiveBranchId ? String(effectiveBranchId) : undefined;
 
-      while (true) {
-        const pageResult = await subscriptionService.searchInquiriesPaged(
-          token,
-          { branchId: effectiveBranchId, branchCode: effectiveBranchCode || undefined },
-          page,
-          size,
-        );
-        aggregated.push(...pageResult.content);
+      const inquiryPromise = (async () => {
+        let page = 0;
+        while (true) {
+          const pageResult = await subscriptionService.searchInquiriesPaged(
+            token,
+            { branchId: effectiveBranchId, branchCode: effectiveBranchCode || undefined },
+            page,
+            size,
+          );
+          aggregated.push(...pageResult.content);
 
-        if (pageResult.last || page >= pageResult.totalPages - 1) {
-          break;
+          if (pageResult.last || page >= pageResult.totalPages - 1) {
+            break;
+          }
+
+          page += 1;
         }
+      })();
 
-        page += 1;
-      }
+      const membersPromise = usersService.searchUsers(token, {
+        role: "MEMBER",
+        ...(branchFilter ? { defaultBranchId: branchFilter } : {}),
+      });
 
+      const [, members] = await Promise.all([inquiryPromise, membersPromise]);
       setAnalysisInquiries(aggregated);
+      setAnalysisMemberCount(members.length);
     } catch {
       setAnalysisInquiries([]);
+      setAnalysisMemberCount(0);
     }
   }, [token, canViewInquiries, effectiveBranchCode, effectiveBranchId]);
 
@@ -775,13 +896,17 @@ export default function InquiriesPage() {
     setLoadingHistoryOnly(true);
     try {
       const history = await subscriptionFollowUpService.listInquiryFollowUps(token, inquiry.inquiryId);
-      setHistoryOnlyFollowUps(
-        [...history].sort((a, b) => new Date(b.dueAt).getTime() - new Date(a.dueAt).getTime()),
+      const sorted = [...history].sort(
+        (a, b) =>
+          new Date(b.createdAt || b.dueAt || "").getTime() -
+          new Date(a.createdAt || a.dueAt || "").getTime(),
       );
+      setHistoryOnlyFollowUps(sorted.length > 0 ? sorted : (buildLegacyFollowUpRecord(inquiry) ? [buildLegacyFollowUpRecord(inquiry)!] : []));
     } catch (historyError) {
       const message = historyError instanceof Error ? historyError.message : "Unable to load follow-up history";
       setToast({ kind: "error", message });
-      setHistoryOnlyFollowUps([]);
+      const legacy = buildLegacyFollowUpRecord(inquiry);
+      setHistoryOnlyFollowUps(legacy ? [legacy] : []);
     } finally {
       setLoadingHistoryOnly(false);
     }
@@ -849,6 +974,40 @@ export default function InquiriesPage() {
       setToast({ kind: "error", message });
     } finally {
       setIsSavingEdit(false);
+    }
+  };
+
+  const assignInquiryToStaff = async (inquiry: InquiryRecord, staffIdRaw: string) => {
+    if (!token || !canUpdateInquiry) {
+      return;
+    }
+    const staffId = parseNumeric(staffIdRaw);
+    if (staffId === undefined) {
+      setToast({ kind: "error", message: "Assigned staff is required." });
+      return;
+    }
+
+    setRowActionLoadingId(inquiry.inquiryId);
+    try {
+      const updated = await subscriptionService.updateInquiry(token, inquiry.inquiryId, {
+        clientRepStaffId: staffId,
+        assignedToStaffId: staffId,
+      });
+
+      setInquiries((prev) => prev.map((item) => (item.inquiryId === inquiry.inquiryId ? updated : item)));
+      setFollowUpByInquiry((prev) => ({
+        ...prev,
+        [inquiry.inquiryId]: {
+          ...(prev[inquiry.inquiryId] || {}),
+          assignedToStaffId: staffId,
+        },
+      }));
+      setToast({ kind: "success", message: "Enquiry assigned." });
+    } catch (assignError) {
+      const message = assignError instanceof Error ? assignError.message : "Unable to assign enquiry";
+      setToast({ kind: "error", message });
+    } finally {
+      setRowActionLoadingId(null);
     }
   };
 
@@ -1197,12 +1356,14 @@ export default function InquiriesPage() {
           subscriptionService.getInquiryStatusHistory(token, viewingInquiry.inquiryId),
         ]);
         if (!cancelled) {
-          setViewFollowUpHistory(followUps);
+          const legacy = buildLegacyFollowUpRecord(viewingInquiry);
+          setViewFollowUpHistory(followUps.length > 0 ? followUps : legacy ? [legacy] : []);
           setViewStatusHistory(history);
         }
       } catch {
         if (!cancelled) {
-          setViewFollowUpHistory([]);
+          const legacy = buildLegacyFollowUpRecord(viewingInquiry);
+          setViewFollowUpHistory(legacy ? [legacy] : []);
           setViewStatusHistory([]);
         }
       } finally {
@@ -1300,7 +1461,11 @@ export default function InquiriesPage() {
         const history = await subscriptionFollowUpService.listInquiryFollowUps(token, selectedInquiry.inquiryId);
         if (!cancelled) {
           setEditFollowUpHistory(
-            [...history].sort((a, b) => new Date(b.dueAt).getTime() - new Date(a.dueAt).getTime()),
+            [...history].sort(
+              (a, b) =>
+                new Date(b.createdAt || b.dueAt || "").getTime() -
+                new Date(a.createdAt || a.dueAt || "").getTime(),
+            ),
           );
         }
       } catch {
@@ -1326,7 +1491,7 @@ export default function InquiriesPage() {
       INQUIRY_STATUS_OPTIONS.map((option) => [option.value, 0]),
     );
     const sourceCounts = new Map<string, number>();
-    let convertedCount = 0;
+    let convertedInquiryCount = 0;
     let closedCount = 0;
 
     for (const inquiry of analysisInquiries) {
@@ -1335,7 +1500,7 @@ export default function InquiriesPage() {
         statusCounts.set(statusKey, (statusCounts.get(statusKey) || 0) + 1);
       }
       if (isConvertedInquiry(inquiry)) {
-        convertedCount += 1;
+        convertedInquiryCount += 1;
       } else if (statusKey === "LOST" || statusKey === "NOT_INTERESTED") {
         closedCount += 1;
       }
@@ -1349,13 +1514,16 @@ export default function InquiriesPage() {
       .sort((a, b) => b.count - a.count)
       .slice(0, 6);
 
+    const convertedCount = Math.max(analysisMemberCount, convertedInquiryCount);
+    statusCounts.set("CONVERTED", convertedCount);
+
     const statusSeries = INQUIRY_STATUS_OPTIONS.map((option) => ({
       key: option.value,
       label: option.label,
       count: statusCounts.get(option.value) || 0,
     }));
 
-    const total = analysisInquiries.length;
+    const total = analysisInquiries.length + Math.max(analysisMemberCount - convertedInquiryCount, 0);
     const conversionRate = total > 0 ? Math.round((convertedCount / total) * 100) : 0;
 
     return {
@@ -1366,7 +1534,7 @@ export default function InquiriesPage() {
       openCount: Math.max(total - convertedCount - closedCount, 0),
       conversionRate,
     };
-  }, [analysisInquiries]);
+  }, [analysisInquiries, analysisMemberCount]);
 
   const statusOverview = useMemo(() => {
     const palette = ["#2563eb", "#7c3aed", "#0ea5e9", "#f59e0b", "#16a34a", "#475569", "#dc2626"];
@@ -1711,24 +1879,25 @@ export default function InquiriesPage() {
             <thead>
               <tr className="bg-white/[0.03] text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
                 <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Follow-up Comment</th>
+                <th className="px-4 py-3">Enquiry Date</th>
+                <th className="px-4 py-3">Notes</th>
                 <th className="px-4 py-3">Source</th>
                 <th className="px-4 py-3">Status</th>
                 <th className="px-4 py-3">Assigned Staff</th>
-                <th className="px-4 py-3">Follow-up Date</th>
+                <th className="px-4 py-3">Next Follow-up</th>
                 <th className="px-4 py-3">Actions</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/[0.06]">
               {loadingInquiries ? (
                 <tr>
-                  <td className="px-4 py-4 text-slate-400" colSpan={7}>
+                  <td className="px-4 py-4 text-slate-400" colSpan={8}>
                     Loading enquiries...
                   </td>
                 </tr>
               ) : paginatedRows.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-4 text-slate-400" colSpan={7}>
+                  <td className="px-4 py-4 text-slate-400" colSpan={8}>
                     No enquiries found
                   </td>
                 </tr>
@@ -1748,15 +1917,22 @@ export default function InquiriesPage() {
                   const signedInIdDigits = String(user?.id ?? "").replace(/[^0-9]/g, "");
                   const signedInMobile = signedInMobileDigits ? Number(signedInMobileDigits) : NaN;
                   const signedInId = signedInIdDigits ? Number(signedInIdDigits) : NaN;
+                  const legacyHandledBy = getLegacyInquiryHandledBy(inquiry);
+                  const legacyAssignedTo = getLegacyFollowUpAssignedTo(followUp?.outcomeNotes);
+                  const legacyClientRep = getLegacyFollowUpClientRep(followUp?.outcomeNotes);
                   const assignedName =
                     assignedId && !Number.isNaN(assignedId)
                       ? (staffNameById.get(assignedId) ||
                         (signedInMobile === assignedId || signedInId === assignedId ? user?.name || "-" : null) ||
+                        legacyAssignedTo ||
+                        legacyClientRep ||
+                        legacyHandledBy ||
                         `Staff #${assignedId}`)
-                      : "-";
+                      : legacyAssignedTo || legacyClientRep || legacyHandledBy || "-";
                   const followUpComment = (
-                    inquiry.followUpComment ||
                     followUp?.notes ||
+                    inquiry.followUpComment ||
+                    inquiry.notes ||
                     ""
                   ).trim();
                   const initials =
@@ -1790,11 +1966,17 @@ export default function InquiriesPage() {
                           </div>
                         </div>
                       </td>
+                      <td className="px-4 py-3 text-sm text-slate-300">
+                        {formatDateDisplay(inquiry.inquiryAt || inquiry.createdAt)}
+                      </td>
                       <td className="px-4 py-3 text-xs text-slate-300">
+                        <p className="max-w-[18rem] truncate">
                         {followUpComment || <span className="text-slate-400">-</span>}
+                        </p>
                       </td>
                       <td className="px-4 py-3 text-slate-200">
                         <p>{formatSourceLabel(inquiry.promotionSource)}</p>
+                        <p className="text-xs text-slate-500">Handled by: {legacyHandledBy || assignedName}</p>
                       </td>
                       <td className="px-4 py-3">
                         <div className="flex flex-wrap items-center gap-2">
@@ -1817,15 +1999,39 @@ export default function InquiriesPage() {
                           ) : null}
                         </div>
                       </td>
-                      <td className="px-4 py-3 text-sm text-slate-300">{assignedName}</td>
+                      <td className="px-4 py-3 text-sm text-slate-300">
+                        {assignedName !== "-" ? (
+                          assignedName
+                        ) : canUpdateInquiry ? (
+                          <select
+                            value=""
+                            onClick={(event) => event.stopPropagation()}
+                            onChange={(event) => {
+                              event.stopPropagation();
+                              void assignInquiryToStaff(inquiry, event.target.value);
+                            }}
+                            className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-xs text-slate-200 outline-none focus:border-white/20"
+                          >
+                            <option value="">Assign enquiry</option>
+                            {staffOptions.map((staff) => (
+                              <option key={`assign-${staff.id}`} value={String(staff.id)}>
+                                {staff.label}
+                              </option>
+                            ))}
+                          </select>
+                        ) : (
+                          "-"
+                        )}
+                      </td>
                       <td className="px-4 py-3 text-sm text-slate-300">
                         {!isConverted && followUp?.dueAt
-                          ? new Date(followUp.dueAt).toLocaleDateString("en-IN", {
-                              year: "numeric",
-                              month: "2-digit",
-                              day: "2-digit",
-                            })
+                          ? formatDateDisplay(followUp.dueAt)
                           : "-"}
+                        {!isConverted && followUp?.createdAt ? (
+                          <p className="mt-1 text-xs text-slate-500">
+                            Commented: {formatDateTimeDisplay(followUp.createdAt)}
+                          </p>
+                        ) : null}
                         {!isConverted && followUp?.status ? (
                           <p className="mt-1 text-xs font-medium text-slate-500">{followUp.status}</p>
                         ) : null}
@@ -1982,20 +2188,29 @@ export default function InquiriesPage() {
               <p className="rounded-lg bg-slate-50 px-3 py-2 text-sm text-slate-500">No follow-up history recorded.</p>
             ) : (
               <div className="max-h-[28rem] space-y-2 overflow-y-auto pr-1">
-                {historyOnlyFollowUps.map((entry) => (
-                  <div key={entry.followUpId} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-                    <div className="flex items-center justify-between gap-3">
-                      <span className="font-semibold text-slate-900">{formatResponseTypeLabel(entry.responseType)}</span>
-                      <span className="text-xs text-slate-500">
-                        {entry.dueAt ? new Date(entry.dueAt).toLocaleString("en-IN") : "-"}
-                      </span>
+                {historyOnlyFollowUps.map((entry) => {
+                  const assignedName =
+                    (entry.assignedToStaffId ? staffNameById.get(Number(entry.assignedToStaffId)) : null) ||
+                    getLegacyFollowUpAssignedTo(entry.outcomeNotes) ||
+                    getLegacyFollowUpClientRep(entry.outcomeNotes) ||
+                    getLegacyInquiryHandledBy(historyInquiry);
+                  return (
+                    <div key={entry.followUpId} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                      <div className="flex items-center justify-between gap-3">
+                        <span className="font-semibold text-slate-900">{formatResponseTypeLabel(entry.responseType)}</span>
+                        <span className="text-xs text-slate-500">Next: {formatDateTimeDisplay(entry.dueAt)}</span>
+                      </div>
+                      <p className="mt-1 text-xs font-medium text-slate-500">
+                        {(entry.channel || "CALL").replace(/_/g, " ")} • {entry.status || "PENDING"}
+                      </p>
+                      <p className="mt-1">{entry.notes || entry.outcomeNotes || "No notes"}</p>
+                      <p className="mt-2 text-xs text-slate-500">
+                        Commented: {formatDateTimeDisplay(entry.createdAt)}
+                        {assignedName ? ` • Assigned: ${assignedName}` : ""}
+                      </p>
                     </div>
-                    <p className="mt-1 text-xs font-medium text-slate-500">
-                      {(entry.channel || "CALL").replace(/_/g, " ")} • {entry.status || "PENDING"}
-                    </p>
-                    <p className="mt-1">{entry.notes || entry.outcomeNotes || "No notes"}</p>
-                  </div>
-                ))}
+                  );
+                })}
               </div>
             )}
           </div>
@@ -2027,9 +2242,10 @@ export default function InquiriesPage() {
               <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
                 <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sales Context</p>
                 <div className="mt-3 space-y-1 text-sm text-slate-700">
+                  <p><span className="font-medium text-slate-900">Inquiry Date:</span> {formatDateTimeDisplay(viewingInquiry.inquiryAt || viewingInquiry.createdAt)}</p>
                   <p><span className="font-medium text-slate-900">Status:</span> {formatStatusLabel(deriveDisplayInquiryStatus(viewingInquiry.status, viewFollowUpHistory[0]?.responseType || viewingInquiry.responseType))}</p>
                   <p><span className="font-medium text-slate-900">Convertibility:</span> {viewingInquiry.convertibility || "-"}</p>
-                  <p><span className="font-medium text-slate-900">Client Rep:</span> {viewingInquiry.clientRepStaffId || "-"}</p>
+                  <p><span className="font-medium text-slate-900">Client Rep:</span> {viewingInquiry.clientRepStaffId ? (staffNameById.get(Number(viewingInquiry.clientRepStaffId)) || viewingInquiry.clientRepStaffId) : (getLegacyInquiryHandledBy(viewingInquiry) || "-")}</p>
                   <p><span className="font-medium text-slate-900">Interested In:</span> {viewingInquiry.interestedIn || "-"}</p>
                   <p><span className="font-medium text-slate-900">Promotion Source:</span> {formatSourceLabel(viewingInquiry.promotionSource)}</p>
                 </div>
@@ -2056,18 +2272,29 @@ export default function InquiriesPage() {
                   ) : viewFollowUpHistory.length === 0 ? (
                     <p className="text-sm text-slate-500">No follow-up history recorded.</p>
                   ) : (
-                    viewFollowUpHistory.map((entry) => (
-                      <div key={entry.followUpId} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-                        <div className="flex items-center justify-between gap-3">
-                          <span className="font-semibold text-slate-900">{formatResponseTypeLabel(entry.responseType)}</span>
-                          <span className="text-xs text-slate-500">{entry.dueAt ? new Date(entry.dueAt).toLocaleString("en-IN") : "-"}</span>
+                    viewFollowUpHistory.map((entry) => {
+                      const assignedName =
+                        (entry.assignedToStaffId ? staffNameById.get(Number(entry.assignedToStaffId)) : null) ||
+                        getLegacyFollowUpAssignedTo(entry.outcomeNotes) ||
+                        getLegacyFollowUpClientRep(entry.outcomeNotes) ||
+                        getLegacyInquiryHandledBy(viewingInquiry);
+                      return (
+                        <div key={entry.followUpId} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                          <div className="flex items-center justify-between gap-3">
+                            <span className="font-semibold text-slate-900">{formatResponseTypeLabel(entry.responseType)}</span>
+                            <span className="text-xs text-slate-500">Next: {formatDateTimeDisplay(entry.dueAt)}</span>
+                          </div>
+                          <p className="mt-1 text-xs font-medium text-slate-500">
+                            {(entry.channel || "CALL").replace(/_/g, " ")} • {entry.status || "PENDING"}
+                          </p>
+                          <p className="mt-1">{entry.notes || entry.outcomeNotes || "No notes"}</p>
+                          <p className="mt-2 text-xs text-slate-500">
+                            Commented: {formatDateTimeDisplay(entry.createdAt)}
+                            {assignedName ? ` • Assigned: ${assignedName}` : ""}
+                          </p>
                         </div>
-                        <p className="mt-1 text-xs font-medium text-slate-500">
-                          {(entry.channel || "CALL").replace(/_/g, " ")} • {entry.status || "PENDING"}
-                        </p>
-                        <p className="mt-1">{entry.notes || entry.outcomeNotes || "No notes"}</p>
-                      </div>
-                    ))
+                      );
+                    })
                   )}
                 </div>
               </div>
