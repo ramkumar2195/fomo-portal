@@ -6758,6 +6758,20 @@ export default function MemberProfilePage() {
                           <td className="px-3 py-2.5 text-slate-300">{row.receiptNumber || (row.receiptId ? `#${row.receiptId}` : row.paymentConfirmed ? "Paid" : "-")}</td>
                           <td className="px-3 py-2.5">
                             <div className="flex flex-wrap gap-2">
+                              {String(row.status).toUpperCase() !== "ACTIVE" ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setSelectedMembershipId(row.id);
+                                    openActionModal("renew");
+                                  }}
+                                  className="inline-flex items-center gap-1 rounded-lg border border-[#c42924]/40 bg-[#c42924]/15 px-2.5 py-1 text-xs font-semibold text-[#ffd6d4] hover:bg-[#c42924]/25"
+                                  title={`Renew ${row.planName}`}
+                                >
+                                  <RotateCcw className="h-3.5 w-3.5" />
+                                  Renew
+                                </button>
+                              ) : null}
                               {row.invoiceId ? (
                                 <>
                                   <button
