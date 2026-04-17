@@ -83,6 +83,14 @@ export interface CompleteFollowUpRequest {
   outcomeNotes?: string;
 }
 
+/**
+ * Segmentation discriminator for the Follow-ups two-tab UI.
+ * - LEADS: only open-lead follow-ups (inquiry not converted, no linked member)
+ * - MEMBER_RENEWALS: only follow-ups with a linked member (renewals, balance-due, etc.)
+ * - omitted: legacy union (kept for back-compat; used by dashboard tiles that want both)
+ */
+export type FollowUpSegment = "LEADS" | "MEMBER_RENEWALS";
+
 export interface FollowUpQueueQuery {
   inquiryId?: number;
   memberId?: number;
@@ -96,5 +104,6 @@ export interface FollowUpQueueQuery {
   branchId?: number;
   page?: number;
   size?: number;
+  segment?: FollowUpSegment;
   [key: string]: string | number | boolean | undefined;
 }

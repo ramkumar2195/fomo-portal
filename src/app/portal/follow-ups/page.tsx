@@ -283,6 +283,11 @@ export default function FollowUpsPage() {
   const [responseTypeFilter, setResponseTypeFilter] = useState("ALL");
   const [genderFilter, setGenderFilter] = useState("ALL");
   const [clientTypeFilter, setClientTypeFilter] = useState<ClientTypeFilter>("ALL");
+  // Two-tab segmentation: LEADS (open enquiries without a member) vs
+  // MEMBER_RENEWALS (follow-ups with a linked member — renewals, balance-due,
+  // freeze reminders, etc.). Defaults to LEADS because the sales pipeline is
+  // the primary workload for most staff designations.
+  const [activeSegment, setActiveSegment] = useState<"LEADS" | "MEMBER_RENEWALS">("LEADS");
   const [clientRepFilter, setClientRepFilter] = useState("ALL");
   const [fromDate, setFromDate] = useState("");
   const [toDate, setToDate] = useState("");
@@ -319,6 +324,10 @@ export default function FollowUpsPage() {
           : {
               branchId: effectiveBranchId,
               branchCode: selectedBranchCode || undefined,
+              // Send the tab segment through so backend returns only one bucket.
+              // Omitted when focusing a specific inquiry so Add Follow-up's
+              // history view still sees every row tied to that inquiry.
+              segment: activeSegment,
             };
 
       const [branchUsers, admins] = await Promise.all([
@@ -431,7 +440,7 @@ export default function FollowUpsPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, user, effectiveBranchId, selectedBranchCode, focusInquiryId]);
+  }, [token, user, effectiveBranchId, selectedBranchCode, focusInquiryId, activeSegment]);
 
   useEffect(() => {
     void loadQueue();
@@ -836,6 +845,38 @@ export default function FollowUpsPage() {
             <p className="mt-2 text-3xl font-bold text-white">{item.value}</p>
           </article>
         ))}
+      </div>
+
+      <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-white/8 bg-[#131925] p-2">
+        {([
+          { key: "LEADS", label: "Leads", hint: "Open enquiries" },
+          { key: "MEMBER_RENEWALS", label: "Member Renewals", hint: "Renewals · Balance due · Freeze" },
+        ] as const).map((tab) => {
+          const isActive = activeSegment === tab.key;
+          return (
+            <button
+              key={tab.key}
+              type="button"
+              onClick={() => {
+                if (!isActive) {
+                  setActiveSegment(tab.key);
+                  setCurrentPage(1);
+                }
+              }}
+              className={
+                "flex flex-col items-start rounded-xl px-4 py-2 text-left transition " +
+                (isActive
+                  ? "bg-[#c42924] text-white shadow-[0_12px_30px_rgba(196,41,36,0.35)]"
+                  : "text-slate-300 hover:bg-white/[0.06]")
+              }
+            >
+              <span className="text-sm font-semibold">{tab.label}</span>
+              <span className={"text-[11px] uppercase tracking-[0.14em] " + (isActive ? "text-white/80" : "text-slate-500")}>
+                {tab.hint}
+              </span>
+            </button>
+          );
+        })}
       </div>
 
       <SectionCard
