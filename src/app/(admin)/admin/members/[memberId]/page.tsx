@@ -6438,7 +6438,9 @@ export default function MemberProfilePage() {
                 const cardTitle = trimMembershipCardTitle(
                   membership.variantName || membership.productName || humanizeLabel(membership.productCode || membership.categoryCode),
                 );
-                const isPrimaryCard = primaryMembershipRecord?.subscriptionId === membership.subscriptionId;
+                const isMemberExpired = /\b(EXPIRED|LAPSED|INACTIVE)\b/i.test(membershipStatus);
+                const isPrimaryCard =
+                  !isMemberExpired && primaryMembershipRecord?.subscriptionId === membership.subscriptionId;
                 const isTransformationCard = membership.family === "TRANSFORMATION";
                 const isPtCard = membership.family === "PT";
                 const isSelectedCard = selectedMembershipRecord?.subscriptionId === membership.subscriptionId;
