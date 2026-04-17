@@ -1778,6 +1778,20 @@ export default function MemberProfilePage() {
   const [documentBusyKey, setDocumentBusyKey] = useState<string | null>(null);
   const [memberRecord, setMemberRecord] = useState<UserDirectoryItem | null>(null);
   const [selectedMembershipId, setSelectedMembershipId] = useState<string>("");
+  // Context carried when the user clicks Renew from a Subscription History row
+  // (for a non-primary, typically expired, sub that wouldn't otherwise be in
+  // the currentPortfolioMembershipItems list). Used to override the form
+  // pre-fill and the target subscriptionId in handleRenewPayment. Cleared
+  // whenever the action modal closes.
+  const [renewFromHistory, setRenewFromHistory] = useState<{
+    subscriptionId: string;
+    productVariantId: string;
+    productCode: string;
+    categoryCode: string;
+    endDate: string;
+    basePrice: number;
+    planName: string;
+  } | null>(null);
   const [openMembershipMenuId, setOpenMembershipMenuId] = useState<string | null>(null);
   const [ptFocusSection, setPtFocusSection] = useState<"session-register" | null>(null);
   const [ptHistoryModal, setPtHistoryModal] = useState<{
@@ -2908,6 +2922,16 @@ export default function MemberProfilePage() {
 
     void reloadBillingTab();
   }, [actionModal, loadingTabs.billing, overviewBilling.length, reloadBillingTab]);
+
+  // Clear the renew-from-history override once the modal flow fully closes
+  // (Cancel, successful payment, or programmatic close). Keeps it set during
+  // the renew -> renew-billing -> pay hops so the payment call uses the
+  // correct subscriptionId.
+  useEffect(() => {
+    if (actionModal === null && renewFromHistory !== null) {
+      setRenewFromHistory(null);
+    }
+  }, [actionModal, renewFromHistory]);
 
   useEffect(() => {
     if (actionModal !== "unfreeze-billing" || !selectedOutstandingInvoice || resumeBillingForm.invoiceId) {
@@ -4390,7 +4414,12 @@ export default function MemberProfilePage() {
   };
 
   const handleRenewPayment = async () => {
-    if (!token || !memberId || !selectedSubscriptionId || !lifecycleForm.productVariantId) {
+    // When the user initiated the renew from a Subscription History row, the
+    // selectedSubscriptionId falls back to the primary (because the expired
+    // sub isn't in currentPortfolioMembershipItems), so we must use the
+    // explicit subscriptionId captured at click time.
+    const effectiveSubscriptionId = renewFromHistory?.subscriptionId || selectedSubscriptionId;
+    if (!token || !memberId || !effectiveSubscriptionId || !lifecycleForm.productVariantId) {
       setActionError("Renewal details are incomplete.");
       return;
     }
@@ -4415,7 +4444,7 @@ export default function MemberProfilePage() {
     setActionError(null);
     try {
       const response = (await subscriptionService.renewSubscription(token, memberId, {
-        subscriptionId: Number(selectedSubscriptionId),
+        subscriptionId: Number(effectiveSubscriptionId),
         productVariantId: Number(lifecycleForm.productVariantId),
         startDate: lifecycleForm.startDate || undefined,
         inquiryId: sourceInquiryId || undefined,
@@ -6356,6 +6385,7 @@ export default function MemberProfilePage() {
               || catalogVariants.find((variant) => variant.variantCode === variantCode)
               || catalogVariants.find((variant) => variant.productCode === productCode && variant.variantName === pickString(entry, ["planName", "variantName"]));
             const sortKey = endDate || startDate || pickString(entry, ["createdAt"]) || "";
+            const entryCategoryCode = pickString(entry, ["categoryCode", "productCategoryCode"]);
             return {
               id: subscriptionId || `${planName}-${startDate}-${endDate}-${invoiceId}`,
               planName,
@@ -6374,6 +6404,11 @@ export default function MemberProfilePage() {
               includedPtSessions: pickNumber(entry, ["includedPtSessions"]),
               isPt: /\bPT\b|PERSONAL TRAINING|REFORM|TRANSFORM/i.test(planName),
               sortKey,
+              // Product context used by the Renew-from-history action
+              productVariantId: matchingVariant?.variantId || variantId,
+              productCode: matchingVariant?.productCode || productCode,
+              categoryCode: matchingVariant?.categoryCode || entryCategoryCode,
+              basePrice: matchingVariant?.basePrice ?? pickNumber(entry, ["basePrice", "sellingPrice", "amount"]) ?? 0,
             };
           })
           .sort((left, right) => right.sortKey.localeCompare(left.sortKey));
@@ -6762,8 +6797,52 @@ export default function MemberProfilePage() {
                                 <button
                                   type="button"
                                   onClick={() => {
+                                    const rowVariantId = row.productVariantId || "";
+                                    const rowProductCode = row.productCode || "";
+                                    const rowCategoryCode = row.categoryCode || "";
+                                    const rowBasePrice = row.basePrice || 0;
+                                    // Prefer the live catalog variant (matched by id, else by code) for
+                                    // the freshest price and category, falling back to whatever the row
+                                    // itself carried from the history payload.
+                                    const matchedVariant =
+                                      catalogVariants.find((v) => String(v.variantId) === String(rowVariantId))
+                                      || catalogVariants.find((v) => v.productCode === rowProductCode && v.variantName === row.planName);
+                                    const effectiveVariantId = matchedVariant?.variantId || rowVariantId;
+                                    const effectiveCategoryCode = matchedVariant?.categoryCode || rowCategoryCode;
+                                    const effectiveProductCode = matchedVariant?.productCode || rowProductCode;
+                                    const effectiveBasePrice = matchedVariant?.basePrice ?? rowBasePrice;
+                                    const startDate = row.endDate
+                                      ? new Date(new Date(row.endDate).getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+                                      : new Date().toISOString().slice(0, 10);
+                                    resetActionFeedback();
                                     setSelectedMembershipId(row.id);
-                                    openActionModal("renew");
+                                    setRenewFromHistory({
+                                      subscriptionId: row.id,
+                                      productVariantId: String(effectiveVariantId || ""),
+                                      productCode: effectiveProductCode || "",
+                                      categoryCode: effectiveCategoryCode || "",
+                                      endDate: row.endDate || "",
+                                      basePrice: Number(effectiveBasePrice) || 0,
+                                      planName: row.planName || "",
+                                    });
+                                    setLifecycleForm({
+                                      categoryCode: effectiveCategoryCode || "",
+                                      productCode: effectiveProductCode || "",
+                                      productVariantId: String(effectiveVariantId || ""),
+                                      startDate,
+                                      sellingPrice: effectiveBasePrice
+                                        ? formatDecimalInput(Number(effectiveBasePrice))
+                                        : "",
+                                      discountPercent: "",
+                                      notes: "",
+                                    });
+                                    setLifecycleBillingForm({
+                                      paymentMode: "UPI",
+                                      receivedAmount: "",
+                                      balanceDueDate: "",
+                                    });
+                                    setRenewCardSubtype("DEBIT_CARD");
+                                    setActionModal("renew");
                                   }}
                                   className="inline-flex items-center gap-1 rounded-lg border border-[#c42924]/40 bg-[#c42924]/15 px-2.5 py-1 text-xs font-semibold text-[#ffd6d4] hover:bg-[#c42924]/25"
                                   title={`Renew ${row.planName}`}
