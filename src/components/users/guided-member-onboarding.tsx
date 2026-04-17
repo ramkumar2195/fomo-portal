@@ -729,7 +729,7 @@ function resolvePaymentModeLabel(
 export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardingProps) {
   const router = useRouter();
   const { token, user, accessMetadata } = useAuth();
-  const { effectiveBranchId, selectedBranchId, selectedBranchName } = useBranch();
+  const { effectiveBranchId, selectedBranchId, selectedBranchName, selectedBranchCode } = useBranch();
 
   const canCreateMember = hasCapability(user, accessMetadata, CREATE_MEMBER_CAPABILITIES, true);
   const canConvertInquiry = hasCapability(user, accessMetadata, INQUIRY_CONVERT_CAPABILITIES, true);
@@ -2395,10 +2395,16 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         );
       }
 
+      // Prefer the branch selector's choice; fall back to the enquiry's branch
+      // (for enquiry->member conversions). The backend falls back further to
+      // the member's prior subscription if both are missing. Sending this here
+      // prevents INV/GEN/... invoice numbers when no enquiry is attached.
+      const resolvedBranchCode = selectedBranchCode || inquiry?.branchCode || undefined;
       const subscriptionResponse = await subscriptionService.createMemberSubscription(token, String(memberId), {
         productVariantId: Number(selectedPrimaryVariant.variantId),
         startDate: subscriptionForm.startDate,
         inquiryId: sourceInquiryId,
+        branchCode: resolvedBranchCode,
         addOnVariantIds: selectedAddOnVariant ? [Number(selectedAddOnVariant.variantId)] : undefined,
         discountAmount: pricingPreview.discountAmount > 0 ? Number(pricingPreview.discountAmount.toFixed(2)) : undefined,
         discountedByStaffId: billedByStaffId ?? undefined,
