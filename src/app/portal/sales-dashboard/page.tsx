@@ -24,11 +24,12 @@ import { useAuth } from "@/contexts/auth-context";
 import { useBranch } from "@/contexts/branch-context";
 import { engagementService } from "@/lib/api/services/engagement-service";
 import { subscriptionFollowUpService } from "@/lib/api/services/subscription-followup-service";
+import { subscriptionService } from "@/lib/api/services/subscription-service";
 import { trainingService, TrainerScheduleEntry } from "@/lib/api/services/training-service";
 import { usersService } from "@/lib/api/services/users-service";
 import { formatCurrency, formatPercent } from "@/lib/formatters";
 import { resolveStaffId } from "@/lib/staff-id";
-import { UserDesignation } from "@/types/auth";
+import { AuthUser, UserDesignation } from "@/types/auth";
 import { UserDirectoryItem } from "@/types/models";
 import { AdminOverviewMetrics, DashboardMetrics, LeaderboardEntry } from "@/types/models";
 
@@ -1067,9 +1068,473 @@ function LeaderboardSection({ leaderboard }: { leaderboard: LeaderboardEntry[] }
   );
 }
 
+// -----------------------------------------------------------------------------
+// QuickActionTiles (A2) — a role-filtered grid of small actionable lists.
+// Each tile renders up to 5 rows of live data and a "View all →" deep link so
+// the dashboard stops being a KPI board and becomes today's work list.
+//
+// Data sources (existing, no backend change):
+//   expiringMembers   : engagementService.getAdminDashboardDrilldown (EXPIRING_MEMBERSHIPS)
+//   expiredMembers    : getAdminDashboardDrilldown (INACTIVE_MEMBERS)
+//   irregularMembers  : getAdminDashboardDrilldown (AT_RISK_MEMBERS)
+//   followUpsDueToday : subscriptionFollowUpService.searchFollowUpQueuePaged
+//   followUpsOverdue  : same, overdueOnly:true
+//   myFollowUps       : same, assignedToStaffId:me
+//   balanceDue        : subscriptionService.getBalanceDue
+// -----------------------------------------------------------------------------
+
+type TileKey =
+  | "EXPIRING"
+  | "DUE_TODAY"
+  | "OVERDUE"
+  | "MINE"
+  | "IRREGULAR"
+  | "EXPIRED"
+  | "PAYMENT_DUE";
+
+const TILE_VISIBILITY_BY_DESIGNATION: Record<string, TileKey[]> = {
+  SUPER_ADMIN: ["EXPIRING", "DUE_TODAY", "OVERDUE", "MINE", "IRREGULAR", "EXPIRED", "PAYMENT_DUE"],
+  GYM_MANAGER: ["EXPIRING", "DUE_TODAY", "OVERDUE", "MINE", "IRREGULAR", "EXPIRED", "PAYMENT_DUE"],
+  SALES_MANAGER: ["DUE_TODAY", "OVERDUE", "MINE", "PAYMENT_DUE"],
+  SALES_EXECUTIVE: ["DUE_TODAY", "OVERDUE", "MINE", "PAYMENT_DUE"],
+  FRONT_DESK_EXECUTIVE: ["DUE_TODAY", "OVERDUE", "MINE", "PAYMENT_DUE"],
+  FITNESS_MANAGER: ["EXPIRING", "IRREGULAR"],
+};
+
+interface QuickTileRow {
+  key: string;
+  primary: string;
+  secondary?: string;
+  badge?: string;
+  href?: string;
+}
+
+interface QuickTileData {
+  rows: QuickTileRow[];
+  loading: boolean;
+  error?: string | null;
+  totalCount?: number;
+}
+
+function QuickActionTile({
+  title,
+  subtitle,
+  tile,
+  viewAllHref,
+  emptyLabel,
+}: {
+  title: string;
+  subtitle: string;
+  tile: QuickTileData;
+  viewAllHref: string;
+  emptyLabel: string;
+}) {
+  return (
+    <SectionCard
+      title={title}
+      subtitle={subtitle}
+      actions={
+        <Link
+          href={viewAllHref}
+          className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/[0.08]"
+        >
+          View all
+          <ArrowRight className="h-3.5 w-3.5" />
+        </Link>
+      }
+    >
+      {tile.loading ? (
+        <p className="text-sm text-slate-400">Loading…</p>
+      ) : tile.error ? (
+        <p className="text-sm text-rose-300">{tile.error}</p>
+      ) : tile.rows.length === 0 ? (
+        <p className="text-sm text-slate-400">{emptyLabel}</p>
+      ) : (
+        <div className="space-y-2">
+          {tile.rows.map((row) => {
+            const content = (
+              <div className="flex items-center justify-between gap-3 rounded-xl border border-white/8 bg-white/[0.02] px-3 py-2 hover:bg-white/[0.06]">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold text-white">{row.primary}</p>
+                  {row.secondary ? (
+                    <p className="truncate text-xs text-slate-400">{row.secondary}</p>
+                  ) : null}
+                </div>
+                {row.badge ? (
+                  <span className="shrink-0 rounded-full border border-[#c42924]/40 bg-[#c42924]/15 px-2.5 py-0.5 text-[10px] font-semibold uppercase tracking-[0.14em] text-[#ffd6d4]">
+                    {row.badge}
+                  </span>
+                ) : null}
+              </div>
+            );
+            return row.href ? (
+              <Link key={row.key} href={row.href} className="block">
+                {content}
+              </Link>
+            ) : (
+              <div key={row.key}>{content}</div>
+            );
+          })}
+          {typeof tile.totalCount === "number" && tile.totalCount > tile.rows.length ? (
+            <p className="pt-1 text-xs text-slate-500">
+              Showing {tile.rows.length} of {tile.totalCount}
+            </p>
+          ) : null}
+        </div>
+      )}
+    </SectionCard>
+  );
+}
+
+function QuickActionTiles({
+  token,
+  user,
+  effectiveBranchId,
+  selectedBranchCode,
+}: {
+  token: string;
+  user: AuthUser | null;
+  effectiveBranchId: number | undefined;
+  selectedBranchCode: string | undefined;
+}) {
+  const [tiles, setTiles] = useState<Record<TileKey, QuickTileData>>({
+    EXPIRING: { rows: [], loading: true },
+    DUE_TODAY: { rows: [], loading: true },
+    OVERDUE: { rows: [], loading: true },
+    MINE: { rows: [], loading: true },
+    IRREGULAR: { rows: [], loading: true },
+    EXPIRED: { rows: [], loading: true },
+    PAYMENT_DUE: { rows: [], loading: true },
+  });
+
+  const designation = user?.designation;
+  const visibleTiles: TileKey[] =
+    (designation && TILE_VISIBILITY_BY_DESIGNATION[designation]) || [];
+
+  const loadTiles = useCallback(async () => {
+    if (!token || !user || visibleTiles.length === 0) return;
+
+    const today = new Date();
+    const startOfDay = new Date(today);
+    startOfDay.setHours(0, 0, 0, 0);
+    const endOfDay = new Date(today);
+    endOfDay.setHours(23, 59, 59, 999);
+    const thirtyDays = new Date(today);
+    thirtyDays.setDate(thirtyDays.getDate() + 30);
+    const staffId = resolveStaffId(user) || undefined;
+    const branchIdStr = effectiveBranchId ? String(effectiveBranchId) : undefined;
+
+    // Helper to update a single tile's state without disturbing the others.
+    const setTile = (key: TileKey, patch: Partial<QuickTileData>) =>
+      setTiles((prev) => ({ ...prev, [key]: { ...prev[key], ...patch } }));
+
+    const want = (key: TileKey) => visibleTiles.includes(key);
+
+    const tasks: Promise<void>[] = [];
+
+    if (want("EXPIRING")) {
+      tasks.push(
+        engagementService
+          .getAdminDashboardDrilldown(token, {
+            metricType: "EXPIRING_MEMBERSHIPS",
+            period: "CUSTOM",
+            from: startOfDay.toISOString().slice(0, 10),
+            to: thirtyDays.toISOString().slice(0, 10),
+            branchId: branchIdStr,
+            page: 0,
+            size: 5,
+          })
+          .then((res) => {
+            setTile("EXPIRING", {
+              loading: false,
+              rows: res.content.slice(0, 5).map((raw) => {
+                const r = raw as Record<string, unknown>;
+                const mid = String(r.memberId ?? "");
+                return {
+                  key: `exp-${mid}`,
+                  primary: String(r.fullName ?? r.memberName ?? "Member"),
+                  secondary: r.expiresAt
+                    ? `Expires ${new Date(String(r.expiresAt)).toLocaleDateString()}`
+                    : String(r.planName ?? ""),
+                  href: mid ? `/admin/members/${mid}` : undefined,
+                };
+              }),
+              totalCount: res.totalElements,
+            });
+          })
+          .catch((e: unknown) => setTile("EXPIRING", { loading: false, error: e instanceof Error ? e.message : "Failed" })),
+      );
+    }
+
+    if (want("EXPIRED")) {
+      tasks.push(
+        engagementService
+          .getAdminDashboardDrilldown(token, {
+            metricType: "INACTIVE_MEMBERS",
+            branchId: branchIdStr,
+            page: 0,
+            size: 5,
+          })
+          .then((res) => {
+            setTile("EXPIRED", {
+              loading: false,
+              rows: res.content.slice(0, 5).map((raw) => {
+                const r = raw as Record<string, unknown>;
+                const mid = String(r.memberId ?? "");
+                return {
+                  key: `expired-${mid}`,
+                  primary: String(r.fullName ?? r.memberName ?? "Member"),
+                  secondary: String(r.mobileNumber ?? r.planName ?? "-"),
+                  href: mid ? `/admin/members/${mid}` : undefined,
+                };
+              }),
+              totalCount: res.totalElements,
+            });
+          })
+          .catch((e: unknown) => setTile("EXPIRED", { loading: false, error: e instanceof Error ? e.message : "Failed" })),
+      );
+    }
+
+    if (want("IRREGULAR")) {
+      tasks.push(
+        engagementService
+          .getAdminDashboardDrilldown(token, {
+            metricType: "AT_RISK_MEMBERS",
+            branchId: branchIdStr,
+            page: 0,
+            size: 5,
+          })
+          .then((res) => {
+            setTile("IRREGULAR", {
+              loading: false,
+              rows: res.content.slice(0, 5).map((raw) => {
+                const r = raw as Record<string, unknown>;
+                const mid = String(r.memberId ?? "");
+                return {
+                  key: `irr-${mid}`,
+                  primary: String(r.fullName ?? r.memberName ?? "Member"),
+                  secondary: r.lastVisitAt
+                    ? `Last visit ${new Date(String(r.lastVisitAt)).toLocaleDateString()}`
+                    : String(r.mobileNumber ?? "-"),
+                  href: mid ? `/admin/members/${mid}` : undefined,
+                };
+              }),
+              totalCount: res.totalElements,
+            });
+          })
+          .catch((e: unknown) => setTile("IRREGULAR", { loading: false, error: e instanceof Error ? e.message : "Failed" })),
+      );
+    }
+
+    if (want("DUE_TODAY")) {
+      tasks.push(
+        subscriptionFollowUpService
+          .searchFollowUpQueuePaged(
+            token,
+            {
+              status: "SCHEDULED",
+              dueFrom: startOfDay.toISOString(),
+              dueTo: endOfDay.toISOString(),
+              branchId: effectiveBranchId,
+            },
+            0,
+            5,
+          )
+          .then((res) => {
+            setTile("DUE_TODAY", {
+              loading: false,
+              rows: res.content.slice(0, 5).map((row) => ({
+                key: `due-${row.followUpId}`,
+                primary: row.followUpType ? String(row.followUpType).replace(/_/g, " ") : `Follow-up #${row.followUpId}`,
+                secondary: row.dueAt ? `Due ${new Date(row.dueAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : undefined,
+                href: row.memberId
+                  ? `/admin/members/${row.memberId}`
+                  : row.inquiryId
+                    ? `/portal/inquiries?focusInquiryId=${row.inquiryId}`
+                    : undefined,
+              })),
+              totalCount: res.totalElements,
+            });
+          })
+          .catch((e: unknown) => setTile("DUE_TODAY", { loading: false, error: e instanceof Error ? e.message : "Failed" })),
+      );
+    }
+
+    if (want("OVERDUE")) {
+      tasks.push(
+        subscriptionFollowUpService
+          .searchFollowUpQueuePaged(
+            token,
+            {
+              status: "SCHEDULED",
+              overdueOnly: true,
+              branchId: effectiveBranchId,
+            },
+            0,
+            5,
+          )
+          .then((res) => {
+            setTile("OVERDUE", {
+              loading: false,
+              rows: res.content.slice(0, 5).map((row) => ({
+                key: `overdue-${row.followUpId}`,
+                primary: row.followUpType ? String(row.followUpType).replace(/_/g, " ") : `Follow-up #${row.followUpId}`,
+                secondary: row.dueAt ? `Due ${new Date(row.dueAt).toLocaleDateString()}` : undefined,
+                badge: "OVERDUE",
+                href: row.memberId
+                  ? `/admin/members/${row.memberId}`
+                  : row.inquiryId
+                    ? `/portal/inquiries?focusInquiryId=${row.inquiryId}`
+                    : undefined,
+              })),
+              totalCount: res.totalElements,
+            });
+          })
+          .catch((e: unknown) => setTile("OVERDUE", { loading: false, error: e instanceof Error ? e.message : "Failed" })),
+      );
+    }
+
+    if (want("MINE") && staffId) {
+      tasks.push(
+        subscriptionFollowUpService
+          .searchFollowUpQueuePaged(
+            token,
+            {
+              status: "SCHEDULED",
+              assignedToStaffId: Number(staffId),
+              branchId: effectiveBranchId,
+            },
+            0,
+            5,
+          )
+          .then((res) => {
+            setTile("MINE", {
+              loading: false,
+              rows: res.content.slice(0, 5).map((row) => ({
+                key: `mine-${row.followUpId}`,
+                primary: row.followUpType ? String(row.followUpType).replace(/_/g, " ") : `Follow-up #${row.followUpId}`,
+                secondary: row.dueAt ? `Due ${new Date(row.dueAt).toLocaleDateString()}` : undefined,
+                href: row.memberId
+                  ? `/admin/members/${row.memberId}`
+                  : row.inquiryId
+                    ? `/portal/inquiries?focusInquiryId=${row.inquiryId}`
+                    : undefined,
+              })),
+              totalCount: res.totalElements,
+            });
+          })
+          .catch((e: unknown) => setTile("MINE", { loading: false, error: e instanceof Error ? e.message : "Failed" })),
+      );
+    } else if (want("MINE")) {
+      setTile("MINE", { loading: false, rows: [] });
+    }
+
+    if (want("PAYMENT_DUE")) {
+      tasks.push(
+        subscriptionService
+          .getBalanceDue(token, { branchCode: selectedBranchCode })
+          .then((rows) => {
+            const arr = Array.isArray(rows) ? (rows as Record<string, unknown>[]) : [];
+            setTile("PAYMENT_DUE", {
+              loading: false,
+              rows: arr.slice(0, 5).map((r, i) => {
+                const mid = String(r.memberId ?? "");
+                const amount = typeof r.balanceAmount === "number" ? r.balanceAmount : Number(r.balanceAmount ?? 0);
+                return {
+                  key: `bal-${mid || i}`,
+                  primary: String(r.memberName ?? r.fullName ?? r.customerName ?? "Member"),
+                  secondary: `Balance ${formatCurrency(amount)}`,
+                  href: mid ? `/admin/members/${mid}` : undefined,
+                };
+              }),
+              totalCount: arr.length,
+            });
+          })
+          .catch((e: unknown) => setTile("PAYMENT_DUE", { loading: false, error: e instanceof Error ? e.message : "Failed" })),
+      );
+    }
+
+    await Promise.all(tasks);
+  }, [token, user, effectiveBranchId, selectedBranchCode, visibleTiles.join(",")]);
+
+  useEffect(() => {
+    void loadTiles();
+  }, [loadTiles]);
+
+  if (!user || visibleTiles.length === 0) return null;
+
+  const tileConfig: Record<TileKey, { title: string; subtitle: string; viewAllHref: string; emptyLabel: string }> = {
+    EXPIRING: {
+      title: "Memberships expiring",
+      subtitle: "Next 30 days · member-scoped to this branch",
+      viewAllHref: "/portal/renewals",
+      emptyLabel: "No memberships expiring in the next 30 days.",
+    },
+    DUE_TODAY: {
+      title: "Follow-ups due today",
+      subtitle: "Scheduled for today · any staff",
+      viewAllHref: "/portal/follow-ups",
+      emptyLabel: "Nothing due today.",
+    },
+    OVERDUE: {
+      title: "Overdue follow-ups",
+      subtitle: "Missed their due date · still open",
+      viewAllHref: "/portal/follow-ups",
+      emptyLabel: "No overdue follow-ups.",
+    },
+    MINE: {
+      title: "My follow-ups",
+      subtitle: "Assigned to you and still open",
+      viewAllHref: "/portal/follow-ups",
+      emptyLabel: "Nothing on your plate right now.",
+    },
+    IRREGULAR: {
+      title: "Irregular members",
+      subtitle: "Low-frequency visitors this month",
+      viewAllHref: "/portal/members",
+      emptyLabel: "No irregular members flagged.",
+    },
+    EXPIRED: {
+      title: "Expired members",
+      subtitle: "Past expiry · no renewal yet",
+      viewAllHref: "/portal/members",
+      emptyLabel: "No expired memberships.",
+    },
+    PAYMENT_DUE: {
+      title: "Payment follow-ups",
+      subtitle: "Invoices with an open balance",
+      viewAllHref: "/portal/billing",
+      emptyLabel: "All invoices paid up.",
+    },
+  };
+
+  return (
+    <section className="space-y-4">
+      <div>
+        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">
+          Quick actions
+        </h2>
+        <p className="text-xs text-slate-500">Today's work, grouped by what needs attention.</p>
+      </div>
+      <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+        {visibleTiles.map((key) => (
+          <QuickActionTile
+            key={key}
+            title={tileConfig[key].title}
+            subtitle={tileConfig[key].subtitle}
+            viewAllHref={tileConfig[key].viewAllHref}
+            emptyLabel={tileConfig[key].emptyLabel}
+            tile={tiles[key]}
+          />
+        ))}
+      </div>
+    </section>
+  );
+}
+
 export default function UnifiedDashboardPage() {
   const { token, user } = useAuth();
-  const { selectedBranchName } = useBranch();
+  const { selectedBranchName, effectiveBranchId, selectedBranchCode } = useBranch();
   const [state, setState] = useState<DashboardState>(EMPTY_STATE);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -1174,13 +1639,33 @@ export default function UnifiedDashboardPage() {
     greetingHour < 12 ? "Good Morning" : greetingHour < 17 ? "Good Afternoon" : "Good Evening";
 
   if (isSuperAdmin) {
-    return <AdminDashboardContent />;
+    return (
+      <div className="space-y-8 pb-12">
+        {token ? (
+          <QuickActionTiles
+            token={token}
+            user={user}
+            effectiveBranchId={effectiveBranchId}
+            selectedBranchCode={selectedBranchCode}
+          />
+        ) : null}
+        <AdminDashboardContent />
+      </div>
+    );
   }
 
   if (isGymManager) {
     return (
       <div className="space-y-8 pb-12">
         {token ? <GymManagerQuickActions token={token} userName={user?.name} /> : null}
+        {token ? (
+          <QuickActionTiles
+            token={token}
+            user={user}
+            effectiveBranchId={effectiveBranchId}
+            selectedBranchCode={selectedBranchCode}
+          />
+        ) : null}
         <AdminDashboardContent
           branchScoped
           headingTitle={`${selectedBranchName || "Branch"} Dashboard`}
@@ -1196,6 +1681,14 @@ export default function UnifiedDashboardPage() {
 
   return (
     <div className="space-y-8 pb-12">
+      {token ? (
+        <QuickActionTiles
+          token={token}
+          user={user}
+          effectiveBranchId={effectiveBranchId}
+          selectedBranchCode={selectedBranchCode}
+        />
+      ) : null}
       <section className="overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm">
         <div className="grid gap-0 lg:grid-cols-[1.8fr_1fr]">
           <div className="bg-[radial-gradient(circle_at_top_left,_rgba(196,36,41,0.18),_transparent_45%),linear-gradient(135deg,#111827_0%,#1f2937_45%,#7f1d1d_100%)] px-6 py-8 text-white sm:px-8">
