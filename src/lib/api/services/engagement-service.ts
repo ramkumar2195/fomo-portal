@@ -54,6 +54,49 @@ export interface BiometricAttendanceLogRecord {
   processed?: boolean;
 }
 
+/**
+ * Biometric (gym-entry) attendance summary — drives the member profile
+ * "Total Visits" stat. Sourced from `biometric_attendance_logs` via
+ * `GET /api/attendance/biometric/summary/{memberId}`.
+ */
+export interface BiometricAttendanceSummary {
+  memberId: number;
+  totalVisits: number;      // unique days with ≥1 punch
+  totalPunches: number;     // raw count across all days
+  firstVisitAt?: string | null;
+  lastVisitAt?: string | null;
+  firstVisitDate?: string | null;
+  lastVisitDate?: string | null;
+  visitsThisMonth: number;
+  visitsThisWeek: number;
+}
+
+/** One row per (member, visit-date) for the member-profile attendance tab. */
+export interface BiometricDailyVisit {
+  memberId: number;
+  visitDate: string;
+  firstCheckInAt: string;
+  lastPunchAt: string;
+  totalPunches: number;
+  rawPunches?: Array<{
+    id: number;
+    at: string;
+    direction?: string | null;
+    deviceSerialNumber?: string;
+  }> | null;
+}
+
+/** Register row for the Members/Staff/Coaches attendance listing pages. */
+export interface BiometricGymAttendanceRow {
+  memberId: number;
+  deviceUserId: string;
+  visitDate: string;
+  firstCheckInAt: string;
+  lastPunchAt: string;
+  totalPunches: number;
+  deviceSerialNumber: string;
+}
+
 export interface MemberBiometricEnrollmentRecord {
   enrollmentId?: string;
   memberId?: string;
@@ -531,6 +574,66 @@ export const engagementService = {
 
     const payload = unwrapData<unknown>(response);
     return Array.isArray(payload) ? payload : [];
+  },
+
+  /**
+   * Gym-entry attendance summary for a member. Reads from biometric punches,
+   * not the (currently empty) QR check-in table. Returns visit counts used by
+   * the member profile "Total Visits" stat.
+   */
+  async getBiometricAttendanceSummary(
+    token: string,
+    memberId: string | number,
+  ): Promise<BiometricAttendanceSummary | null> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "engagement",
+      path: `/api/attendance/biometric/summary/${memberId}`,
+      token,
+    });
+    const payload = unwrapData<unknown>(response);
+    return payload && typeof payload === "object"
+      ? (payload as BiometricAttendanceSummary)
+      : null;
+  },
+
+  /**
+   * Per-day visit list for a member. One row per calendar day; multi-punch
+   * days (legit re-entries + flap-gate double-triggers) are rolled up into
+   * firstCheckInAt/lastPunchAt/totalPunches. Pass `expand=true` to include
+   * the full raw-punches list inside each day for drill-down UI.
+   */
+  async getBiometricMemberVisits(
+    token: string,
+    memberId: string | number,
+    query: { from?: string; to?: string; expand?: boolean } = {},
+  ): Promise<BiometricDailyVisit[]> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "engagement",
+      path: `/api/attendance/biometric/member/${memberId}`,
+      token,
+      query,
+    });
+    const payload = unwrapData<unknown>(response);
+    return Array.isArray(payload) ? (payload as BiometricDailyVisit[]) : [];
+  },
+
+  /**
+   * Gym-entry register across all members — one row per (member, day). Used by
+   * the Members / Staff / Coaches attendance listing pages. Frontend joins
+   * with users-service to show name/role/designation.
+   */
+  async getBiometricAttendanceRegister(
+    token: string,
+    query: { from?: string; to?: string } = {},
+  ): Promise<BiometricGymAttendanceRow[]> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "engagement",
+      path: `/api/attendance/biometric/register`,
+      token,
+      query,
+    });
+    const payload = unwrapData<unknown>(response);
+    return Array.isArray(payload) ? (payload as BiometricGymAttendanceRow[]) : [];
   },
 
   async getCreditsWallet(token: string, memberId: string): Promise<Record<string, unknown>> {

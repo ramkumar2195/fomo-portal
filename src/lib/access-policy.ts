@@ -13,6 +13,7 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     "/portal/trainers",
     "/admin/coaches",
     "/portal/trainer-attendance",
+    "/portal/gym-attendance",
     "/portal/staff",
     "/portal/community",
     "/portal/notifications",
@@ -47,11 +48,17 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     "/portal/members",
     "/portal/renewals",
     "/portal/billing",
+    // Front desk uses gym-entry attendance for walk-in verification + spot
+    // checks on today's entries.
+    "/portal/gym-attendance",
   ],
   FITNESS_MANAGER: [
     "/portal/sales-dashboard",
     "/portal/trainers",
     "/portal/trainer-attendance",
+    // Fitness manager tracks trainer + member gym visits to spot irregular
+    // attendance and plan floor coverage.
+    "/portal/gym-attendance",
     "/portal/reports",
     "/portal/class-schedule",
     "/admin/programs",
@@ -121,6 +128,10 @@ const ROUTE_CAPABILITY_MAP: Array<{ prefix: string; capabilities: string[] }> = 
   {
     prefix: "/portal/trainer-attendance",
     capabilities: ["TRAINER_ATTENDANCE_VIEW", "ATTENDANCE_VIEW", "OPERATIONS_VIEW"],
+  },
+  {
+    prefix: "/portal/gym-attendance",
+    capabilities: ["ATTENDANCE_VIEW", "MEMBER_VIEW", "OPERATIONS_VIEW"],
   },
   {
     prefix: "/portal/class-schedule",

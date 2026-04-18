@@ -90,6 +90,10 @@ const NAV_SECTIONS: NavSection[] = [
     children: [
       { href: "/portal/members", label: "All Members", icon: <MembersIcon className="h-4 w-4" /> },
       { href: "/portal/renewals", label: "Renewals", icon: <FollowUpsIcon className="h-4 w-4" /> },
+      // Gym-entry (biometric) attendance — unified view across members, staff,
+      // coaches. Distinct from /portal/trainer-attendance which handles the
+      // future QR PT-session check-in flow. See DECISIONS.md on the split.
+      { href: "/portal/gym-attendance", label: "Gym Attendance", icon: <MembersIcon className="h-4 w-4" /> },
     ],
   },
   {

@@ -66,6 +66,9 @@ type TabPayloadMap = {
     biometricDevices: unknown[];
     biometricLogs: unknown[];
     enrollments?: unknown[];
+    // Per-day biometric visits (deduped) — populated from
+    // GET /api/attendance/biometric/member/{id}?expand=true
+    biometricVisits?: unknown[];
   };
   "credits-wallet": {
     wallet: Record<string, unknown>;
@@ -1190,7 +1193,7 @@ function friendlyBiometricDeviceName(payload: unknown, index: number): string {
     return configuredName;
   }
   const serial = pickString(payload, ["serialNumber"]).trim();
-  const fallbackNames = ["Main Entrance One - ESSL", "Main Entrance Two - ESSL"];
+  const fallbackNames = ["Main Entrance Two - ESSL", "Main Entrance One - ESSL"];
   if (index < fallbackNames.length) {
     return fallbackNames[index];
   }
@@ -1320,6 +1323,91 @@ function ProfilePanel({
       </div>
       <div className="mt-5">{children}</div>
     </section>
+  );
+}
+
+/**
+ * Gym-entry (biometric) daily visits panel on the member profile attendance tab.
+ *
+ * Renders one row per (member, visit-date) using data from the
+ * {@code /api/attendance/biometric/member/{id}?expand=true} endpoint. The first
+ * check-in time of the day is the "Check-in" shown to staff, which is what the
+ * user wanted: a member who walks out mid-session and comes back doesn't get
+ * two rows; their gym day = their first entry. When a day has more than one
+ * raw punch (re-entry or flap-gate double-trigger), a chevron lets the staff
+ * expand to see every raw punch for forensic / dispute review.
+ */
+function BiometricVisitsPanel({ visits }: { visits: RecordLike[] }) {
+  const [expandedDate, setExpandedDate] = useState<string | null>(null);
+  return (
+    <ProfilePanel
+      title="Daily Visits"
+      subtitle="One row per day — first gym entry time. Same-day re-entries are rolled up; click any day to expand."
+      accent="cyan"
+    >
+      <div className="overflow-hidden rounded-[24px] border border-white/8 bg-[#0f1726]">
+        <div className="grid grid-cols-[1.2fr_1fr_0.9fr_0.9fr_0.4fr] gap-3 border-b border-white/8 px-5 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+          <span>Date</span>
+          <span>Check-in</span>
+          <span>Last Punch</span>
+          <span>Punches</span>
+          <span />
+        </div>
+        {visits.length === 0 ? (
+          <div className="px-5 py-12 text-center text-sm text-slate-400">
+            No gym entries recorded for this member yet.
+          </div>
+        ) : (
+          visits.map((visitRaw) => {
+            const visit = toRecord(visitRaw);
+            const visitDate = pickString(visit, ["visitDate"]);
+            const firstCheckIn = pickString(visit, ["firstCheckInAt"]);
+            const lastPunch = pickString(visit, ["lastPunchAt"]);
+            const punchCountNum = Number(visit.totalPunches ?? 0);
+            const rawPunches = Array.isArray(visit.rawPunches) ? (visit.rawPunches as RecordLike[]) : [];
+            const expanded = expandedDate === visitDate;
+            const canExpand = rawPunches.length > 0 && punchCountNum > 1;
+            const timeOnly = (iso: string) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-");
+            const dateOnly = (iso: string) => (iso ? new Date(iso).toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short", year: "numeric" }) : "-");
+            return (
+              <div key={visitDate} className="border-b border-white/6 last:border-b-0">
+                <button
+                  type="button"
+                  onClick={() => canExpand && setExpandedDate(expanded ? null : visitDate)}
+                  className={`grid w-full grid-cols-[1.2fr_1fr_0.9fr_0.9fr_0.4fr] gap-3 px-5 py-4 text-left text-sm ${canExpand ? "cursor-pointer hover:bg-white/[0.02]" : "cursor-default"}`}
+                >
+                  <span className="font-medium text-white">{dateOnly(visitDate)}</span>
+                  <span className="text-slate-200">{timeOnly(firstCheckIn)}</span>
+                  <span className="text-slate-400">{punchCountNum > 1 ? timeOnly(lastPunch) : "—"}</span>
+                  <span className="text-slate-300">{punchCountNum === 1 ? "1" : `${punchCountNum} punches`}</span>
+                  <span className="text-right text-slate-500">{canExpand ? (expanded ? "▾" : "▸") : ""}</span>
+                </button>
+                {expanded && rawPunches.length > 0 ? (
+                  <div className="bg-white/[0.02] px-8 pb-4 pt-2 text-xs text-slate-400">
+                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">All punches this day</div>
+                    <ul className="space-y-1">
+                      {rawPunches.map((punchRaw, idx) => {
+                        const punch = toRecord(punchRaw);
+                        const at = pickString(punch, ["at"]);
+                        const dir = pickString(punch, ["direction"]);
+                        const device = pickString(punch, ["deviceSerialNumber"]);
+                        return (
+                          <li key={idx} className="flex items-center gap-3">
+                            <span className="text-slate-300">{timeOnly(at)}</span>
+                            {dir ? <span className="rounded-full border border-white/10 px-2 py-0.5">{dir}</span> : null}
+                            {device ? <span className="text-slate-500">· {device}</span> : null}
+                          </li>
+                        );
+                      })}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })
+        )}
+      </div>
+    </ProfilePanel>
   );
 }
 
@@ -1761,6 +1849,11 @@ export default function MemberProfilePage() {
   const { token, user, accessMetadata } = useAuth();
 
   const [shell, setShell] = useState<MemberProfileShellResponse | null>(null);
+  // Biometric (gym-entry) attendance summary — sourced from biometric_attendance_logs
+  // not the (empty) QR check_ins table. Feeds the "Total Visits" stat and the
+  // Last Visit timestamp on the overview header. See DECISIONS.md on the
+  // check_ins vs biometric_attendance_logs split.
+  const [biometricSummary, setBiometricSummary] = useState<Record<string, unknown> | null>(null);
   const [loadingShell, setLoadingShell] = useState(true);
   const [shellError, setShellError] = useState<string | null>(null);
   const [activeTab, setActiveTab] = useState<MemberProfileTabKey>("overview");
@@ -2048,13 +2141,17 @@ export default function MemberProfilePage() {
       return;
     }
 
-    const [profile, user] = await Promise.all([
+    const [profile, user, bioSummary] = await Promise.all([
       usersService.getMemberProfileShell(token, memberId),
       usersService.getUserById(token, memberId),
+      engagementService
+        .getBiometricAttendanceSummary(token, memberId)
+        .catch(() => null),
     ]);
 
     setShell(profile);
     setMemberRecord(user);
+    setBiometricSummary(bioSummary ? (bioSummary as unknown as Record<string, unknown>) : null);
     setTabData({ overview: profile });
     setLoadingTabs({});
     setTabErrors({});
@@ -2072,15 +2169,21 @@ export default function MemberProfilePage() {
       setShellError(null);
 
       try {
-        const [profile, user] = await Promise.all([
+        const [profile, user, bioSummary] = await Promise.all([
           usersService.getMemberProfileShell(token, memberId),
           usersService.getUserById(token, memberId),
+          // Biometric summary is non-critical: if it 404s or errors we still
+          // want the profile to render — fall back to null.
+          engagementService
+            .getBiometricAttendanceSummary(token, memberId)
+            .catch(() => null),
         ]);
         if (!active) {
           return;
         }
         setShell(profile);
         setMemberRecord(user);
+        setBiometricSummary(bioSummary ? (bioSummary as unknown as Record<string, unknown>) : null);
         setTabData((current) => ({ ...current, overview: profile }));
       } catch (loadError) {
         if (!active) {
@@ -2264,16 +2367,25 @@ export default function MemberProfilePage() {
             break;
           case "attendance":
           {
-            const [attendance, accessState, biometricDevices, biometricLogs, enrollments] = await withTabTimeout(
-              Promise.all([
-                engagementService.getAttendanceByMember(token, memberId),
-                usersService.getMemberAccessState(token, memberId),
-                engagementService.listBiometricDevices(token).catch(() => []),
-                engagementService.getBiometricLogs(token).catch(() => []),
-                engagementService.getMemberBiometricEnrollments(token, memberId).catch(() => []),
-              ]),
-              "attendance",
-            );
+            // New in this build: pull the deduped-per-day biometric visits view
+            // (one row per calendar day, with first-check-in time + expandable
+            // raw-punch detail) alongside the legacy attendance + biometric raw
+            // log fetches. The deduped view is what most staff want; the raw
+            // `biometricLogs` stays available for audit / dispute.
+            const [attendance, accessState, biometricDevices, biometricLogs, enrollments, biometricVisits] =
+              await withTabTimeout(
+                Promise.all([
+                  engagementService.getAttendanceByMember(token, memberId),
+                  usersService.getMemberAccessState(token, memberId),
+                  engagementService.listBiometricDevices(token).catch(() => []),
+                  engagementService.getBiometricLogs(token).catch(() => []),
+                  engagementService.getMemberBiometricEnrollments(token, memberId).catch(() => []),
+                  engagementService
+                    .getBiometricMemberVisits(token, memberId, { expand: true })
+                    .catch(() => []),
+                ]),
+                "attendance",
+              );
             if (active) {
               setTabData((current) => ({ ...current, "recovery-services": accessState }));
             }
@@ -2282,6 +2394,7 @@ export default function MemberProfilePage() {
               biometricDevices,
               biometricLogs,
               enrollments,
+              biometricVisits,
             };
             break;
           }
@@ -2660,8 +2773,15 @@ export default function MemberProfilePage() {
     if (!shell) {
       return [] as unknown[];
     }
-    return [shell, shell.summary, shell.overview, shell.raw];
-  }, [shell]);
+    // biometricSummary comes from /api/attendance/biometric/summary/{memberId}
+    // and supplies totalVisits / lastVisitAt / firstVisitAt to the existing
+    // pickFromSourcesNumber/String calls below. Kept at the end so it only
+    // fills in missing values without overriding anything else the shell
+    // surface owns.
+    const base: unknown[] = [shell, shell.summary, shell.overview, shell.raw];
+    if (biometricSummary) base.push(biometricSummary);
+    return base;
+  }, [shell, biometricSummary]);
 
   const memberName = shell?.fullName || `Member #${memberId}`;
   const membershipStatus = pickFromSourcesString([shell?.status, ...shellSources], [
@@ -7065,7 +7185,10 @@ export default function MemberProfilePage() {
                 )}
               </div>
             </ProfilePanel>
-            <ProfilePanel title="Attendance Logs" subtitle="Recent member entries recorded from attendance and biometric sources" accent="slate">
+            <BiometricVisitsPanel
+              visits={toArray<RecordLike>(attendancePayload.biometricVisits)}
+            />
+            <ProfilePanel title="Raw Attendance Logs" subtitle="Every punch received from a biometric device — including same-day re-entries and door-swing duplicates" accent="slate">
               <div className="overflow-hidden rounded-[24px] border border-white/8 bg-[#0f1726]">
                 <div className="grid grid-cols-[1.15fr_0.9fr_1.2fr_1fr_0.9fr] gap-3 border-b border-white/8 px-5 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
                   <span>Date</span>
