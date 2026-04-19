@@ -1184,7 +1184,26 @@ function isRealBiometricDevice(payload: unknown): boolean {
   if (!serial) {
     return false;
   }
-  return !serial.startsWith("TEST");
+  // TEST* devices are local dev fixtures. LEGACY_GYMSW is the synthetic
+  // device we attach to imported pre-ESSL attendance — it's not a real
+  // gate and has no management actions (enroll / block / delete), so it
+  // must be hidden from the Manage Access Devices list. Logs that
+  // reference it are relabelled to "Legacy" at render time.
+  return !serial.startsWith("TEST") && serial !== "LEGACY_GYMSW";
+}
+
+/**
+ * Display label for a biometric device serial in the attendance logs and
+ * visits panel. Real ESSL devices keep their friendly name; the synthetic
+ * LEGACY_GYMSW serial is surfaced as the single-word "Legacy" because
+ * operators don't need to distinguish device-of-origin for imported
+ * pre-ESSL data.
+ */
+function displayDeviceLabel(serial: string | null | undefined, fallback?: string): string {
+  const normalized = (serial || "").trim().toUpperCase();
+  if (!normalized) return fallback || "-";
+  if (normalized === "LEGACY_GYMSW") return "Legacy";
+  return fallback || serial || "-";
 }
 
 function friendlyBiometricDeviceName(payload: unknown, index: number): string {
@@ -1339,18 +1358,28 @@ function ProfilePanel({
  */
 function BiometricVisitsPanel({ visits }: { visits: RecordLike[] }) {
   const [expandedDate, setExpandedDate] = useState<string | null>(null);
+  // 12-hour clock everywhere, locale-stable via en-IN. Seconds are dropped —
+  // for attendance purposes minute-precision is what operators care about.
+  const timeOnly = (iso: string) =>
+    iso
+      ? new Date(iso).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true })
+      : "-";
+  const dateOnly = (iso: string) =>
+    iso
+      ? new Date(iso).toLocaleDateString("en-IN", { weekday: "short", day: "2-digit", month: "short", year: "numeric" })
+      : "-";
   return (
     <ProfilePanel
       title="Daily Visits"
-      subtitle="One row per day — first gym entry time. Same-day re-entries are rolled up; click any day to expand."
+      subtitle="One row per day. Same-day re-entries within 5 minutes are collapsed; wider re-entries (morning + evening, breaks) stay separate. Click any day to expand."
       accent="cyan"
     >
       <div className="overflow-hidden rounded-[24px] border border-white/8 bg-[#0f1726]">
         <div className="grid grid-cols-[1.2fr_1fr_0.9fr_0.9fr_0.4fr] gap-3 border-b border-white/8 px-5 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
           <span>Date</span>
           <span>Check-in</span>
-          <span>Last Punch</span>
-          <span>Punches</span>
+          <span>Last Entry</span>
+          <span>Entries</span>
           <span />
         </div>
         {visits.length === 0 ? (
@@ -1367,8 +1396,6 @@ function BiometricVisitsPanel({ visits }: { visits: RecordLike[] }) {
             const rawPunches = Array.isArray(visit.rawPunches) ? (visit.rawPunches as RecordLike[]) : [];
             const expanded = expandedDate === visitDate;
             const canExpand = rawPunches.length > 0 && punchCountNum > 1;
-            const timeOnly = (iso: string) => (iso ? new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" }) : "-");
-            const dateOnly = (iso: string) => (iso ? new Date(iso).toLocaleDateString(undefined, { weekday: "short", day: "2-digit", month: "short", year: "numeric" }) : "-");
             return (
               <div key={visitDate} className="border-b border-white/6 last:border-b-0">
                 <button
@@ -1379,23 +1406,21 @@ function BiometricVisitsPanel({ visits }: { visits: RecordLike[] }) {
                   <span className="font-medium text-white">{dateOnly(visitDate)}</span>
                   <span className="text-slate-200">{timeOnly(firstCheckIn)}</span>
                   <span className="text-slate-400">{punchCountNum > 1 ? timeOnly(lastPunch) : "—"}</span>
-                  <span className="text-slate-300">{punchCountNum === 1 ? "1" : `${punchCountNum} punches`}</span>
+                  <span className="text-slate-300">{punchCountNum === 1 ? "1" : `${punchCountNum} entries`}</span>
                   <span className="text-right text-slate-500">{canExpand ? (expanded ? "▾" : "▸") : ""}</span>
                 </button>
                 {expanded && rawPunches.length > 0 ? (
                   <div className="bg-white/[0.02] px-8 pb-4 pt-2 text-xs text-slate-400">
-                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">All punches this day</div>
+                    <div className="mb-2 text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-500">Entries this day</div>
                     <ul className="space-y-1">
                       {rawPunches.map((punchRaw, idx) => {
                         const punch = toRecord(punchRaw);
                         const at = pickString(punch, ["at"]);
-                        const dir = pickString(punch, ["direction"]);
                         const device = pickString(punch, ["deviceSerialNumber"]);
                         return (
                           <li key={idx} className="flex items-center gap-3">
                             <span className="text-slate-300">{timeOnly(at)}</span>
-                            {dir ? <span className="rounded-full border border-white/10 px-2 py-0.5">{dir}</span> : null}
-                            {device ? <span className="text-slate-500">· {device}</span> : null}
+                            {device ? <span className="text-slate-500">· {displayDeviceLabel(device)}</span> : null}
                           </li>
                         );
                       })}
@@ -2939,16 +2964,19 @@ export default function MemberProfilePage() {
         pickString(entry, ["punchTimestamp", "timestamp", "checkInTime", "recordedAt", "createdAt"]) ||
         pickString(entry, ["checkOutTime"]);
       const deviceSerial = pickString(entry, ["deviceSerialNumber", "deviceSerial", "serialNumber"]);
+      const rawDeviceLabel =
+        biometricDeviceNameBySerial.get(deviceSerial) ||
+        pickString(entry, ["deviceName", "device", "gateName"]) ||
+        deviceSerial ||
+        "-";
       return {
         id: pickString(entry, ["id"]) || `${deviceSerial || "attendance"}-${timestamp || index}`,
         timestamp,
         dateLabel: formatDateOnly(timestamp),
         timeLabel: formatTimeOnly(timestamp),
-        deviceLabel:
-          biometricDeviceNameBySerial.get(deviceSerial) ||
-          pickString(entry, ["deviceName", "device", "gateName"]) ||
-          deviceSerial ||
-          "-",
+        // Legacy imports (device_serial = LEGACY_GYMSW) show as "Legacy"
+        // regardless of the friendly-name lookup.
+        deviceLabel: displayDeviceLabel(deviceSerial, rawDeviceLabel),
         eventLabel: attendanceEventLabel(entry),
         statusLabel: attendanceRecordStatusLabel(entry),
       };
@@ -7082,7 +7110,12 @@ export default function MemberProfilePage() {
               {[
                 { label: "Access Status", value: displayAccessStatus },
                 { label: "Biometric PIN", value: normalizedPhonePin || "-" },
-                { label: "Total Check-ins", value: String(checkInRows.length) },
+                // Total Check-ins was previously derived from an event-label
+                // filter that excluded our biometric logs (direction=UNKNOWN),
+                // so the stat always read 0. It now comes from the
+                // biometric-summary endpoint's totalVisits (unique days with
+                // at least one punch) — the operational definition of a visit.
+                { label: "Total Check-ins", value: String(pickNumber(biometricSummary, ["totalVisits"]) || 0) },
                 { label: "Devices", value: String(availableBiometricDevices.length) },
               ].map((entry) => (
                 <div key={entry.label} className="rounded-[24px] border border-white/8 bg-white/[0.03] p-4">
@@ -7188,26 +7221,30 @@ export default function MemberProfilePage() {
             <BiometricVisitsPanel
               visits={toArray<RecordLike>(attendancePayload.biometricVisits)}
             />
-            <ProfilePanel title="Raw Attendance Logs" subtitle="Every punch received from a biometric device — including same-day re-entries and door-swing duplicates" accent="slate">
+            <ProfilePanel title="Raw Attendance Logs" subtitle="Every punch received from a biometric device — kept for audit / dispute review" accent="slate">
               <div className="overflow-hidden rounded-[24px] border border-white/8 bg-[#0f1726]">
-                <div className="grid grid-cols-[1.15fr_0.9fr_1.2fr_1fr_0.9fr] gap-3 border-b border-white/8 px-5 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
+                {/*
+                  Event Type and Status columns were dropped — Event Type is
+                  always "Access" (device sends status 255 = direction-unknown)
+                  and Status is always "Success" (processed=true for every row
+                  the ADMS pipeline accepted). Neither carries operational
+                  signal, so they just added noise. Date / Time / Device is
+                  enough for audit.
+                */}
+                <div className="grid grid-cols-[1.2fr_1fr_1.8fr] gap-3 border-b border-white/8 px-5 py-3 text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
                   <span>Date</span>
                   <span>Time</span>
                   <span>Device</span>
-                  <span>Event Type</span>
-                  <span>Status</span>
                 </div>
                 {attendanceLogRows.length ? (
                   attendanceLogRows.map((entry) => (
                     <div
                       key={entry.id}
-                      className="grid grid-cols-[1.15fr_0.9fr_1.2fr_1fr_0.9fr] gap-3 border-b border-white/6 px-5 py-4 text-sm last:border-b-0"
+                      className="grid grid-cols-[1.2fr_1fr_1.8fr] gap-3 border-b border-white/6 px-5 py-4 text-sm last:border-b-0"
                     >
                       <span className="font-medium text-white">{entry.dateLabel}</span>
                       <span className="text-slate-300">{entry.timeLabel}</span>
                       <span className="text-slate-200">{entry.deviceLabel}</span>
-                      <span className={`font-semibold ${attendanceEventTone(entry.eventLabel)}`}>{entry.eventLabel}</span>
-                      <span className={`font-semibold ${attendanceRecordStatusTone(entry.statusLabel)}`}>{entry.statusLabel}</span>
                     </div>
                   ))
                 ) : (

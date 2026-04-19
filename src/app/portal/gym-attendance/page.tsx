@@ -18,9 +18,33 @@ import { useAuth } from "@/contexts/auth-context";
 import { useBranch } from "@/contexts/branch-context";
 import { engagementService } from "@/lib/api/services/engagement-service";
 import { usersService } from "@/lib/api/services/users-service";
-import { formatDateTime } from "@/lib/formatters";
 import type { BiometricGymAttendanceRow } from "@/lib/api/services/engagement-service";
 import type { UserDirectoryItem } from "@/types/models";
+
+// 12-hour clock everywhere, locale-stable via en-IN. Seconds dropped —
+// attendance is a minute-precision concern.
+function formatTime12h(iso?: string | null): string {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true });
+}
+
+function formatDateShort(iso?: string | null): string {
+  if (!iso) return "-";
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return "-";
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short", year: "numeric" });
+}
+
+// The synthetic LEGACY_GYMSW serial is surfaced as "Legacy" so operators
+// don't see an opaque serial string on imported pre-ESSL rows.
+function displayDevice(serial?: string | null): string {
+  const normalized = (serial || "").trim().toUpperCase();
+  if (!normalized) return "-";
+  if (normalized === "LEGACY_GYMSW") return "Legacy";
+  return serial || "-";
+}
 
 type RoleFilter = "ALL" | "MEMBER" | "STAFF" | "COACH" | "ADMIN";
 
@@ -255,7 +279,7 @@ export default function GymAttendancePage() {
                 ) : (
                   filteredRows.map((row) => (
                     <tr key={`${row.memberId}-${row.visitDate}`} className="hover:bg-white/[0.02]">
-                      <td className="px-4 py-3 text-slate-200">{row.visitDate}</td>
+                      <td className="px-4 py-3 text-slate-200">{formatDateShort(row.visitDate)}</td>
                       <td className="px-4 py-3 font-medium text-white">{row.name}</td>
                       <td className="px-4 py-3 text-slate-300">
                         <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-300">
@@ -264,11 +288,11 @@ export default function GymAttendancePage() {
                         <span className="ml-2 text-slate-400">{row.designation}</span>
                       </td>
                       <td className="px-4 py-3 text-slate-300">{row.mobile}</td>
-                      <td className="px-4 py-3 text-slate-200">{formatDateTime(row.firstCheckInAt)}</td>
+                      <td className="px-4 py-3 text-slate-200">{formatTime12h(row.firstCheckInAt)}</td>
                       <td className="px-4 py-3 text-slate-300">
-                        {row.totalPunches === 1 ? "1" : `${row.totalPunches} punches`}
+                        {row.totalPunches === 1 ? "1" : `${row.totalPunches} entries`}
                       </td>
-                      <td className="px-4 py-3 text-slate-400">{row.deviceSerialNumber}</td>
+                      <td className="px-4 py-3 text-slate-400">{displayDevice(row.deviceSerialNumber)}</td>
                     </tr>
                   ))
                 )}
