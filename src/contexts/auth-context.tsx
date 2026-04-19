@@ -206,6 +206,19 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       const autoBranchId = resolvedUser.defaultBranchId || "default";
       saveToStorage(STORAGE_KEYS.selectedBranchId, autoBranchId);
       setCookie(COOKIE_KEYS.branchId, autoBranchId);
+    } else if (resolvedUser.role === "ADMIN") {
+      // Super Admin defaults to "All Branches" (no filter) on login. We set
+      // the cookie *eagerly* here rather than leaving it empty because the
+      // middleware bounces every /portal/* request back to /branch-selector
+      // when this cookie is missing — and /branch-selector itself just
+      // auto-redirects to the dashboard. Without this line Super Admin
+      // login triggered a redirect loop that only settled once the
+      // BranchContext's async refresh eventually set the cookie from the
+      // client side (~2 minutes). Setting it here breaks the loop. User can
+      // still switch branches via the header selector.
+      const preferredBranchId = resolvedUser.defaultBranchId || "all-branches";
+      saveToStorage(STORAGE_KEYS.selectedBranchId, preferredBranchId);
+      setCookie(COOKIE_KEYS.branchId, preferredBranchId);
     } else {
       removeFromStorage(STORAGE_KEYS.selectedBranchId);
       clearCookie(COOKIE_KEYS.branchId);
