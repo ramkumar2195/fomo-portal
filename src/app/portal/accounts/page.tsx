@@ -68,6 +68,10 @@ export default function AccountsPage() {
     try {
       const list = await usersService.searchUsers(token, {
         role: "MEMBER",
+        // Accounts page populates a member-picker dropdown for ledger views.
+        // Only active members should be selectable — ex-members stay reachable
+        // via direct member-profile URLs but don't clutter the picker.
+        active: true,
         defaultBranchId: effectiveBranchId ? String(effectiveBranchId) : undefined,
       });
       setMembers(list);

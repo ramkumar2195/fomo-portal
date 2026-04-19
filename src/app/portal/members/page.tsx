@@ -502,15 +502,21 @@ export default function MembersPage() {
     void (async () => {
       try {
         const [staff, coaches, admins] = await Promise.all([
+          // Assignment dropdowns on the members page (client rep, default
+          // trainer, etc.) must only offer active people. Name-mapping for
+          // historic entries happens via separate getUserById calls that
+          // don't filter by active.
           usersService.searchUsers(token, {
             role: "STAFF",
+            active: true,
             ...(branchFilter ? { defaultBranchId: branchFilter } : {}),
           }),
           usersService.searchUsers(token, {
             role: "COACH",
+            active: true,
             ...(branchFilter ? { defaultBranchId: branchFilter } : {}),
           }),
-          usersService.searchUsers(token, { role: "ADMIN" }),
+          usersService.searchUsers(token, { role: "ADMIN", active: true }),
         ]);
 
         const next: Record<string, string> = {};
