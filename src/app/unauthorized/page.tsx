@@ -11,7 +11,7 @@ export default function UnauthorizedPage() {
         <div className="mt-6">
           <Link
             href="/login"
-            className="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
+            className="inline-flex rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white hover:bg-[#a51f1b]"
           >
             Back to Login
           </Link>

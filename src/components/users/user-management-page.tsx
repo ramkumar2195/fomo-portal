@@ -728,7 +728,7 @@ export function UserManagementPage({
           <button
             type="button"
             onClick={() => void loadUsers()}
-            className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700"
+            className="rounded-lg bg-[#c42924] px-3 py-2 text-sm font-semibold text-white hover:bg-[#a51f1b]"
           >
             Search
           </button>
@@ -1087,7 +1087,7 @@ export function UserManagementPage({
                   type="button"
                   disabled={leaveSubmitting || !leaveForm.fromDate || !leaveForm.toDate || !leaveForm.staffId}
                   onClick={() => void submitLeaveRequest()}
-                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-400"
+                  className="rounded-lg bg-[#c42924] px-4 py-2 text-sm font-semibold text-white hover:bg-[#a51f1b] disabled:bg-slate-400"
                 >
                   {leaveSubmitting ? "Submitting..." : "Submit"}
                 </button>
@@ -1264,7 +1264,7 @@ export function UserManagementPage({
                 <button
                   type="submit"
                   disabled={saving}
-                  className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-400"
+                  className="rounded-lg bg-[#c42924] px-4 py-2 text-sm font-semibold text-white hover:bg-[#a51f1b] disabled:bg-slate-400"
                 >
                   {saving ? "Saving..." : "Save Changes"}
                 </button>

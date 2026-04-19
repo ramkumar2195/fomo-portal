@@ -1508,6 +1508,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
           }),
           usersService.searchUsers(token, {
             role: "MEMBER",
+            active: true,
             defaultBranchId: memberForm.defaultBranchId,
           }),
           usersService.searchUsers(token, {
@@ -3740,7 +3741,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                   }
                   router.replace(`/admin/members/${completedOnboarding.memberId}`);
                 }}
-                className="rounded-2xl border border-white/10 bg-slate-900 px-5 py-3 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(15,23,42,0.28)] hover:bg-slate-700"
+                className="rounded-2xl border border-white/10 bg-[#c42924] px-5 py-3 text-sm font-semibold text-white shadow-[0_14px_28px_rgba(196,41,36,0.35)] hover:bg-[#a51f1b]"
               >
                 Open Member Profile
               </button>

@@ -2561,7 +2561,7 @@ export default function InquiriesPage() {
               <button
                 type="submit"
                 disabled={rowActionLoadingId === quickFollowUpForm.inquiryId}
-                className="rounded-lg bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-400"
+                className="rounded-lg bg-[#c42924] px-4 py-2 text-sm font-semibold text-white hover:bg-[#a51f1b] disabled:bg-slate-400"
               >
                 {rowActionLoadingId === quickFollowUpForm.inquiryId
                   ? "Saving..."
@@ -2908,7 +2908,7 @@ export default function InquiriesPage() {
               <button
                 type="submit"
                 disabled={isSavingEdit}
-                className="w-full rounded-lg bg-slate-900 px-4 py-2.5 text-sm font-semibold text-white hover:bg-slate-700 disabled:bg-slate-400"
+                className="w-full rounded-lg bg-[#c42924] px-4 py-2.5 text-sm font-semibold text-white hover:bg-[#a51f1b] disabled:bg-slate-400"
               >
                 {isSavingEdit ? "Saving..." : "Save Enquiry"}
               </button>

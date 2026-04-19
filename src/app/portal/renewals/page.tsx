@@ -47,6 +47,9 @@ export default function RenewalsPage() {
       const [members, renewals, overview, dashboard] = await Promise.all([
         usersService.searchUsers(token, {
           role: "MEMBER",
+          // Renewals queue only concerns active members; ex-members don't
+          // need renewal nudges.
+          active: true,
           defaultBranchId: effectiveBranchId ? String(effectiveBranchId) : undefined,
         }),
         subscriptionService.getRenewalsQueue(token, {
@@ -198,7 +201,7 @@ export default function RenewalsPage() {
                       ) : (
                         <Link
                           href="/portal/billing"
-                          className="inline-flex rounded-xl bg-slate-900 px-4 py-2 text-sm font-semibold text-white hover:bg-slate-700"
+                          className="inline-flex rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white hover:bg-[#a51f1b]"
                         >
                           Open Billing
                         </Link>

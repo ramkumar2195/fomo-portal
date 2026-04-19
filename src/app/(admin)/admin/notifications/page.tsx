@@ -255,7 +255,7 @@ export default function NotificationsPage() {
             <button
               type="submit"
               disabled={submitting}
-              className="rounded-lg bg-slate-900 px-3 py-2 text-sm font-semibold text-white hover:bg-slate-700 disabled:cursor-not-allowed disabled:opacity-60"
+              className="rounded-lg bg-[#c42924] px-3 py-2 text-sm font-semibold text-white hover:bg-[#a51f1b] disabled:cursor-not-allowed disabled:opacity-60"
             >
               {submitting ? "Creating..." : "Create Campaign"}
             </button>
