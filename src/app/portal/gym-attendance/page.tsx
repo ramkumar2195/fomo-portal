@@ -46,6 +46,26 @@ function displayDevice(serial?: string | null): string {
   return serial || "-";
 }
 
+/**
+ * Hours-present for a staff / coach row: if they scanned on entry AND again
+ * on exit, the gap between first and last entry of the day is their
+ * approximate floor time. Minimum gap of 5 minutes (below that = same
+ * session, never mind Item 7 prompt). Returns a display label; null signals
+ * "no second scan yet" so the cell can render a nudge instead of a number.
+ */
+function staffHoursPresent(firstIso: string, lastIso: string): string | null {
+  const first = new Date(firstIso).getTime();
+  const last = new Date(lastIso).getTime();
+  if (!Number.isFinite(first) || !Number.isFinite(last) || last <= first) return null;
+  const diffMinutes = Math.round((last - first) / 60_000);
+  if (diffMinutes < 5) return null;
+  const hours = Math.floor(diffMinutes / 60);
+  const minutes = diffMinutes % 60;
+  if (hours === 0) return `${minutes}m`;
+  if (minutes === 0) return `${hours}h`;
+  return `${hours}h ${minutes}m`;
+}
+
 type RoleFilter = "ALL" | "MEMBER" | "STAFF" | "COACH" | "ADMIN";
 
 const ROLE_TABS: Array<{ key: RoleFilter; label: string; hint: string }> = [
@@ -239,7 +259,7 @@ export default function GymAttendancePage() {
         })}
       </div>
 
-      <SectionCard title="Attendance Register" subtitle="One row per person per day. First check-in time is the gym entry.">
+      <SectionCard title="Attendance Register" subtitle="One row per person per day. Staff and coaches scan on exit → Out + Hours Present populate. Members don't scan out, so those columns show —.">
         <div className="mb-4 grid grid-cols-1 gap-3 md:grid-cols-4">
           <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
             From
@@ -263,38 +283,68 @@ export default function GymAttendancePage() {
                   <th className="px-4 py-3">Date</th>
                   <th className="px-4 py-3">Name</th>
                   <th className="px-4 py-3">Role / Designation</th>
-                  <th className="px-4 py-3">Mobile (device PIN)</th>
-                  <th className="px-4 py-3">First Check-in</th>
-                  <th className="px-4 py-3">Punches</th>
-                  <th className="px-4 py-3">Last Device</th>
+                  <th className="px-4 py-3">Mobile</th>
+                  <th className="px-4 py-3">In</th>
+                  <th className="px-4 py-3">Out</th>
+                  <th className="px-4 py-3">Hours Present</th>
+                  <th className="px-4 py-3">Entries</th>
+                  <th className="px-4 py-3">Device</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/8">
                 {filteredRows.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-6 text-slate-400" colSpan={7}>
+                    <td className="px-4 py-6 text-slate-400" colSpan={9}>
                       No gym entries in this window.
                     </td>
                   </tr>
                 ) : (
-                  filteredRows.map((row) => (
-                    <tr key={`${row.memberId}-${row.visitDate}`} className="hover:bg-white/[0.02]">
-                      <td className="px-4 py-3 text-slate-200">{formatDateShort(row.visitDate)}</td>
-                      <td className="px-4 py-3 font-medium text-white">{row.name}</td>
-                      <td className="px-4 py-3 text-slate-300">
-                        <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-300">
-                          {row.role || "UNKNOWN"}
-                        </span>
-                        <span className="ml-2 text-slate-400">{row.designation}</span>
-                      </td>
-                      <td className="px-4 py-3 text-slate-300">{row.mobile}</td>
-                      <td className="px-4 py-3 text-slate-200">{formatTime12h(row.firstCheckInAt)}</td>
-                      <td className="px-4 py-3 text-slate-300">
-                        {row.totalPunches === 1 ? "1" : `${row.totalPunches} entries`}
-                      </td>
-                      <td className="px-4 py-3 text-slate-400">{displayDevice(row.deviceSerialNumber)}</td>
-                    </tr>
-                  ))
+                  filteredRows.map((row) => {
+                    // Item 7: staff and coaches scan on exit; members don't.
+                    // For member rows the Out/Hours Present columns render as
+                    // "—" because we don't expect a closing scan. For staff /
+                    // coach rows with only one scan, show a "no exit scan" hint
+                    // so the operator knows the person forgot to scan out.
+                    const isStaffLike = row.role === "STAFF" || row.role === "COACH" || row.role === "ADMIN";
+                    const hasExit = row.totalPunches > 1;
+                    const hoursPresent = hasExit ? staffHoursPresent(row.firstCheckInAt, row.lastPunchAt) : null;
+                    return (
+                      <tr key={`${row.memberId}-${row.visitDate}`} className="hover:bg-white/[0.02]">
+                        <td className="px-4 py-3 text-slate-200">{formatDateShort(row.visitDate)}</td>
+                        <td className="px-4 py-3 font-medium text-white">{row.name}</td>
+                        <td className="px-4 py-3 text-slate-300">
+                          <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-300">
+                            {row.role || "UNKNOWN"}
+                          </span>
+                          <span className="ml-2 text-slate-400">{row.designation}</span>
+                        </td>
+                        <td className="px-4 py-3 text-slate-300">{row.mobile}</td>
+                        <td className="px-4 py-3 text-slate-200">{formatTime12h(row.firstCheckInAt)}</td>
+                        <td className="px-4 py-3 text-slate-200">
+                          {isStaffLike ? (
+                            hasExit ? (
+                              formatTime12h(row.lastPunchAt)
+                            ) : (
+                              <span className="text-amber-300/80">no exit scan</span>
+                            )
+                          ) : (
+                            <span className="text-slate-500">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-slate-200">
+                          {isStaffLike ? (
+                            hoursPresent ?? <span className="text-slate-500">—</span>
+                          ) : (
+                            <span className="text-slate-500">—</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-slate-300">
+                          {row.totalPunches === 1 ? "1" : `${row.totalPunches} entries`}
+                        </td>
+                        <td className="px-4 py-3 text-slate-400">{displayDevice(row.deviceSerialNumber)}</td>
+                      </tr>
+                    );
+                  })
                 )}
               </tbody>
             </table>

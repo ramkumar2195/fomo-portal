@@ -20,6 +20,7 @@ import {
 } from "@/components/common/icons";
 import { PageLoader } from "@/components/common/page-loader";
 import { SectionCard } from "@/components/common/section-card";
+import { TodayCheckInsTile } from "@/components/dashboard/today-check-ins-tile";
 import { useAuth } from "@/contexts/auth-context";
 import { useBranch } from "@/contexts/branch-context";
 import { engagementService } from "@/lib/api/services/engagement-service";
@@ -1641,6 +1642,9 @@ export default function UnifiedDashboardPage() {
   if (isSuperAdmin) {
     return (
       <div className="space-y-8 pb-12">
+        {/* Live flap-gate entries — placed at the top so whoever opens the
+            dashboard first sees who's in the gym right now. */}
+        {token ? <TodayCheckInsTile /> : null}
         {token ? (
           <QuickActionTiles
             token={token}
@@ -1658,6 +1662,7 @@ export default function UnifiedDashboardPage() {
     return (
       <div className="space-y-8 pb-12">
         {token ? <GymManagerQuickActions token={token} userName={user?.name} /> : null}
+        {token ? <TodayCheckInsTile /> : null}
         {token ? (
           <QuickActionTiles
             token={token}
@@ -1681,6 +1686,12 @@ export default function UnifiedDashboardPage() {
 
   return (
     <div className="space-y-8 pb-12">
+      {/* Visible to FRONT_DESK_EXECUTIVE too — walk-in verification is their
+          bread-and-butter workflow. Other designations (SALES_*, FITNESS_MANAGER)
+          don't see it per role-scope tile policy but this page fallthrough
+          doesn't differentiate beyond designation, so we rely on the widget's
+          own data-empty state if there's nothing for them to show. */}
+      {token && designation === "FRONT_DESK_EXECUTIVE" ? <TodayCheckInsTile /> : null}
       {token ? (
         <QuickActionTiles
           token={token}
