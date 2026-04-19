@@ -15,6 +15,7 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     "/portal/trainer-attendance",
     "/portal/gym-attendance",
     "/portal/staff",
+    "/portal/shifts",
     "/portal/community",
     "/portal/notifications",
     "/portal/reports",
@@ -59,6 +60,8 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     // Fitness manager tracks trainer + member gym visits to spot irregular
     // attendance and plan floor coverage.
     "/portal/gym-attendance",
+    // Owns the coach shift assignments — morning / evening / split / straight.
+    "/portal/shifts",
     "/portal/reports",
     "/portal/class-schedule",
     "/admin/programs",
@@ -132,6 +135,10 @@ const ROUTE_CAPABILITY_MAP: Array<{ prefix: string; capabilities: string[] }> = 
   {
     prefix: "/portal/gym-attendance",
     capabilities: ["ATTENDANCE_VIEW", "MEMBER_VIEW", "OPERATIONS_VIEW"],
+  },
+  {
+    prefix: "/portal/shifts",
+    capabilities: ["SHIFT_MANAGE", "STAFF_MANAGE", "OPERATIONS_VIEW"],
   },
   {
     prefix: "/portal/class-schedule",

@@ -17,6 +17,7 @@ import { ToastBanner } from "@/components/common/toast-banner";
 import { useAuth } from "@/contexts/auth-context";
 import { useBranch } from "@/contexts/branch-context";
 import { engagementService } from "@/lib/api/services/engagement-service";
+import { shiftService, type ExpectedShiftDto } from "@/lib/api/services/shift-service";
 import { usersService } from "@/lib/api/services/users-service";
 import type { BiometricGymAttendanceRow } from "@/lib/api/services/engagement-service";
 import type { UserDirectoryItem } from "@/types/models";
@@ -66,6 +67,24 @@ function staffHoursPresent(firstIso: string, lastIso: string): string | null {
   return `${hours}h ${minutes}m`;
 }
 
+/** Signed-minutes variance between expected and actual timestamps. Positive = late arrival / late departure. */
+function varianceMinutes(expectedIso: string | null | undefined, actualIso: string | null | undefined): number | null {
+  if (!expectedIso || !actualIso) return null;
+  const ex = new Date(expectedIso).getTime();
+  const ac = new Date(actualIso).getTime();
+  if (!Number.isFinite(ex) || !Number.isFinite(ac)) return null;
+  return Math.round((ac - ex) / 60_000);
+}
+
+/** Render a variance with a grace window: within grace = "on time"; late → red; early → green. */
+function formatVariance(minutes: number | null, graceMinutes: number | null | undefined): { label: string; tone: string } {
+  if (minutes === null) return { label: "—", tone: "text-slate-500" };
+  const grace = graceMinutes ?? 10;
+  if (Math.abs(minutes) <= grace) return { label: "On time", tone: "text-emerald-300" };
+  if (minutes > 0) return { label: `${minutes} min late`, tone: "text-rose-300" };
+  return { label: `${Math.abs(minutes)} min early`, tone: "text-sky-300" };
+}
+
 type RoleFilter = "ALL" | "MEMBER" | "STAFF" | "COACH" | "ADMIN";
 
 const ROLE_TABS: Array<{ key: RoleFilter; label: string; hint: string }> = [
@@ -99,6 +118,10 @@ export default function GymAttendancePage() {
   const { effectiveBranchId } = useBranch();
   const [rows, setRows] = useState<BiometricGymAttendanceRow[]>([]);
   const [userMap, setUserMap] = useState<Map<number, UserDirectoryItem>>(new Map());
+  // Expected-shift lookup keyed "{staffId}_{yyyy-MM-dd}". Populated in one
+  // bulk call per page render so we don't do N round-trips to users-service.
+  // Members aren't included — they don't have scheduled shifts.
+  const [expectedByKey, setExpectedByKey] = useState<Map<string, ExpectedShiftDto>>(new Map());
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [toast, setToast] = useState<{ kind: "success" | "error"; message: string } | null>(null);
@@ -132,6 +155,41 @@ export default function GymAttendancePage() {
       });
       setRows(registerRows);
       setUserMap(map);
+
+      // Expected-shift bulk lookup — only for STAFF / COACH / ADMIN rows,
+      // since MEMBER rows don't have scheduled shifts. Building the unique
+      // (staffId, date) set also dedups when a staff appears on multiple
+      // days in the register window.
+      const staffLikeRoles = new Set(["STAFF", "COACH", "ADMIN"]);
+      const uniquePairs = new Map<string, { staffId: number; date: string }>();
+      registerRows.forEach((row) => {
+        const user = map.get(row.memberId);
+        if (!user) return;
+        const role = (user.role || "").toUpperCase();
+        if (!staffLikeRoles.has(role)) return;
+        const key = `${row.memberId}_${row.visitDate}`;
+        if (!uniquePairs.has(key)) {
+          uniquePairs.set(key, { staffId: row.memberId, date: row.visitDate });
+        }
+      });
+      if (uniquePairs.size > 0) {
+        try {
+          const expectedList = await shiftService.getExpectedShiftsBulk(
+            token,
+            Array.from(uniquePairs.values()),
+          );
+          const expectedMap = new Map<string, ExpectedShiftDto>();
+          expectedList.forEach((e) => {
+            expectedMap.set(`${e.staffId}_${e.date}`, e);
+          });
+          setExpectedByKey(expectedMap);
+        } catch {
+          // Compliance columns are a nice-to-have; don't fail the whole page.
+          setExpectedByKey(new Map());
+        }
+      } else {
+        setExpectedByKey(new Map());
+      }
     } catch (loadError) {
       setError(loadError instanceof Error ? loadError.message : "Unable to load attendance.");
     } finally {
@@ -282,19 +340,20 @@ export default function GymAttendancePage() {
                 <tr className="bg-white/[0.03] text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
                   <th className="px-4 py-3">Date</th>
                   <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Role / Designation</th>
-                  <th className="px-4 py-3">Mobile</th>
+                  <th className="px-4 py-3">Role</th>
+                  <th className="px-4 py-3">Expected</th>
                   <th className="px-4 py-3">In</th>
+                  <th className="px-4 py-3">In Variance</th>
                   <th className="px-4 py-3">Out</th>
+                  <th className="px-4 py-3">Out Variance</th>
                   <th className="px-4 py-3">Hours Present</th>
-                  <th className="px-4 py-3">Entries</th>
                   <th className="px-4 py-3">Device</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/8">
                 {filteredRows.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-6 text-slate-400" colSpan={9}>
+                    <td className="px-4 py-6 text-slate-400" colSpan={10}>
                       No gym entries in this window.
                     </td>
                   </tr>
@@ -308,18 +367,45 @@ export default function GymAttendancePage() {
                     const isStaffLike = row.role === "STAFF" || row.role === "COACH" || row.role === "ADMIN";
                     const hasExit = row.totalPunches > 1;
                     const hoursPresent = hasExit ? staffHoursPresent(row.firstCheckInAt, row.lastPunchAt) : null;
+                    const expected = isStaffLike ? expectedByKey.get(`${row.memberId}_${row.visitDate}`) : undefined;
+                    const expectedInVariance = expected && !expected.off ? varianceMinutes(expected.expectedInAt, row.firstCheckInAt) : null;
+                    const expectedOutVariance = expected && !expected.off && hasExit ? varianceMinutes(expected.expectedOutAt, row.lastPunchAt) : null;
+                    const graceMinutes = expected?.blocks?.[0]?.graceMinutes ?? 10;
+                    const inVarianceDisplay = formatVariance(expectedInVariance, graceMinutes);
+                    const outVarianceDisplay = formatVariance(expectedOutVariance, graceMinutes);
                     return (
                       <tr key={`${row.memberId}-${row.visitDate}`} className="hover:bg-white/[0.02]">
                         <td className="px-4 py-3 text-slate-200">{formatDateShort(row.visitDate)}</td>
-                        <td className="px-4 py-3 font-medium text-white">{row.name}</td>
+                        <td className="px-4 py-3">
+                          <p className="font-medium text-white">{row.name}</p>
+                          <p className="text-[11px] text-slate-500">{row.mobile}</p>
+                        </td>
                         <td className="px-4 py-3 text-slate-300">
                           <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-300">
                             {row.role || "UNKNOWN"}
                           </span>
-                          <span className="ml-2 text-slate-400">{row.designation}</span>
+                          {row.designation ? <p className="mt-1 text-[11px] text-slate-400">{row.designation}</p> : null}
                         </td>
-                        <td className="px-4 py-3 text-slate-300">{row.mobile}</td>
+                        <td className="px-4 py-3 text-slate-300">
+                          {!isStaffLike ? (
+                            <span className="text-slate-500">—</span>
+                          ) : !expected ? (
+                            <span className="text-slate-500">—</span>
+                          ) : expected.off ? (
+                            <span className="text-amber-300/80">Off</span>
+                          ) : (
+                            <>
+                              <p className="font-mono text-xs text-slate-200">
+                                {formatTime12h(expected.expectedInAt)} → {formatTime12h(expected.expectedOutAt)}
+                              </p>
+                              <p className="text-[11px] text-slate-500">{expected.shiftName}</p>
+                            </>
+                          )}
+                        </td>
                         <td className="px-4 py-3 text-slate-200">{formatTime12h(row.firstCheckInAt)}</td>
+                        <td className={`px-4 py-3 text-xs font-semibold ${inVarianceDisplay.tone}`}>
+                          {isStaffLike && expected && !expected.off ? inVarianceDisplay.label : "—"}
+                        </td>
                         <td className="px-4 py-3 text-slate-200">
                           {isStaffLike ? (
                             hasExit ? (
@@ -331,15 +417,15 @@ export default function GymAttendancePage() {
                             <span className="text-slate-500">—</span>
                           )}
                         </td>
+                        <td className={`px-4 py-3 text-xs font-semibold ${outVarianceDisplay.tone}`}>
+                          {isStaffLike && expected && !expected.off && hasExit ? outVarianceDisplay.label : "—"}
+                        </td>
                         <td className="px-4 py-3 text-slate-200">
                           {isStaffLike ? (
                             hoursPresent ?? <span className="text-slate-500">—</span>
                           ) : (
                             <span className="text-slate-500">—</span>
                           )}
-                        </td>
-                        <td className="px-4 py-3 text-slate-300">
-                          {row.totalPunches === 1 ? "1" : `${row.totalPunches} entries`}
                         </td>
                         <td className="px-4 py-3 text-slate-400">{displayDevice(row.deviceSerialNumber)}</td>
                       </tr>

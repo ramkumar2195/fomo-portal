@@ -103,6 +103,9 @@ const NAV_SECTIONS: NavSection[] = [
     children: [
       { href: "/portal/trainers", label: "Coaches", icon: <TrainersIcon className="h-4 w-4" />, activeAliases: ["/portal/trainer-attendance"] },
       { href: "/portal/staff", label: "Staff", icon: <StaffIcon className="h-4 w-4" /> },
+      // Shift definitions + weekly staff assignments feeding the attendance
+      // compliance view. Rotation calendar lands in Phase 2 (M6).
+      { href: "/portal/shifts", label: "Shifts", icon: <StaffIcon className="h-4 w-4" /> },
     ],
   },
   {
