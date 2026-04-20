@@ -29,6 +29,7 @@ import { useAuth } from "@/contexts/auth-context";
 import { ApiError } from "@/lib/api/http-client";
 import { engagementService, BiometricAttendanceLogRecord, BiometricDeviceRecord, MemberBiometricEnrollmentRecord } from "@/lib/api/services/engagement-service";
 import { isRealBiometricDevice } from "@/lib/biometric-device-filter";
+import { usePollingEnrollments } from "@/hooks/use-polling-enrollments";
 import { branchService } from "@/lib/api/services/branch-service";
 import { trainingService, TrainerScheduleEntry, TrainerScheduleResponse } from "@/lib/api/services/training-service";
 import { usersService } from "@/lib/api/services/users-service";
@@ -621,6 +622,16 @@ export default function TrainerProfilePage() {
   const [biometricDevices, setBiometricDevices] = useState<BiometricDeviceRecord[]>([]);
   const [biometricLogs, setBiometricLogs] = useState<BiometricAttendanceLogRecord[]>([]);
   const [enrollments, setEnrollments] = useState<MemberBiometricEnrollmentRecord[]>([]);
+  // Poll the enrollments endpoint every 3s while any row is PENDING so a
+  // freshly-submitted face-scan flips to ENROLLED in the UI without a
+  // full-page refresh. Hook auto-stops once nothing is pending.
+  usePollingEnrollments({
+    token,
+    userId: trainerId,
+    enabled: activeTab === "attendance",
+    initial: enrollments,
+    onUpdate: setEnrollments,
+  });
   const [branches, setBranches] = useState<BranchResponse[]>([]);
   const [accessActionError, setAccessActionError] = useState<string | null>(null);
   const [accessBusy, setAccessBusy] = useState(false);

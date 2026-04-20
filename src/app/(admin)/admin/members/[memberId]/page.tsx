@@ -1886,6 +1886,42 @@ export default function MemberProfilePage() {
   const tabDataRef = useRef(tabData);
   tabDataRef.current = tabData;
   const sessionRegisterRef = useRef<HTMLDivElement | null>(null);
+  // Face-scan polling: while the Attendance tab is open and any
+  // enrollment is PENDING, poll /iclock/admin/member-enrollments every
+  // 3s and splice the fresh list back into tabData.attendance. This
+  // lets Pending → Active flip happen without the user refreshing the
+  // whole page. Stops automatically when no row is PENDING or the tab
+  // switches away.
+  useEffect(() => {
+    if (activeTab !== "attendance" || !token || !memberId) return;
+    const attendancePayload = toRecord(tabData.attendance);
+    const currentEnrollments = toArray<RecordLike>(attendancePayload.enrollments);
+    const hasPending = currentEnrollments.some(
+      (e) => pickString(e, ["status"]).toUpperCase() === "PENDING",
+    );
+    if (!hasPending) return;
+    let cancelled = false;
+    const handle = setInterval(async () => {
+      try {
+        const fresh = await engagementService.getMemberBiometricEnrollments(token, memberId);
+        if (cancelled) return;
+        setTabData((current) => {
+          const prevAtt = current.attendance;
+          if (!prevAtt) return current; // only merge; never fabricate a fresh attendance bundle
+          return {
+            ...current,
+            attendance: { ...prevAtt, enrollments: fresh },
+          };
+        });
+      } catch {
+        // swallow; next tick retries
+      }
+    }, 3000);
+    return () => {
+      cancelled = true;
+      clearInterval(handle);
+    };
+  }, [activeTab, token, memberId, tabData.attendance]);
   const [assessmentActionBusy, setAssessmentActionBusy] = useState(false);
   const [documentBusyKey, setDocumentBusyKey] = useState<string | null>(null);
   const [memberRecord, setMemberRecord] = useState<UserDirectoryItem | null>(null);
