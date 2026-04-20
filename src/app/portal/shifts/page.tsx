@@ -146,15 +146,18 @@ export default function ShiftsPage() {
         (u) => u.designation && u.designation !== "HEAD_COACH",  // exclude roles with no shift
       );
       setStaffList(roster);
-      if (!selectedStaffId && roster.length > 0) {
-        setSelectedStaffId(Number(roster[0].id));
-      }
+      // First-load only: pick the first staff as the default. Use the
+      // functional setter so we don't depend on `selectedStaffId` — without
+      // this, the dependency array re-runs loadBaseData every time the
+      // dropdown changes, which flips `loading` and scrolls the page to
+      // the PageLoader at top.
+      setSelectedStaffId((prev) => (prev == null && roster.length > 0 ? Number(roster[0].id) : prev));
     } catch (err) {
       setToast({ kind: "error", message: err instanceof Error ? err.message : "Failed to load shifts." });
     } finally {
       setLoading(false);
     }
-  }, [token, selectedStaffId]);
+  }, [token]);
 
   useEffect(() => {
     void loadBaseData();
@@ -237,13 +240,19 @@ export default function ShiftsPage() {
       setToast({ kind: "success", message: "Override saved." });
       setOverrideCell(null);
       setOverrideChoice("");
-      await loadWeekRoster();
+      // Refresh week roster (top grid) + the selected staff's weekly
+      // assignments (bottom grid) so both surfaces stay in sync after
+      // an override is written from the cell-click flow.
+      await Promise.all([
+        loadWeekRoster(),
+        selectedStaffId ? loadAssignmentsForStaff(selectedStaffId) : Promise.resolve(),
+      ]);
     } catch (err) {
       setToast({ kind: "error", message: err instanceof Error ? err.message : "Failed to save override." });
     } finally {
       setOverrideBusy(false);
     }
-  }, [token, overrideCell, overrideChoice, loadWeekRoster]);
+  }, [token, overrideCell, overrideChoice, loadWeekRoster, loadAssignmentsForStaff, selectedStaffId]);
 
   // Map dayOfWeek -> chosen shiftDefinitionId (null = OFF explicit; undefined = unconfigured)
   const perDayChoice: Record<DayOfWeek, number | null | undefined> = useMemo(() => {
@@ -277,7 +286,15 @@ export default function ShiftsPage() {
         effectiveFrom: todayISO(),
         source: "DEFAULT",
       });
-      await loadAssignmentsForStaff(selectedStaffId);
+      // Refresh both grids silently so (a) the Weekly Assignments table
+      // reflects the new choice and (b) This Week's Roster above shows
+      // the updated shift without a full-page refresh. Neither fetcher
+      // touches the global `loading` flag, so scroll position is
+      // preserved.
+      await Promise.all([
+        loadAssignmentsForStaff(selectedStaffId),
+        loadWeekRoster(),
+      ]);
       setToast({ kind: "success", message: "Assignment saved." });
     } catch (err) {
       setToast({ kind: "error", message: err instanceof Error ? err.message : "Failed to save assignment." });
