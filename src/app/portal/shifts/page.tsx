@@ -20,11 +20,12 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
+import { Modal } from "@/components/common/modal";
 import { PageLoader } from "@/components/common/page-loader";
 import { SectionCard } from "@/components/common/section-card";
 import { ToastBanner } from "@/components/common/toast-banner";
 import { useAuth } from "@/contexts/auth-context";
-import { shiftService, type ShiftDefinitionDto, type StaffShiftAssignmentDto, type DayOfWeek } from "@/lib/api/services/shift-service";
+import { shiftService, type ExpectedShiftDto, type ShiftDefinitionDto, type StaffShiftAssignmentDto, type DayOfWeek } from "@/lib/api/services/shift-service";
 import { usersService } from "@/lib/api/services/users-service";
 import type { UserDirectoryItem } from "@/types/models";
 
@@ -62,6 +63,37 @@ function todayISO(): string {
   return new Date().toISOString().slice(0, 10);
 }
 
+/**
+ * Returns Mon-Sun ISO dates for the week that contains the given date.
+ * Weeks start on Monday to match the FOMO shift doc and the attendance
+ * register's week-boundary logic.
+ */
+function weekDates(anchor: Date): string[] {
+  // JS getDay: 0=Sunday, 1=Monday...6=Saturday. Shift so 0=Monday.
+  const dayOffset = (anchor.getDay() + 6) % 7;
+  const monday = new Date(anchor);
+  monday.setDate(monday.getDate() - dayOffset);
+  monday.setHours(0, 0, 0, 0);
+  const dates: string[] = [];
+  for (let i = 0; i < 7; i += 1) {
+    const d = new Date(monday);
+    d.setDate(monday.getDate() + i);
+    dates.push(d.toISOString().slice(0, 10));
+  }
+  return dates;
+}
+
+function formatCellDate(iso: string): string {
+  const d = new Date(`${iso}T00:00:00`);
+  return d.toLocaleDateString("en-IN", { day: "2-digit", month: "short" });
+}
+
+function dayOfWeekFromIso(iso: string): DayOfWeek {
+  const d = new Date(`${iso}T00:00:00`);
+  const map: DayOfWeek[] = ["SUNDAY", "MONDAY", "TUESDAY", "WEDNESDAY", "THURSDAY", "FRIDAY", "SATURDAY"];
+  return map[d.getDay()];
+}
+
 export default function ShiftsPage() {
   const { token } = useAuth();
   const [definitions, setDefinitions] = useState<ShiftDefinitionDto[]>([]);
@@ -71,6 +103,18 @@ export default function ShiftsPage() {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [toast, setToast] = useState<{ kind: "success" | "error"; message: string } | null>(null);
+
+  // --- "This Week" roster view state ---
+  // Week offset: 0 = current week, +1 = next, -1 = previous. Operator can
+  // scrub forward to review next week's auto-rotation before it fires, or
+  // backward to audit what actually ran.
+  const [weekOffset, setWeekOffset] = useState(0);
+  const [weekExpected, setWeekExpected] = useState<Map<string, ExpectedShiftDto>>(new Map());
+  const [weekLoading, setWeekLoading] = useState(false);
+  // Cell-click override modal
+  const [overrideCell, setOverrideCell] = useState<{ staffId: number; staffName: string; date: string } | null>(null);
+  const [overrideChoice, setOverrideChoice] = useState<"" | "OFF" | string>("");
+  const [overrideBusy, setOverrideBusy] = useState(false);
 
   const loadBaseData = useCallback(async () => {
     if (!token) return;
@@ -113,6 +157,77 @@ export default function ShiftsPage() {
   useEffect(() => {
     if (selectedStaffId) void loadAssignmentsForStaff(selectedStaffId);
   }, [selectedStaffId, loadAssignmentsForStaff]);
+
+  // Compute this-week's Mon-Sun dates shifted by weekOffset.
+  const weekRange = useMemo(() => {
+    const base = new Date();
+    if (weekOffset !== 0) {
+      base.setDate(base.getDate() + weekOffset * 7);
+    }
+    return weekDates(base);
+  }, [weekOffset]);
+
+  // Bulk-load expected shifts for all staff × this week's dates. One request,
+  // indexed by "${staffId}_${date}" for O(1) cell lookup during render.
+  const loadWeekRoster = useCallback(async () => {
+    if (!token || staffList.length === 0) return;
+    setWeekLoading(true);
+    try {
+      const pairs: Array<{ staffId: number; date: string }> = [];
+      staffList.forEach((u) => {
+        if (!u.id) return;
+        weekRange.forEach((date) => {
+          pairs.push({ staffId: Number(u.id), date });
+        });
+      });
+      const results = await shiftService.getExpectedShiftsBulk(token, pairs);
+      const map = new Map<string, ExpectedShiftDto>();
+      results.forEach((r) => {
+        map.set(`${r.staffId}_${r.date}`, r);
+      });
+      setWeekExpected(map);
+    } catch {
+      setWeekExpected(new Map());
+    } finally {
+      setWeekLoading(false);
+    }
+  }, [token, staffList, weekRange]);
+
+  useEffect(() => {
+    void loadWeekRoster();
+  }, [loadWeekRoster]);
+
+  const submitOverride = useCallback(async () => {
+    if (!token || !overrideCell) return;
+    setOverrideBusy(true);
+    try {
+      const shiftDefinitionId =
+        overrideChoice === "OFF" ? null
+        : overrideChoice === "" ? undefined
+        : Number(overrideChoice);
+      if (shiftDefinitionId === undefined) {
+        setToast({ kind: "error", message: "Pick a shift or OFF." });
+        return;
+      }
+      await shiftService.upsertAssignment(token, {
+        staffId: overrideCell.staffId,
+        dayOfWeek: dayOfWeekFromIso(overrideCell.date),
+        shiftDefinitionId,
+        effectiveFrom: overrideCell.date,
+        effectiveTo: overrideCell.date,
+        source: "OVERRIDE",
+        notes: "manual override from This Week view",
+      });
+      setToast({ kind: "success", message: "Override saved." });
+      setOverrideCell(null);
+      setOverrideChoice("");
+      await loadWeekRoster();
+    } catch (err) {
+      setToast({ kind: "error", message: err instanceof Error ? err.message : "Failed to save override." });
+    } finally {
+      setOverrideBusy(false);
+    }
+  }, [token, overrideCell, overrideChoice, loadWeekRoster]);
 
   // Map dayOfWeek -> chosen shiftDefinitionId (null = OFF explicit; undefined = unconfigured)
   const perDayChoice: Record<DayOfWeek, number | null | undefined> = useMemo(() => {
@@ -170,6 +285,184 @@ export default function ShiftsPage() {
           land in Phase 2 — for now, set each staff&rsquo;s default weekday shift.
         </p>
       </div>
+
+      <SectionCard
+        title="This Week's Roster"
+        subtitle="Computed from defaults + rotation + overrides. Click any cell to override a single day (leave, swap, manual cover)."
+        actions={
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={() => setWeekOffset((w) => w - 1)}
+              className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/[0.08]"
+            >
+              ◂ Prev
+            </button>
+            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
+              {weekOffset === 0 ? "This Week" : weekOffset === 1 ? "Next Week" : weekOffset === -1 ? "Last Week" : `${weekOffset > 0 ? "+" : ""}${weekOffset} wks`}
+            </span>
+            <button
+              type="button"
+              onClick={() => setWeekOffset((w) => w + 1)}
+              className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/[0.08]"
+            >
+              Next ▸
+            </button>
+            <button
+              type="button"
+              onClick={() => setWeekOffset(0)}
+              disabled={weekOffset === 0}
+              className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/[0.08] disabled:opacity-40"
+            >
+              Today
+            </button>
+          </div>
+        }
+      >
+        {weekLoading ? (
+          <p className="text-sm text-slate-400">Loading roster…</p>
+        ) : staffList.length === 0 ? (
+          <p className="text-sm text-slate-400">No staff or coaches to display.</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <table className="min-w-full text-sm">
+              <thead>
+                <tr className="bg-white/[0.03] text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  <th className="sticky left-0 bg-[#111821] px-4 py-3">Staff</th>
+                  {weekRange.map((date) => (
+                    <th key={date} className="px-3 py-3 text-left min-w-[110px]">
+                      <div className="font-semibold text-white">{DAY_SHORT[dayOfWeekFromIso(date)]}</div>
+                      <div className="text-[10px] font-normal text-slate-500">{formatCellDate(date)}</div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/8">
+                {staffList.map((u) => {
+                  const sid = Number(u.id);
+                  return (
+                    <tr key={u.id} className="hover:bg-white/[0.02]">
+                      <td className="sticky left-0 bg-[#111821] px-4 py-2.5">
+                        <div className="font-medium text-white">{u.name}</div>
+                        <div className="text-[11px] text-slate-500">
+                          {u.designation || u.role}
+                        </div>
+                      </td>
+                      {weekRange.map((date) => {
+                        const exp = weekExpected.get(`${sid}_${date}`);
+                        // Cell visual state
+                        const isOff = exp?.off === true;
+                        const hasShift = exp && !exp.off && exp.shiftCode;
+                        // Detect OVERRIDE via the shape — if the response
+                        // came from an override row, it's already surfaced in
+                        // shiftCode; we can't distinguish OVERRIDE vs ROTATION
+                        // vs DEFAULT here without extra metadata. The backend
+                        // precedence guarantees correctness regardless, so
+                        // visual tone just reflects on/off.
+                        return (
+                          <td key={date} className="px-1 py-1">
+                            <button
+                              type="button"
+                              onClick={() => {
+                                setOverrideCell({ staffId: sid, staffName: u.name || "Staff", date });
+                                setOverrideChoice(
+                                  exp?.off ? "OFF"
+                                  : exp?.shiftCode ? String(definitions.find((d) => d.code === exp.shiftCode)?.id || "")
+                                  : ""
+                                );
+                              }}
+                              className={`block w-full rounded-lg border px-2 py-1.5 text-left text-xs transition ${
+                                hasShift
+                                  ? "border-emerald-500/30 bg-emerald-500/10 hover:bg-emerald-500/15 text-emerald-100"
+                                  : isOff
+                                  ? "border-amber-500/25 bg-amber-500/10 hover:bg-amber-500/15 text-amber-100"
+                                  : "border-white/10 bg-white/[0.03] hover:bg-white/[0.08] text-slate-400"
+                              }`}
+                            >
+                              {hasShift ? (
+                                <>
+                                  <div className="font-semibold truncate">
+                                    {exp?.shiftName?.replace(/^PT Trainer /, "PT ").replace(/^General Trainer /, "GT ") || exp?.shiftCode}
+                                  </div>
+                                  <div className="font-mono text-[10px] opacity-80">
+                                    {exp?.expectedInAt ? new Date(exp.expectedInAt).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true }) : ""}
+                                    {exp?.expectedOutAt ? `–${new Date(exp.expectedOutAt).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true })}` : ""}
+                                  </div>
+                                </>
+                              ) : isOff ? (
+                                <div className="font-semibold">Off</div>
+                              ) : (
+                                <div className="text-slate-500">— not set —</div>
+                              )}
+                            </button>
+                          </td>
+                        );
+                      })}
+                    </tr>
+                  );
+                })}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <p className="mt-3 text-xs text-slate-500">
+          Green = scheduled on shift · Amber = off / on leave · Grey = no assignment configured. Click a cell to override a single day. For permanent changes use the Weekly Defaults section below.
+        </p>
+      </SectionCard>
+
+      <Modal
+        open={Boolean(overrideCell)}
+        onClose={() => {
+          setOverrideCell(null);
+          setOverrideChoice("");
+        }}
+        title={overrideCell ? `Override · ${overrideCell.staffName} · ${formatCellDate(overrideCell.date)}` : "Override"}
+      >
+        <div className="space-y-4 text-sm">
+          <p className="text-slate-400">
+            This change writes a single-day override for {overrideCell ? formatCellDate(overrideCell.date) : "this date"}. It wins over any default or rotation assignment for just that day.
+          </p>
+          <label className="block space-y-2">
+            <span className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">Shift for the day</span>
+            <select
+              value={overrideChoice}
+              onChange={(e) => setOverrideChoice(e.target.value)}
+              disabled={overrideBusy}
+              className="w-full rounded-xl border border-white/10 bg-[#0f141d] px-4 py-2.5 text-sm text-white outline-none focus:border-[#c42924]/60"
+            >
+              <option value="" disabled>
+                — pick a shift —
+              </option>
+              <option value="OFF">OFF (on leave / day off)</option>
+              {definitions.map((d) => (
+                <option key={d.id} value={d.id}>
+                  {d.name} — {describeDefinition(d)}
+                </option>
+              ))}
+            </select>
+          </label>
+          <div className="flex justify-end gap-2">
+            <button
+              type="button"
+              onClick={() => {
+                setOverrideCell(null);
+                setOverrideChoice("");
+              }}
+              className="rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
+            >
+              Cancel
+            </button>
+            <button
+              type="button"
+              onClick={() => void submitOverride()}
+              disabled={overrideBusy || overrideChoice === ""}
+              className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white hover:bg-[#a51f1b] disabled:opacity-50"
+            >
+              {overrideBusy ? "Saving…" : "Save Override"}
+            </button>
+          </div>
+        </div>
+      </Modal>
 
       <SectionCard title="Shift Templates" subtitle="Seeded from the FOMO roster document. Operators won't usually edit these; contact an admin to add new templates.">
         <div className="overflow-hidden rounded-2xl border border-white/8 bg-[#111821]">

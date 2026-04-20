@@ -126,6 +126,11 @@ type ActionModalKey =
   | "pt"
   | "visit"
   | "biometric"
+  // SUPER_ADMIN escape hatch for subs stuck in PAUSED without a
+  // PAUSE_BENEFIT entitlement (so the normal Unfreeze flow can't apply).
+  // The daily activation cron covers future-start cases; this is the
+  // manual override for anything else that slips through.
+  | "force-activate"
   | null;
 
 type RecordLike = Record<string, unknown>;
@@ -137,7 +142,7 @@ type MembershipFamily =
   | "GROUP_CLASS"
   | "CREDIT_PACK"
   | "UNKNOWN";
-type MembershipActionKey = "renew" | "upgrade" | "downgrade" | "freeze" | "unfreeze" | "transfer" | "pt" | "visit";
+type MembershipActionKey = "renew" | "upgrade" | "downgrade" | "freeze" | "unfreeze" | "transfer" | "pt" | "visit" | "force-activate";
 
 interface MembershipActionState {
   key: MembershipActionKey;
@@ -3762,7 +3767,23 @@ export default function MemberProfilePage() {
       return [{ key: "unfreeze", label: "Unfreeze", enabled: true }];
     }
     if (isSelectedMembershipOperationalFreeze) {
-      return canShowManualUnfreezeAction ? [{ key: "unfreeze", label: "Unfreeze", enabled: true }] : [];
+      // Normal path: member has PAUSE_BENEFIT and the freeze has started
+      // (canShowManualUnfreezeAction) → offer Unfreeze.
+      if (canShowManualUnfreezeAction) {
+        return [{ key: "unfreeze", label: "Unfreeze", enabled: true }];
+      }
+      // Defensive path: sub is stuck in PAUSED (data anomaly like the
+      // Rajesh future-start case, or a freeze on a plan without
+      // PAUSE_BENEFIT). Instead of an empty menu, offer SUPER_ADMIN a
+      // "Force Activate" escape hatch so the member isn't frozen in
+      // the UI forever. Normal lifecycle cron (SubscriptionLifecycleScheduler)
+      // will catch future-start cases going forward; this is the manual
+      // override for anything that slips through.
+      if (isAdminOperator) {
+        return [{ key: "force-activate", label: "Force Activate", enabled: true }];
+      }
+      // Non-admin roles still see empty here — they should escalate.
+      return [];
     }
     const actions: MembershipActionState[] = [];
     if (canRenewMembership) {
@@ -6737,11 +6758,33 @@ export default function MemberProfilePage() {
                               <button
                                 key={`${membership.subscriptionId}-${action.key}`}
                                 type="button"
-                                onClick={() => {
+                                onClick={async () => {
                                   setOpenMembershipMenuId(null);
-                                  if (action.enabled) {
-                                    openActionModal(action.key === "pt" ? "pt" : action.key);
+                                  if (!action.enabled) return;
+                                  // Force Activate bypasses the modal flow —
+                                  // it's a last-resort admin escape for stuck
+                                  // PAUSED subs. Confirm + call
+                                  // activateMembership + reload.
+                                  if (action.key === "force-activate") {
+                                    const confirmed = window.confirm(
+                                      `Force activate subscription ${membership.subscriptionId}? This flips the status to ACTIVE immediately. Use only when the normal lifecycle didn't run (stuck PAUSED with no freeze).`
+                                    );
+                                    if (!confirmed || !token) return;
+                                    try {
+                                      setActionBusy(true);
+                                      await subscriptionService.activateMembership(token, Number(membership.subscriptionId));
+                                      await reloadShell();
+                                      setActionSuccess(`Subscription ${membership.subscriptionId} activated.`);
+                                    } catch (err) {
+                                      setActionError(
+                                        err instanceof ApiError ? err.message : err instanceof Error ? err.message : "Failed to activate subscription."
+                                      );
+                                    } finally {
+                                      setActionBusy(false);
+                                    }
+                                    return;
                                   }
+                                  openActionModal(action.key === "pt" ? "pt" : action.key);
                                 }}
                                 disabled={!action.enabled}
                                 className={`flex w-full rounded-xl px-3 py-2 text-left text-sm font-medium ${
@@ -6852,8 +6895,56 @@ export default function MemberProfilePage() {
                   </ProfilePanel>
                 );
                 }) : (
-                  <ProfilePanel title="Membership Portfolio" subtitle="No active or recent memberships are attached to this member yet." accent="slate">
-                    <p className="text-sm text-slate-300">No memberships found.</p>
+                  <ProfilePanel
+                    title="Membership Portfolio"
+                    subtitle={
+                      sourceInquiryId
+                        ? "Onboarding was started but never completed — pick up where it left off, or route the member back through Inquiries for a fresh conversion."
+                        : "No active or recent memberships are attached to this member. Start one below."
+                    }
+                    accent="slate"
+                  >
+                    <div className="space-y-4">
+                      <p className="text-sm text-slate-300">
+                        {sourceInquiryId
+                          ? "This member was converted from an inquiry but has no subscription yet. Two common causes: (1) onboarding step 2 or 3 was abandoned mid-flow; (2) a subscription was cancelled. Resume from the inquiry or start a brand-new subscription."
+                          : "This member has no subscription on file. Start a fresh subscription to activate their gym access."}
+                      </p>
+                      <div className="flex flex-wrap gap-3">
+                        <button
+                          type="button"
+                          onClick={() => {
+                            // "Start Subscription" — route back through the
+                            // guided onboarding wizard if we know the source
+                            // inquiry (so payment + invoice + subscription
+                            // chain is correct). Otherwise fall back to the
+                            // plain /portal/members/add flow.
+                            if (sourceInquiryId) {
+                              router.push(`/portal/members/add?sourceInquiryId=${sourceInquiryId}`);
+                            } else {
+                              router.push("/portal/members/add");
+                            }
+                          }}
+                          className="inline-flex items-center gap-2 rounded-xl bg-[#c42924] px-5 py-3 text-sm font-semibold text-white hover:bg-[#a51f1b]"
+                        >
+                          {sourceInquiryId ? "Resume Onboarding" : "Start Subscription"}
+                        </button>
+                        {sourceInquiryId ? (
+                          <button
+                            type="button"
+                            onClick={() => router.push(`/portal/inquiries?inquiryId=${sourceInquiryId}`)}
+                            className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-5 py-3 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
+                          >
+                            View Source Inquiry
+                          </button>
+                        ) : null}
+                      </div>
+                      {sourceInquiryId ? (
+                        <p className="text-xs text-slate-500">
+                          Tip: "Resume Onboarding" reopens the guided wizard at step 2 with this inquiry context. If the member really doesn't want the subscription anymore, go back to the Inquiry and mark it Not Interested or Lost.
+                        </p>
+                      ) : null}
+                    </div>
                   </ProfilePanel>
                 )}
                 {upcomingMemberships.length > 0 ? (
