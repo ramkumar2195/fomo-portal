@@ -92,7 +92,18 @@ function formatLocalDateTimeParts(value?: string): { dateLabel: string; timeLabe
   if (year && month && day) {
     const localDate = new Date(year, month - 1, day);
     const dateLabel = new Intl.DateTimeFormat("en-IN", { day: "2-digit", month: "short", year: "numeric" }).format(localDate);
-    const timeLabel = timePart ? timePart.slice(0, 5) : "-";
+    // Format time in 12-hour AM/PM. Raw storage stays 24h; only display flips.
+    let timeLabel = "-";
+    if (timePart) {
+      const [hhStr, mmStr] = timePart.split(":");
+      const hh = Number(hhStr);
+      const mm = mmStr || "00";
+      if (Number.isFinite(hh)) {
+        const ampm = hh < 12 ? "AM" : "PM";
+        const displayHour = hh % 12 === 0 ? 12 : hh % 12;
+        timeLabel = `${displayHour}:${mm} ${ampm}`;
+      }
+    }
     return { dateLabel, timeLabel };
   }
   return { dateLabel: value, timeLabel: "-" };
@@ -165,7 +176,10 @@ export function AttendanceAccessSection({
         {[
           { label: "Access Status", value: overallStatus },
           { label: "Biometric PIN", value: pin || "-" },
-          { label: "Total Check-ins", value: String(attendanceRows.length) },
+          // Unique-day count, not raw punch count — per DEC-024, dedup lives
+          // at the view layer. A member who punches 9 times in one minute
+          // shouldn't count as 9 check-ins; it's 1 visit day.
+          { label: "Total Check-ins", value: String(new Set(attendanceRows.map((r) => r.dateLabel)).size) },
           { label: "Devices", value: String(availableDevices.length) },
         ].map((entry) => (
           <div key={entry.label} className="rounded-[24px] border border-white/8 bg-white/[0.03] p-4">
