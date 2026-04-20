@@ -29,8 +29,16 @@ export function middleware(request: NextRequest) {
   const designation = (cookieDesignation || (role === "ADMIN" ? "SUPER_ADMIN" : undefined)) as
     | UserDesignation
     | undefined;
-  const branchId = request.cookies.get(COOKIE_KEYS.branchId)?.value;
   const isSuperAdmin = role === "ADMIN" && designation === "SUPER_ADMIN";
+  // SUPER_ADMIN implicitly defaults to "all-branches" when no cookie is
+  // present. Without this fallback, a fresh login can loop between
+  // /branch-selector and /portal/* because the cookie write from
+  // auth-context hasn't propagated to the middleware's cookie jar by the
+  // time the first /portal/* navigation fires. Treating a missing value
+  // as "all-branches" is semantically correct — an unscoped Super Admin
+  // IS viewing all branches — and breaks the loop.
+  const branchId = request.cookies.get(COOKIE_KEYS.branchId)?.value
+    || (isSuperAdmin ? "all-branches" : undefined);
 
   if (PUBLIC_ROUTES.has(pathname)) {
     if (pathname === "/unauthorized") {
