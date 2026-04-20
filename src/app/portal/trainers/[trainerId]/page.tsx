@@ -28,6 +28,7 @@ import { AttendanceAccessSection } from "@/components/portal/attendance-access-s
 import { useAuth } from "@/contexts/auth-context";
 import { ApiError } from "@/lib/api/http-client";
 import { engagementService, BiometricAttendanceLogRecord, BiometricDeviceRecord, MemberBiometricEnrollmentRecord } from "@/lib/api/services/engagement-service";
+import { isRealBiometricDevice } from "@/lib/biometric-device-filter";
 import { branchService } from "@/lib/api/services/branch-service";
 import { trainingService, TrainerScheduleEntry, TrainerScheduleResponse } from "@/lib/api/services/training-service";
 import { usersService } from "@/lib/api/services/users-service";
@@ -796,7 +797,7 @@ export default function TrainerProfilePage() {
             };
           }),
         );
-        setBiometricDevices(Array.isArray(devices) ? devices : []);
+        setBiometricDevices(Array.isArray(devices) ? devices.filter(isRealBiometricDevice) : []);
         setBiometricLogs(
           Array.isArray(allLogs)
             ? allLogs.filter((entry) => String(entry.deviceUserId || "") === trainerPin)

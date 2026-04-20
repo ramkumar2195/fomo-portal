@@ -19,6 +19,7 @@ import { engagementService } from "@/lib/api/services/engagement-service";
 import type { BiometricAttendanceLogRecord, BiometricDeviceRecord, MemberBiometricEnrollmentRecord } from "@/lib/api/services/engagement-service";
 import { ToastBanner } from "@/components/common/toast-banner";
 import { AttendanceAccessSection } from "@/components/portal/attendance-access-section";
+import { isRealBiometricDevice } from "@/lib/biometric-device-filter";
 
 /* ── helpers ─────────────────────────────────────────────────── */
 
@@ -127,7 +128,7 @@ export default function StaffProfilePage() {
             ]);
             const entries = Array.isArray(report) ? report : (Array.isArray((report as Rec).entries) ? (report as Rec).entries as unknown[] : []);
             setAttendanceData(entries);
-            setBiometricDevices(Array.isArray(devices) ? devices : []);
+            setBiometricDevices(Array.isArray(devices) ? devices.filter(isRealBiometricDevice) : []);
             setBiometricLogs(
               Array.isArray(allLogs)
                 ? allLogs.filter((entry) => str(toRec(entry), "deviceUserId") === staffPin)

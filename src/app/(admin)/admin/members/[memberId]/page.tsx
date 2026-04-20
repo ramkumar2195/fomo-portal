@@ -33,6 +33,7 @@ import { subscriptionService } from "@/lib/api/services/subscription-service";
 import { trainingService } from "@/lib/api/services/training-service";
 import { usersService } from "@/lib/api/services/users-service";
 import { canManagePtSetup, canOperatePtSessions } from "@/lib/access-policy";
+import { isRealBiometricDevice } from "@/lib/biometric-device-filter";
 import { formatMemberCode } from "@/lib/inquiry-code";
 import { UserDirectoryItem, FreezeHistoryEntry, InvoiceSummary, BillingReceiptSummary } from "@/types/models";
 import { InquiryRecord } from "@/types/inquiry";
@@ -1184,18 +1185,6 @@ function biometricDeviceStatusTone(payload: unknown): string {
   return isBiometricDeviceOnline(payload) ? "text-emerald-300" : "text-slate-500";
 }
 
-function isRealBiometricDevice(payload: unknown): boolean {
-  const serial = pickString(payload, ["serialNumber"]).trim().toUpperCase();
-  if (!serial) {
-    return false;
-  }
-  // TEST* devices are local dev fixtures. LEGACY_GYMSW is the synthetic
-  // device we attach to imported pre-ESSL attendance — it's not a real
-  // gate and has no management actions (enroll / block / delete), so it
-  // must be hidden from the Manage Access Devices list. Logs that
-  // reference it are relabelled to "Legacy" at render time.
-  return !serial.startsWith("TEST") && serial !== "LEGACY_GYMSW";
-}
 
 /**
  * Display label for a biometric device serial in the attendance logs and

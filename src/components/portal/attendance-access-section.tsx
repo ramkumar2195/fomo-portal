@@ -1,6 +1,7 @@
 "use client";
 
 import { BiometricAttendanceLogRecord, BiometricDeviceRecord, MemberBiometricEnrollmentRecord } from "@/lib/api/services/engagement-service";
+import { isRealBiometricDevice } from "@/lib/biometric-device-filter";
 
 interface AttendanceAccessSectionProps {
   pin: string;
@@ -55,11 +56,6 @@ function biometricDeviceStatusLabel(device: BiometricDeviceRecord): string {
 
 function biometricDeviceStatusTone(device: BiometricDeviceRecord): string {
   return isBiometricDeviceOnline(device) ? "text-emerald-300" : "text-slate-500";
-}
-
-function isRealBiometricDevice(device: BiometricDeviceRecord): boolean {
-  const serial = String(device.serialNumber || "").trim().toUpperCase();
-  return Boolean(serial) && !serial.startsWith("TEST");
 }
 
 function friendlyBiometricDeviceName(device: BiometricDeviceRecord, index: number): string {
