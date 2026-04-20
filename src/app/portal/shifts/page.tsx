@@ -94,6 +94,22 @@ function dayOfWeekFromIso(iso: string): DayOfWeek {
   return map[d.getDay()];
 }
 
+/** Render ENUM_CODE as "Title Case" for human-readable labels.
+ *  Preserves known acronyms in upper-case (e.g. PT, GT, HR) so
+ *  "PT_COACH" renders as "PT Coach", not "Pt Coach". */
+const ACRONYMS = new Set(["PT", "GT", "HR", "IT"]);
+function humanizeCode(code?: string | null): string {
+  if (!code) return "";
+  return code
+    .split("_")
+    .map((w) => {
+      if (w.length === 0) return w;
+      if (ACRONYMS.has(w.toUpperCase())) return w.toUpperCase();
+      return w.charAt(0).toUpperCase() + w.slice(1).toLowerCase();
+    })
+    .join(" ");
+}
+
 export default function ShiftsPage() {
   const { token } = useAuth();
   const [definitions, setDefinitions] = useState<ShiftDefinitionDto[]>([]);
@@ -345,7 +361,7 @@ export default function ShiftsPage() {
                       <td className="sticky left-0 bg-[#111821] px-4 py-2.5">
                         <div className="font-medium text-white">{u.name}</div>
                         <div className="text-[11px] text-slate-500">
-                          {u.designation || u.role}
+                          {humanizeCode(u.designation) || humanizeCode(u.role)}
                         </div>
                       </td>
                       {weekRange.map((date) => {
@@ -385,8 +401,19 @@ export default function ShiftsPage() {
                                     {exp?.shiftName?.replace(/^PT Trainer /, "PT ").replace(/^General Trainer /, "GT ") || exp?.shiftCode}
                                   </div>
                                   <div className="font-mono text-[10px] opacity-80">
-                                    {exp?.expectedInAt ? new Date(exp.expectedInAt).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true }) : ""}
-                                    {exp?.expectedOutAt ? `–${new Date(exp.expectedOutAt).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true })}` : ""}
+                                    {exp?.blocks && exp.blocks.length > 0
+                                      ? exp.blocks
+                                          .slice()
+                                          .sort((a, b) => a.blockIndex - b.blockIndex)
+                                          .map((b) => {
+                                            const s = new Date(b.startAt).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true });
+                                            const e = new Date(b.endAt).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true });
+                                            return `${s}–${e}`;
+                                          })
+                                          .join(" + ")
+                                      : exp?.expectedInAt
+                                        ? `${new Date(exp.expectedInAt).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true })}${exp?.expectedOutAt ? `–${new Date(exp.expectedOutAt).toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true })}` : ""}`
+                                        : ""}
                                   </div>
                                 </>
                               ) : isOff ? (
