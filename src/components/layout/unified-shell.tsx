@@ -14,6 +14,7 @@ import {
   CreditCard,
   LogOut,
   Package2,
+  UserRound,
   Wallet,
 } from "lucide-react";
 import {
@@ -184,7 +185,8 @@ const NAV_SECTIONS: NavSection[] = [
     label: "Settings",
     icon: <SettingsIcon className="h-4 w-4" />,
     children: [
-      { href: "/portal/settings", label: "My Profile", icon: <SettingsIcon className="h-4 w-4" /> },
+      { href: "/portal/my-profile", label: "My Profile", icon: <UserRound className="h-4 w-4" /> },
+      { href: "/portal/settings", label: "Account Settings", icon: <SettingsIcon className="h-4 w-4" /> },
       {
         href: "/admin/settings?tab=billing",
         accessHref: "/admin/settings",

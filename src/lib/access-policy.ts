@@ -20,6 +20,7 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     "/portal/notifications",
     "/portal/reports",
     "/portal/settings",
+    "/portal/my-profile",
     "/portal/class-schedule",
     "/portal/accounts",
     "/admin/programs",
@@ -34,6 +35,7 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     "/portal/billing",
     "/portal/notifications",
     "/portal/reports",
+    "/portal/my-profile",
   ],
   SALES_EXECUTIVE: [
     "/portal/sales-dashboard",
@@ -41,6 +43,7 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     "/portal/follow-ups",
     "/portal/members",
     "/portal/renewals",
+    "/portal/my-profile",
   ],
   FRONT_DESK_EXECUTIVE: [
     "/portal/sales-dashboard",
@@ -52,6 +55,7 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     // Front desk uses gym-entry attendance for walk-in verification + spot
     // checks on today's entries.
     "/portal/gym-attendance",
+    "/portal/my-profile",
   ],
   FITNESS_MANAGER: [
     "/portal/sales-dashboard",
@@ -66,6 +70,7 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     "/portal/class-schedule",
     "/admin/programs",
     "/admin/classes",
+    "/portal/my-profile",
   ],
   HEAD_COACH: [],
   PT_COACH: [],
