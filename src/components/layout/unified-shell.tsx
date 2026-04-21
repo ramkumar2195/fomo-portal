@@ -377,10 +377,27 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
         if (!active) {
           return;
         }
-        // Filter out CONVERTED enquiries — those already appear as members in user results
-        const openEnquiries = enquiryPage.content.filter(
-          (enq) => enq.status !== "CONVERTED",
+        // Dedup enquiry rows against member rows. We drop an enquiry from
+        // the search results when ANY of these is true:
+        //  (a) It's CONVERTED or LOST — converted ones appear as members
+        //      in the user results; LOST ones include archived-duplicate
+        //      rows flipped by the dedup cleanup.
+        //  (b) The enquiry's mobile matches a user row we already show —
+        //      same person, the user row wins. Catches the Sahil case
+        //      (member created Apr 11, stale enquiry created Apr 20 that
+        //      was never linked back to the member).
+        //  (c) The enquiry has a memberId set — it's already linked and
+        //      the member is the canonical record.
+        const userMobiles = new Set(
+          users.map((u) => String(u.mobile || "").trim()).filter(Boolean),
         );
+        const openEnquiries = enquiryPage.content.filter((enq) => {
+          const status = String(enq.status || "").toUpperCase();
+          if (status === "CONVERTED" || status === "LOST") return false;
+          if (enq.memberId) return false;
+          if (userMobiles.has(String(enq.mobileNumber || "").trim())) return false;
+          return true;
+        });
         setGlobalSearchResults([
           ...users.slice(0, 6).map((item) => ({ kind: "user" as const, item })),
           ...openEnquiries.slice(0, 4).map((item) => ({ kind: "enquiry" as const, item })),
