@@ -57,6 +57,13 @@ interface CreateInquiryModalProps {
   effectiveBranchCode: string;
   token: string;
   user: AuthUser | null;
+  /**
+   * Pre-fills the mobile field when the modal opens. Used by the global
+   * search bar's "Add new enquiry" CTA — operator typed a mobile that
+   * had no hits, clicks the CTA, and lands straight in the modal with
+   * the number already entered. Empty string = no pre-fill.
+   */
+  initialMobile?: string;
 }
 
 // ---------------------------------------------------------------------------
@@ -190,15 +197,22 @@ export function CreateInquiryModal({
   effectiveBranchCode,
   token,
   user,
+  initialMobile,
 }: CreateInquiryModalProps) {
   const router = useRouter();
   // -- wizard step -----------------------------------------------------------
   const [step, setStep] = useState(1);
 
   // -- form state ------------------------------------------------------------
-  const [newInquiry, setNewInquiry] = useState<InquiryCreateFormValues>(() =>
-    createEmptyInquiryForm(initialStaffId),
-  );
+  const [newInquiry, setNewInquiry] = useState<InquiryCreateFormValues>(() => {
+    const empty = createEmptyInquiryForm(initialStaffId);
+    // If the caller pre-supplied a mobile (via the global search "Add new
+    // enquiry" CTA), seed the field so the operator doesn't re-type.
+    if (initialMobile && initialMobile.trim().length > 0) {
+      return { ...empty, mobileNumber: initialMobile.trim() };
+    }
+    return empty;
+  });
   const [followUpPlan, setFollowUpPlan] = useState<FollowUpPlanValues>(() =>
     createEmptyFollowUpPlan(initialStaffId),
   );
@@ -216,14 +230,19 @@ export function CreateInquiryModal({
   useEffect(() => {
     if (open) {
       setStep(1);
-      setNewInquiry(createEmptyInquiryForm(initialStaffId));
+      const empty = createEmptyInquiryForm(initialStaffId);
+      setNewInquiry(
+        initialMobile && initialMobile.trim().length > 0
+          ? { ...empty, mobileNumber: initialMobile.trim() }
+          : empty,
+      );
       setFollowUpPlan(createEmptyFollowUpPlan(initialStaffId));
       setIsSubmitting(false);
       setSubmitError(null);
       setStepErrors([]);
       setShowAdditionalContact(false);
     }
-  }, [open, initialStaffId]);
+  }, [open, initialStaffId, initialMobile]);
 
   useEffect(() => {
     if (!open || !token) return;

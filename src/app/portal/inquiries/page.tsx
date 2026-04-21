@@ -574,6 +574,10 @@ export default function InquiriesPage() {
   const [toast, setToast] = useState<ToastState | null>(null);
   const deepLinkedOpenInquiryId = searchParams.get("openInquiryId");
   const deepLinkedQuery = searchParams.get("query") || "";
+  // Global search bar's "Add new enquiry" CTA deep-links here with the
+  // typed mobile prefilled. When this param is present we auto-open the
+  // create modal and hand the mobile through as initialMobile.
+  const deepLinkedCreateMobile = searchParams.get("createWithMobile") || "";
 
   const loadInquiries = useCallback(
     async (nextFilters?: InquiryFilterState, nextPage = currentPage) => {
@@ -759,6 +763,16 @@ export default function InquiriesPage() {
   useEffect(() => {
     void loadInquiryAnalysis();
   }, [loadInquiryAnalysis]);
+
+  // Auto-open the create modal when the global search CTA deep-links with
+  // ?createWithMobile=. Runs once on mount; mobile is passed to the modal
+  // via initialMobile so the operator doesn't re-type.
+  useEffect(() => {
+    if (deepLinkedCreateMobile && canCreateInquiry) {
+      setIsCreateModalOpen(true);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [deepLinkedCreateMobile]);
 
   useEffect(() => {
     if (!token || !deepLinkedOpenInquiryId) {
@@ -2334,6 +2348,7 @@ export default function InquiriesPage() {
         effectiveBranchCode={effectiveBranchCode}
         token={token || ""}
         user={user}
+        initialMobile={deepLinkedCreateMobile}
       />
 
       {quickFollowUpForm ? (

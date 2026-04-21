@@ -658,7 +658,34 @@ export function UnifiedShell({ children }: { children: ReactNode }) {
                       ) : globalSearchQuery.trim().length < 2 ? (
                         <p className="px-4 py-3 text-sm text-slate-400">Type at least 2 characters to search.</p>
                       ) : globalSearchResults.length === 0 ? (
-                        <p className="px-4 py-3 text-sm text-slate-400">No users found.</p>
+                        (() => {
+                          // Zero-hit → if the query looks like a mobile
+                          // number (7+ digits), offer a one-click "Add new
+                          // enquiry" CTA that opens the create-inquiry modal
+                          // on /portal/inquiries with the mobile pre-filled.
+                          // Trims non-digits so "9876 54 3210" still works.
+                          const digits = globalSearchQuery.replace(/\D+/g, "");
+                          const looksLikeMobile = digits.length >= 7;
+                          return (
+                            <div className="px-4 py-3 text-sm text-slate-400">
+                              <p>No match in members, staff, coaches, or enquiries.</p>
+                              {looksLikeMobile ? (
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    setGlobalSearchOpen(false);
+                                    router.push(`/portal/inquiries?createWithMobile=${encodeURIComponent(digits)}`);
+                                  }}
+                                  className="mt-3 inline-flex items-center gap-2 rounded-lg bg-[#c42924] px-3 py-1.5 text-xs font-semibold text-white hover:bg-[#a51f1b]"
+                                >
+                                  + Add new enquiry for {digits}
+                                </button>
+                              ) : (
+                                <p className="mt-1 text-xs text-slate-500">Type a full mobile number to start a new enquiry.</p>
+                              )}
+                            </div>
+                          );
+                        })()
                       ) : (
                         <div className="max-h-80 overflow-y-auto py-1">
                           {globalSearchResults.map((result) => (
