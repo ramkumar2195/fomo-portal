@@ -1013,6 +1013,31 @@ export const subscriptionService = {
     return unwrapData<MemberEntitlement>(response);
   },
 
+  /**
+   * Direct grant of additional PAUSE_BENEFIT days. Backend enforces that
+   * only SUPER_ADMIN and GYM_MANAGER can hit this endpoint — any other
+   * STAFF role gets 403 and must submit an approval request instead via
+   * approvalsService.submit({ requestType: "GRANT_PAUSE_BENEFIT", ... }).
+   *
+   * The caller is expected to pass its own idempotencyKey (e.g.
+   * `DIRECT_GRANT_<memberId>_<timestamp>`) so a retry of the same submit
+   * doesn't double-credit the entitlement.
+   */
+  async grantPauseBenefit(
+    token: string,
+    memberId: string | number,
+    payload: { days: number; reason?: string; idempotencyKey: string },
+  ): Promise<MemberEntitlement> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/members/${memberId}/pause-benefit/grant`,
+      token,
+      method: "POST",
+      body: payload,
+    });
+    return unwrapData<MemberEntitlement>(response);
+  },
+
   async getCreditsWallet(token: string, memberId: string): Promise<unknown> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "engagement",

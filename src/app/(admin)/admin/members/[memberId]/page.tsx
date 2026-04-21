@@ -24,6 +24,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { BillingWorkflowTemplate } from "@/components/billing/billing-workflow-template";
+import { GrantPauseBenefitModal } from "@/components/member/grant-pause-benefit-modal";
 import { Modal } from "@/components/common/modal";
 import { useAuth } from "@/contexts/auth-context";
 import { ApiError } from "@/lib/api/http-client";
@@ -143,7 +144,7 @@ type MembershipFamily =
   | "GROUP_CLASS"
   | "CREDIT_PACK"
   | "UNKNOWN";
-type MembershipActionKey = "renew" | "upgrade" | "downgrade" | "freeze" | "unfreeze" | "transfer" | "pt" | "visit" | "force-activate";
+type MembershipActionKey = "renew" | "upgrade" | "downgrade" | "freeze" | "unfreeze" | "transfer" | "pt" | "visit" | "force-activate" | "grant-pause-benefit";
 
 interface MembershipActionState {
   key: MembershipActionKey;
@@ -1965,6 +1966,10 @@ export default function MemberProfilePage() {
   const [hasPtAssignment, setHasPtAssignment] = useState(false);
   const [actionModal, setActionModal] = useState<ActionModalKey>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  // Separate state for the Grant-Pause-Benefit modal — it's a self-contained
+  // component with its own submit pipeline (direct-vs-approval) so it sits
+  // outside the shared `actionModal` dispatcher.
+  const [grantPauseOpen, setGrantPauseOpen] = useState(false);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [completedBilling, setCompletedBilling] = useState<CompletedBillingState | null>(null);
@@ -3821,6 +3826,13 @@ export default function MemberProfilePage() {
       actions.push({ key: "unfreeze", label: "Unfreeze", enabled: true });
     } else if (canShowFreezeAction) {
       actions.push({ key: "freeze", label: "Freeze", enabled: true });
+    }
+    // Manual PAUSE_BENEFIT top-up. DEC-019 + DEC-020: ADMIN / GYM_MANAGER
+    // grant directly; everyone else submits an approval request. The modal
+    // reads the caller's role and picks the right flow — no designation
+    // check here at the action-list level so the button is always offered.
+    if (canShowFreezeAction || canShowManualUnfreezeAction) {
+      actions.push({ key: "grant-pause-benefit", label: "Grant Pause Days", enabled: true });
     }
     if (canTransferMembership) {
       const adminApprovalRequired = !isAdminOperator;
@@ -6790,6 +6802,13 @@ export default function MemberProfilePage() {
                                   // it's a last-resort admin escape for stuck
                                   // PAUSED subs. Confirm + call
                                   // activateMembership + reload.
+                                  // Grant Pause Benefit uses a self-contained
+                                  // modal with its own state (component handles
+                                  // the role-gated direct-vs-approval flow).
+                                  if (action.key === "grant-pause-benefit") {
+                                    setGrantPauseOpen(true);
+                                    return;
+                                  }
                                   if (action.key === "force-activate") {
                                     const confirmed = window.confirm(
                                       `Force activate subscription ${membership.subscriptionId}? This flips the status to ACTIVE immediately. Use only when the normal lifecycle didn't run (stuck PAUSED with no freeze).`
@@ -8733,6 +8752,23 @@ export default function MemberProfilePage() {
               </div>
             </div>
           </Modal>
+
+          <GrantPauseBenefitModal
+            open={grantPauseOpen}
+            onClose={() => setGrantPauseOpen(false)}
+            memberId={Number(memberId)}
+            memberName={memberRecord?.name || undefined}
+            branchCode={branchCode || undefined}
+            onSuccess={(result) => {
+              setActionSuccess(result.message);
+              if (result.direct) {
+                // Entitlements changed — refresh member shell so the
+                // freeze balance updates. Approval-submit doesn't need
+                // a refresh (the grant happens only once approved).
+                void reloadShell();
+              }
+            }}
+          />
 
           <Modal
             open={actionModal === "unfreeze-billing"}
