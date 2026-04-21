@@ -21,6 +21,7 @@ import {
 import { PageLoader } from "@/components/common/page-loader";
 import { SectionCard } from "@/components/common/section-card";
 import { TodayCheckInsTile } from "@/components/dashboard/today-check-ins-tile";
+import { PendingApprovalsTile } from "@/components/dashboard/pending-approvals-tile";
 import { useAuth } from "@/contexts/auth-context";
 import { useBranch } from "@/contexts/branch-context";
 import { engagementService } from "@/lib/api/services/engagement-service";
@@ -1645,6 +1646,8 @@ export default function UnifiedDashboardPage() {
         {/* Live flap-gate entries — placed at the top so whoever opens the
             dashboard first sees who's in the gym right now. */}
         {token ? <TodayCheckInsTile /> : null}
+        {/* Pending approvals — surfaces gated risky-op queue (DEC-019). */}
+        {token ? <PendingApprovalsTile /> : null}
         {token ? (
           <QuickActionTiles
             token={token}
@@ -1663,6 +1666,7 @@ export default function UnifiedDashboardPage() {
       <div className="space-y-8 pb-12">
         {token ? <GymManagerQuickActions token={token} userName={user?.name} /> : null}
         {token ? <TodayCheckInsTile /> : null}
+        {token ? <PendingApprovalsTile /> : null}
         {token ? (
           <QuickActionTiles
             token={token}

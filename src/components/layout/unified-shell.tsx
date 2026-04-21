@@ -14,6 +14,7 @@ import {
   CreditCard,
   LogOut,
   Package2,
+  ShieldCheck,
   UserRound,
   Wallet,
 } from "lucide-react";
@@ -162,6 +163,16 @@ const NAV_SECTIONS: NavSection[] = [
     label: "Notifications",
     href: "/portal/notifications",
     icon: <BellIcon className="h-4 w-4" />,
+  },
+  {
+    // Approval queue for risky-op gates (DEC-019). Visible to the two
+    // designations that can actually decide on a request — SUPER_ADMIN
+    // and GYM_MANAGER. Everyone else is filtered out by canAccessRoute
+    // via the access-policy prefix list.
+    key: "approvals",
+    label: "Approvals",
+    href: "/portal/approvals",
+    icon: <ShieldCheck className="h-4 w-4" />,
   },
   {
     key: "reports",

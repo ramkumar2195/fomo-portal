@@ -21,6 +21,7 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     "/portal/reports",
     "/portal/settings",
     "/portal/my-profile",
+    "/portal/approvals",
     "/portal/class-schedule",
     "/portal/accounts",
     "/admin/programs",
