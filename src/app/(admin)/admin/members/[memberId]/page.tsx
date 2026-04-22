@@ -5268,6 +5268,17 @@ export default function MemberProfilePage() {
         || buildSyntheticInternalEmail(targetRecord?.mobile || targetId, "members.fomotraining.internal");
 
       const createAddOn = async (targetMemberId: string, baseSubscriptionId: number, inquiryId?: number) => {
+        // For Couple PT, pass the secondary partner at create time so the
+        // backend can reject incomplete couple subscriptions (G8 / DEC).
+        // The partner id passed to each member differs: when creating for
+        // the primary member, the partner is the secondary; when creating
+        // for the secondary, the partner is the primary. Computed here
+        // relative to who `targetMemberId` is.
+        const couplePartnerMemberId = isCouplePt
+          ? (targetMemberId === String(memberId)
+              ? Number(partnerMemberId)
+              : Number(memberId))
+          : undefined;
         const response = await subscriptionService.createMemberAddOnSubscription(token, targetMemberId, {
           baseSubscriptionId,
           startDate: ptForm.startDate,
@@ -5277,6 +5288,7 @@ export default function MemberProfilePage() {
           discountAmount: ptCommercial.discountAmount > 0 ? roundAmount(ptCommercial.discountAmount) : undefined,
           discountedByStaffId: operatorId > 0 ? operatorId : undefined,
           billedByStaffId: operatorId > 0 ? operatorId : undefined,
+          couplePartnerMemberId,
         });
         const invoiceId = Number(response.invoiceId || 0);
         const invoiceNumber = String(response.invoiceNumber || "").trim();
