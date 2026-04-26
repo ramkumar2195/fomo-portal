@@ -25,6 +25,7 @@ import {
 } from "lucide-react";
 import { BillingWorkflowTemplate } from "@/components/billing/billing-workflow-template";
 import { GrantPauseBenefitModal } from "@/components/member/grant-pause-benefit-modal";
+import { DiscountApprovalModal } from "@/components/billing/discount-approval-modal";
 import { Modal } from "@/components/common/modal";
 import { useAuth } from "@/contexts/auth-context";
 import { ApiError } from "@/lib/api/http-client";
@@ -1970,6 +1971,17 @@ export default function MemberProfilePage() {
   // component with its own submit pipeline (direct-vs-approval) so it sits
   // outside the shared `actionModal` dispatcher.
   const [grantPauseOpen, setGrantPauseOpen] = useState(false);
+  // DISCOUNT_APPROVAL_REQUIRED submit modal (Phase 2B-2 / B3.4 / DEC-019).
+  // Set by the renew/upgrade/addon catch blocks when the backend rejects the
+  // creation because the operator's designation can't apply > 5% directly.
+  // The full original request body is captured so the approval executor can
+  // re-run the exact same call once a manager approves.
+  const [discountApprovalState, setDiscountApprovalState] = useState<{
+    flow: "CREATE" | "ADDON" | "RENEW" | "UPGRADE";
+    request: Record<string, unknown>;
+    discountPercent: number;
+    approverRole: string;
+  } | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [actionSuccess, setActionSuccess] = useState<string | null>(null);
   const [completedBilling, setCompletedBilling] = useState<CompletedBillingState | null>(null);
@@ -4648,17 +4660,18 @@ export default function MemberProfilePage() {
     const assignedToStaffId = operatorId > 0 ? operatorId : Number(editForm.clientRepStaffId || 0) || undefined;
     setActionBusy(true);
     setActionError(null);
+    const renewRequestBody = {
+      subscriptionId: Number(effectiveSubscriptionId),
+      productVariantId: Number(lifecycleForm.productVariantId),
+      startDate: lifecycleForm.startDate || undefined,
+      inquiryId: sourceInquiryId || undefined,
+      branchCode: branchCode || undefined,
+      notes: lifecycleForm.notes || undefined,
+      discountAmount: renewCommercial.discountAmount > 0 ? roundAmount(renewCommercial.discountAmount) : undefined,
+      discountedByStaffId: operatorId > 0 ? operatorId : undefined,
+    };
     try {
-      const response = (await subscriptionService.renewSubscription(token, memberId, {
-        subscriptionId: Number(effectiveSubscriptionId),
-        productVariantId: Number(lifecycleForm.productVariantId),
-        startDate: lifecycleForm.startDate || undefined,
-        inquiryId: sourceInquiryId || undefined,
-        branchCode: branchCode || undefined,
-        notes: lifecycleForm.notes || undefined,
-        discountAmount: renewCommercial.discountAmount > 0 ? roundAmount(renewCommercial.discountAmount) : undefined,
-        discountedByStaffId: operatorId > 0 ? operatorId : undefined,
-      })) as {
+      const response = (await subscriptionService.renewSubscription(token, memberId, renewRequestBody)) as {
         invoiceId?: number;
         invoiceNumber?: string;
         newSubscriptionId?: number;
@@ -4741,6 +4754,19 @@ export default function MemberProfilePage() {
       );
       setActionModal(null);
     } catch (error) {
+      if (error instanceof ApiError) {
+        const discountApproval = error.discountApproval;
+        if (discountApproval) {
+          setDiscountApprovalState({
+            flow: "RENEW",
+            request: renewRequestBody as Record<string, unknown>,
+            discountPercent: discountApproval.percent,
+            approverRole: discountApproval.approverRole,
+          });
+          setActionBusy(false);
+          return;
+        }
+      }
       setActionError(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Unable to renew membership.");
     } finally {
       setActionBusy(false);
@@ -4771,17 +4797,18 @@ export default function MemberProfilePage() {
     const assignedToStaffId = operatorId > 0 ? operatorId : Number(editForm.clientRepStaffId || 0) || undefined;
     setActionBusy(true);
     setActionError(null);
+    const upgradeRequestBody = {
+      subscriptionId: Number(selectedSubscriptionId),
+      productVariantId: Number(lifecycleForm.productVariantId),
+      startDate: lifecycleForm.startDate || undefined,
+      inquiryId: sourceInquiryId || undefined,
+      branchCode: branchCode || undefined,
+      notes: lifecycleForm.notes || undefined,
+      discountAmount: upgradeCommercial.discountAmount > 0 ? roundAmount(upgradeCommercial.discountAmount) : undefined,
+      discountedByStaffId: operatorId > 0 ? operatorId : undefined,
+    };
     try {
-      const response = (await subscriptionService.upgradeSubscription(token, memberId, {
-        subscriptionId: Number(selectedSubscriptionId),
-        productVariantId: Number(lifecycleForm.productVariantId),
-        startDate: lifecycleForm.startDate || undefined,
-        inquiryId: sourceInquiryId || undefined,
-        branchCode: branchCode || undefined,
-        notes: lifecycleForm.notes || undefined,
-        discountAmount: upgradeCommercial.discountAmount > 0 ? roundAmount(upgradeCommercial.discountAmount) : undefined,
-        discountedByStaffId: operatorId > 0 ? operatorId : undefined,
-      })) as {
+      const response = (await subscriptionService.upgradeSubscription(token, memberId, upgradeRequestBody)) as {
         invoiceId?: number;
         invoiceNumber?: string;
         newSubscriptionId?: number;
@@ -4865,6 +4892,19 @@ export default function MemberProfilePage() {
       );
       setActionModal(null);
     } catch (error) {
+      if (error instanceof ApiError) {
+        const discountApproval = error.discountApproval;
+        if (discountApproval) {
+          setDiscountApprovalState({
+            flow: "UPGRADE",
+            request: upgradeRequestBody as Record<string, unknown>,
+            discountPercent: discountApproval.percent,
+            approverRole: discountApproval.approverRole,
+          });
+          setActionBusy(false);
+          return;
+        }
+      }
       setActionError(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Unable to upgrade membership.");
     } finally {
       setActionBusy(false);
@@ -5254,6 +5294,14 @@ export default function MemberProfilePage() {
 
     setActionBusy(true);
     setActionError(null);
+    // Hoisted above the try so the catch block can read them when the
+    // backend returns DISCOUNT_APPROVAL_REQUIRED. Each createAddOn call
+    // overwrites them — only the failing call's body is needed for the
+    // approval submission.
+    const lastAddOnState: { body: Record<string, unknown> | null; targetMemberId: string } = {
+      body: null,
+      targetMemberId: String(memberId),
+    };
     try {
       const coupleGroupId = isCouplePt ? Date.now() : undefined;
       const partnerMemberId = isCouplePt ? String(ptForm.partnerMemberId || "") : "";
@@ -5279,7 +5327,7 @@ export default function MemberProfilePage() {
               ? Number(partnerMemberId)
               : Number(memberId))
           : undefined;
-        const response = await subscriptionService.createMemberAddOnSubscription(token, targetMemberId, {
+        const addOnRequestBody = {
           baseSubscriptionId,
           startDate: ptForm.startDate,
           addOnVariantIds: [Number(selectedPtVariant.variantId)],
@@ -5289,7 +5337,10 @@ export default function MemberProfilePage() {
           discountedByStaffId: operatorId > 0 ? operatorId : undefined,
           billedByStaffId: operatorId > 0 ? operatorId : undefined,
           couplePartnerMemberId,
-        });
+        };
+        lastAddOnState.body = addOnRequestBody as Record<string, unknown>;
+        lastAddOnState.targetMemberId = targetMemberId;
+        const response = await subscriptionService.createMemberAddOnSubscription(token, targetMemberId, addOnRequestBody);
         const invoiceId = Number(response.invoiceId || 0);
         const invoiceNumber = String(response.invoiceNumber || "").trim();
         const addOnSubscriptionId = Number(
@@ -5421,6 +5472,27 @@ export default function MemberProfilePage() {
       );
       setActionModal(null);
     } catch (error) {
+      if (error instanceof ApiError) {
+        const discountApproval = error.discountApproval;
+        const failedBody = lastAddOnState.body;
+        if (discountApproval && failedBody) {
+          // memberId carried into the approval payload must match the call
+          // that failed (current member vs partner), since the executor uses
+          // it as the target for the re-run.
+          const requestPayload: Record<string, unknown> = {
+            ...failedBody,
+            _targetMemberId: lastAddOnState.targetMemberId,
+          };
+          setDiscountApprovalState({
+            flow: "ADDON",
+            request: requestPayload,
+            discountPercent: discountApproval.percent,
+            approverRole: discountApproval.approverRole,
+          });
+          setActionBusy(false);
+          return;
+        }
+      }
       setActionError(error instanceof ApiError ? error.message : error instanceof Error ? error.message : "Unable to add PT.");
     } finally {
       setActionBusy(false);
@@ -8779,6 +8851,22 @@ export default function MemberProfilePage() {
                 // a refresh (the grant happens only once approved).
                 void reloadShell();
               }
+            }}
+          />
+
+          <DiscountApprovalModal
+            open={discountApprovalState !== null}
+            onClose={() => setDiscountApprovalState(null)}
+            flow={discountApprovalState?.flow ?? "RENEW"}
+            memberId={Number(memberId)}
+            request={discountApprovalState?.request ?? {}}
+            branchCode={branchCode || undefined}
+            discountPercent={discountApprovalState?.discountPercent ?? 0}
+            approverRole={discountApprovalState?.approverRole ?? "GYM_MANAGER"}
+            onSubmitted={({ requestId }) => {
+              setActionSuccess(`Discount approval request #${requestId} submitted. The ${discountApprovalState?.flow.toLowerCase()} will run automatically once approved.`);
+              setDiscountApprovalState(null);
+              setActionModal(null);
             }}
           />
 

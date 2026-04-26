@@ -15,6 +15,27 @@ export class ApiError extends Error {
     this.status = status;
     this.details = details;
   }
+
+  /**
+   * Returns parsed metadata when this error is a DISCOUNT_APPROVAL_REQUIRED
+   * signal from subscription-service (Phase 2B-2 / DEC-019). Backend prefixes
+   * the message as:
+   *   "DISCOUNT_APPROVAL_REQUIRED:percent=<X>,approver=<ROLE>: <human msg>"
+   * Returns null when the error is anything else. Frontend submit handlers
+   * use this to detect the case and open the inline submit-for-approval modal.
+   */
+  get discountApproval(): { percent: number; approverRole: string; humanMessage: string } | null {
+    if (this.status !== 400) return null;
+    const msg = String(this.message || "");
+    if (!msg.startsWith("DISCOUNT_APPROVAL_REQUIRED:")) return null;
+    const m = msg.match(/^DISCOUNT_APPROVAL_REQUIRED:percent=([0-9.]+),approver=([A-Z_]+):\s*(.*)$/);
+    if (!m) return null;
+    return {
+      percent: Number(m[1]),
+      approverRole: m[2],
+      humanMessage: m[3],
+    };
+  }
 }
 
 type QueryValue = string | number | boolean | null | undefined;
