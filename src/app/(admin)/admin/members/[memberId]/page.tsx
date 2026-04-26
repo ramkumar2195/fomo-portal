@@ -36,7 +36,7 @@ import { engagementService } from "@/lib/api/services/engagement-service";
 import { subscriptionService } from "@/lib/api/services/subscription-service";
 import { trainingService } from "@/lib/api/services/training-service";
 import { usersService } from "@/lib/api/services/users-service";
-import { canManagePtSetup, canOperatePtSessions } from "@/lib/access-policy";
+import { canManagePtSetup, canOperatePtSessions, canSeeRiskyOpActions } from "@/lib/access-policy";
 import { isRealBiometricDevice } from "@/lib/biometric-device-filter";
 import { formatMemberCode } from "@/lib/inquiry-code";
 import { UserDirectoryItem, FreezeHistoryEntry, InvoiceSummary, BillingReceiptSummary } from "@/types/models";
@@ -147,7 +147,7 @@ type MembershipFamily =
   | "GROUP_CLASS"
   | "CREDIT_PACK"
   | "UNKNOWN";
-type MembershipActionKey = "renew" | "upgrade" | "downgrade" | "freeze" | "unfreeze" | "transfer" | "pt" | "visit" | "force-activate" | "grant-pause-benefit";
+type MembershipActionKey = "renew" | "upgrade" | "downgrade" | "freeze" | "unfreeze" | "transfer" | "pt" | "visit" | "force-activate" | "grant-pause-benefit" | "backdate";
 
 interface MembershipActionState {
   key: MembershipActionKey;
@@ -3700,6 +3700,11 @@ export default function MemberProfilePage() {
   const canOperateMemberships = isAdminOperator || isStaffOperator;
   const canManagePtAdminControls = canManagePtSetup(user, accessMetadata);
   const canOperatePtSessionControls = canOperatePtSessions(user, accessMetadata);
+  // B4-B7 risky-op action buttons (Void Receipt / Void Invoice / Delete
+  // Payment / Backdate Subscription) — visible to ADMIN + GYM_MANAGER only
+  // per DEC-019 §risky-op matrix. Other staff designations would only see
+  // the approval-submit modal anyway, so the buttons are clutter for them.
+  const showRiskyOpActions = canSeeRiskyOpActions(user);
   const canManageTransfers = isAdminOperator || (user?.role === "STAFF" && user?.designation === "GYM_MANAGER");
   const pauseBenefitDays = Math.max(
     currentCatalogVariant?.passBenefitDays || 0,
@@ -3887,6 +3892,18 @@ export default function MemberProfilePage() {
         enabled: true,
       });
     }
+    // Backdate (Phase 2B-6 / B7) — visible only to designations who can
+    // either run it directly (SUPER_ADMIN) or submit it for approval
+    // (GYM_MANAGER per DEC-019). Other staff designations don't see this
+    // option to keep the menu uncluttered. Backend gate still fires
+    // regardless if someone bypasses the UI.
+    if (canSeeRiskyOpActions(user)) {
+      actions.push({
+        key: "backdate",
+        label: "Backdate",
+        enabled: true,
+      });
+    }
     return actions;
   }, [
     canShowBalanceCollectionAction,
@@ -3899,6 +3916,7 @@ export default function MemberProfilePage() {
     canShowUpgradeMembershipAction,
     isSelectedMembershipOperationalFreeze,
     isAdminOperator,
+    user,
   ]);
   const filteredLifecycleProducts = useMemo(
     () =>
@@ -6570,16 +6588,18 @@ export default function MemberProfilePage() {
                             >
                               <Share2 className="h-4 w-4" />
                             </button>
-                            <button
-                              type="button"
-                              title={`Void invoice ${invoice.invoiceNumber}`}
-                              aria-label={`Void invoice ${invoice.invoiceNumber}`}
-                              onClick={() => void handleVoidInvoice({ id: invoice.id, invoiceNumber: invoice.invoiceNumber, amount: invoiceView.amount })}
-                              disabled={actionBusy}
-                              className="rounded-lg border border-rose-500/25 bg-rose-500/10 p-2 text-rose-100 hover:bg-rose-500/20 disabled:opacity-50"
-                            >
-                              <Ban className="h-4 w-4" />
-                            </button>
+                            {showRiskyOpActions ? (
+                              <button
+                                type="button"
+                                title={`Void invoice ${invoice.invoiceNumber}`}
+                                aria-label={`Void invoice ${invoice.invoiceNumber}`}
+                                onClick={() => void handleVoidInvoice({ id: invoice.id, invoiceNumber: invoice.invoiceNumber, amount: invoiceView.amount })}
+                                disabled={actionBusy}
+                                className="rounded-lg border border-rose-500/25 bg-rose-500/10 p-2 text-rose-100 hover:bg-rose-500/20 disabled:opacity-50"
+                              >
+                                <Ban className="h-4 w-4" />
+                              </button>
+                            ) : null}
                           </div>
                         </td>
                       </tr>
@@ -6649,26 +6669,30 @@ export default function MemberProfilePage() {
                           >
                             <Share2 className="h-4 w-4" />
                           </button>
-                          <button
-                            type="button"
-                            title={`Void receipt ${receipt.receiptNumber}`}
-                            aria-label={`Void receipt ${receipt.receiptNumber}`}
-                            onClick={() => void handleVoidReceipt({ id: receipt.id, receiptNumber: receipt.receiptNumber, amount: receipt.amount })}
-                            disabled={actionBusy}
-                            className="rounded-lg border border-rose-500/25 bg-rose-500/10 p-2 text-rose-100 hover:bg-rose-500/20 disabled:opacity-50"
-                          >
-                            <Ban className="h-4 w-4" />
-                          </button>
-                          <button
-                            type="button"
-                            title={`Delete payment on receipt ${receipt.receiptNumber}`}
-                            aria-label={`Delete payment on receipt ${receipt.receiptNumber}`}
-                            onClick={() => void handleDeletePayment({ id: receipt.id, receiptNumber: receipt.receiptNumber, amount: receipt.amount })}
-                            disabled={actionBusy}
-                            className="rounded-lg border border-rose-500/25 bg-rose-500/10 p-2 text-rose-100 hover:bg-rose-500/20 disabled:opacity-50"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </button>
+                          {showRiskyOpActions ? (
+                            <>
+                              <button
+                                type="button"
+                                title={`Void receipt ${receipt.receiptNumber}`}
+                                aria-label={`Void receipt ${receipt.receiptNumber}`}
+                                onClick={() => void handleVoidReceipt({ id: receipt.id, receiptNumber: receipt.receiptNumber, amount: receipt.amount })}
+                                disabled={actionBusy}
+                                className="rounded-lg border border-rose-500/25 bg-rose-500/10 p-2 text-rose-100 hover:bg-rose-500/20 disabled:opacity-50"
+                              >
+                                <Ban className="h-4 w-4" />
+                              </button>
+                              <button
+                                type="button"
+                                title={`Delete payment on receipt ${receipt.receiptNumber}`}
+                                aria-label={`Delete payment on receipt ${receipt.receiptNumber}`}
+                                onClick={() => void handleDeletePayment({ id: receipt.id, receiptNumber: receipt.receiptNumber, amount: receipt.amount })}
+                                disabled={actionBusy}
+                                className="rounded-lg border border-rose-500/25 bg-rose-500/10 p-2 text-rose-100 hover:bg-rose-500/20 disabled:opacity-50"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                              </button>
+                            </>
+                          ) : null}
                         </div>
                       </td>
                     </tr>
@@ -7129,6 +7153,19 @@ export default function MemberProfilePage() {
                                     } finally {
                                       setActionBusy(false);
                                     }
+                                    return;
+                                  }
+                                  // B7 — Backdate uses prompt-based input then
+                                  // delegates to the shared handler. The handler
+                                  // tries the direct call; on
+                                  // BACKDATE_SUBSCRIPTION_APPROVAL_REQUIRED it
+                                  // opens the approval modal automatically.
+                                  if (action.key === "backdate") {
+                                    void handleBackdateSubscription({
+                                      id: Number(membership.subscriptionId),
+                                      startDate: membership.startDate,
+                                      productName: cardTitle,
+                                    });
                                     return;
                                   }
                                   openActionModal(action.key === "pt" ? "pt" : action.key);

@@ -319,6 +319,28 @@ export function isGymManager(user?: Pick<AuthUser, "role" | "designation"> | nul
   return Boolean(user?.role === "STAFF" && user.designation === "GYM_MANAGER");
 }
 
+/**
+ * Should risky-op action buttons (Void Receipt, Void Invoice, Delete Payment,
+ * Backdate Subscription — Phase 2B-3..6 / B4-B7 / DEC-019) be visible in the
+ * UI for this operator?
+ *
+ * <p>The DEC-019 §risky-op matrix lists only SUPER_ADMIN (direct) and
+ * GYM_MANAGER (via approval) for these ops. Sales / front-desk / fitness
+ * staff don't normally interact with voids / backdates and the buttons
+ * just clutter their workflow.
+ *
+ * <p>Backend doesn't enforce this visibility (any STAFF call still goes
+ * through the gate which allows the approval-submit path), so worst case
+ * if you bypass the UI you still hit the same gate. This is purely a
+ * UI hygiene / discoverability filter.
+ */
+export function canSeeRiskyOpActions(user?: Pick<AuthUser, "role" | "designation"> | null): boolean {
+  if (!user) return false;
+  if (user.role === "ADMIN") return true;
+  if (user.role !== "STAFF") return false;
+  return user.designation === "GYM_MANAGER";
+}
+
 export function canOperatePtSessions(
   user: Pick<AuthUser, "role" | "designation"> | null | undefined,
   accessMetadata?: AccessMetadata | null,
