@@ -7,6 +7,7 @@ import {
   AlertTriangle,
   ArrowLeft,
   BadgeCheck,
+  Ban,
   CalendarDays,
   CircleFadingArrowUp,
   CreditCard,
@@ -26,6 +27,7 @@ import {
 import { BillingWorkflowTemplate } from "@/components/billing/billing-workflow-template";
 import { GrantPauseBenefitModal } from "@/components/member/grant-pause-benefit-modal";
 import { DiscountApprovalModal } from "@/components/billing/discount-approval-modal";
+import { RiskyOpApprovalModal } from "@/components/billing/risky-op-approval-modal";
 import { Modal } from "@/components/common/modal";
 import { useAuth } from "@/contexts/auth-context";
 import { ApiError } from "@/lib/api/http-client";
@@ -1971,6 +1973,21 @@ export default function MemberProfilePage() {
   // component with its own submit pipeline (direct-vs-approval) so it sits
   // outside the shared `actionModal` dispatcher.
   const [grantPauseOpen, setGrantPauseOpen] = useState(false);
+  // VOID_RECEIPT / VOID_INVOICE / DELETE_PAYMENT / BACKDATE_SUBSCRIPTION
+  // approval submit modal (Phase 2B-3..6 / B4-B7 / DEC-019). Set by the
+  // void/delete/backdate handlers when the backend rejects with
+  // {TYPE}_APPROVAL_REQUIRED. The full mutation payload is captured so
+  // the executor re-runs the exact same call after SUPER_ADMIN approves.
+  const [riskyOpModalState, setRiskyOpModalState] = useState<{
+    requestType: "VOID_RECEIPT" | "VOID_INVOICE" | "DELETE_PAYMENT" | "BACKDATE_SUBSCRIPTION";
+    targetEntityType: "RECEIPT" | "INVOICE" | "SUBSCRIPTION" | "MEMBER";
+    targetEntityId: number;
+    payload: Record<string, unknown>;
+    approverRole: string;
+    actionLabel: string;
+    contextSummary: string;
+  } | null>(null);
+
   // DISCOUNT_APPROVAL_REQUIRED submit modal (Phase 2B-2 / B3.4 / DEC-019).
   // Set by the renew/upgrade/addon catch blocks when the backend rejects the
   // creation because the operator's designation can't apply > 5% directly.
@@ -4911,6 +4928,178 @@ export default function MemberProfilePage() {
     }
   };
 
+  // ----- B4-B7 risky-op handlers (Phase 2B-3..6 / DEC-019) -----
+  // SUPER_ADMIN can call these directly. For everyone else the backend
+  // throws RiskyOpApprovalRequiredException; we catch via
+  // ApiError.riskyOpApproval and open the unified RiskyOpApprovalModal
+  // with the same payload that would have run.
+
+  const handleVoidReceipt = async (receipt: { id: number | string; receiptNumber?: string; amount?: number | string }) => {
+    const receiptId = Number(receipt.id);
+    const receiptAmount = receipt.amount === undefined ? undefined : Number(receipt.amount);
+    if (!token) return;
+    const reasonInput = window.prompt(`Void receipt ${receipt.receiptNumber || receiptId}? Provide a reason (required, audit-visible):`);
+    if (reasonInput === null) return;
+    const reason = reasonInput.trim();
+    if (!reason) {
+      setActionError("Reason is required to void a receipt.");
+      return;
+    }
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await subscriptionService.voidReceipt(token, receiptId, reason);
+      setActionSuccess(`Receipt ${receipt.receiptNumber || receiptId} voided.`);
+      setTabData((current) => ({ ...current, billing: undefined }));
+      await reloadShell();
+    } catch (error) {
+      if (error instanceof ApiError) {
+        const r = error.riskyOpApproval;
+        if (r) {
+          setRiskyOpModalState({
+            requestType: "VOID_RECEIPT",
+            targetEntityType: "RECEIPT",
+            targetEntityId: receiptId,
+            payload: { receiptId, reason },
+            approverRole: r.approverRole,
+            actionLabel: `Void receipt ${receipt.receiptNumber || receiptId}`,
+            contextSummary: `Receipt ${receipt.receiptNumber || receiptId}${receiptAmount ? ` — ${formatRoundedInr(receiptAmount)}` : ""}`,
+          });
+          return;
+        }
+      }
+      setActionError(error instanceof Error ? error.message : "Unable to void receipt.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleVoidInvoice = async (invoice: { id: number | string; invoiceNumber?: string; amount?: number | string }) => {
+    const invoiceId = Number(invoice.id);
+    const invoiceAmount = invoice.amount === undefined ? undefined : Number(invoice.amount);
+    if (!token) return;
+    const reasonInput = window.prompt(`Void invoice ${invoice.invoiceNumber || invoiceId}? This cancels all linked receipts and the underlying subscription. Provide a reason (required):`);
+    if (reasonInput === null) return;
+    const reason = reasonInput.trim();
+    if (!reason) {
+      setActionError("Reason is required to void an invoice.");
+      return;
+    }
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await subscriptionService.voidInvoice(token, invoiceId, reason);
+      setActionSuccess(`Invoice ${invoice.invoiceNumber || invoiceId} voided. Linked receipts and subscription were cancelled.`);
+      setTabData((current) => ({ ...current, billing: undefined, subscriptions: undefined }));
+      await reloadShell();
+    } catch (error) {
+      if (error instanceof ApiError) {
+        const r = error.riskyOpApproval;
+        if (r) {
+          setRiskyOpModalState({
+            requestType: "VOID_INVOICE",
+            targetEntityType: "INVOICE",
+            targetEntityId: invoiceId,
+            payload: { invoiceId, reason },
+            approverRole: r.approverRole,
+            actionLabel: `Void invoice ${invoice.invoiceNumber || invoiceId}`,
+            contextSummary: `Invoice ${invoice.invoiceNumber || invoiceId}${invoiceAmount ? ` — ${formatRoundedInr(invoiceAmount)}` : ""}`,
+          });
+          return;
+        }
+      }
+      setActionError(error instanceof Error ? error.message : "Unable to void invoice.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleDeletePayment = async (receipt: { id: number | string; receiptNumber?: string; amount?: number | string }) => {
+    const receiptId = Number(receipt.id);
+    const receiptAmount = receipt.amount === undefined ? undefined : Number(receipt.amount);
+    if (!token) return;
+    const reasonInput = window.prompt(`Delete payment on receipt ${receipt.receiptNumber || receiptId}? Provide a reason (required, e.g. "Bounced cheque"):`);
+    if (reasonInput === null) return;
+    const reason = reasonInput.trim();
+    if (!reason) {
+      setActionError("Reason is required to delete a payment.");
+      return;
+    }
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await subscriptionService.deletePayment(token, receiptId, reason);
+      setActionSuccess(`Payment on ${receipt.receiptNumber || receiptId} deleted. Invoice balance restored.`);
+      setTabData((current) => ({ ...current, billing: undefined }));
+      await reloadShell();
+    } catch (error) {
+      if (error instanceof ApiError) {
+        const r = error.riskyOpApproval;
+        if (r) {
+          setRiskyOpModalState({
+            requestType: "DELETE_PAYMENT",
+            targetEntityType: "RECEIPT",
+            targetEntityId: receiptId,
+            payload: { receiptId, reason },
+            approverRole: r.approverRole,
+            actionLabel: `Delete payment on ${receipt.receiptNumber || receiptId}`,
+            contextSummary: `Receipt ${receipt.receiptNumber || receiptId}${receiptAmount ? ` — ${formatRoundedInr(receiptAmount)}` : ""}`,
+          });
+          return;
+        }
+      }
+      setActionError(error instanceof Error ? error.message : "Unable to delete payment.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  const handleBackdateSubscription = async (subscription: { id: number | string; startDate?: string; productName?: string }) => {
+    const subscriptionId = Number(subscription.id);
+    if (!token) return;
+    const newStart = window.prompt(`Backdate subscription #${subscriptionId} (${subscription.productName || ""}). Enter the corrected start date (YYYY-MM-DD):`, subscription.startDate || "");
+    if (newStart === null) return;
+    const newStartTrim = newStart.trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(newStartTrim)) {
+      setActionError("Start date must be in YYYY-MM-DD format.");
+      return;
+    }
+    const reasonInput = window.prompt(`Reason for backdating subscription #${subscriptionId} to ${newStartTrim}? (required)`);
+    if (reasonInput === null) return;
+    const reason = reasonInput.trim();
+    if (!reason) {
+      setActionError("Reason is required to backdate a subscription.");
+      return;
+    }
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await subscriptionService.backdateSubscription(token, subscriptionId, { newStartDate: newStartTrim, reason });
+      setActionSuccess(`Subscription #${subscriptionId} backdated to ${newStartTrim}.`);
+      setTabData((current) => ({ ...current, billing: undefined, subscriptions: undefined }));
+      await reloadShell();
+    } catch (error) {
+      if (error instanceof ApiError) {
+        const r = error.riskyOpApproval;
+        if (r) {
+          setRiskyOpModalState({
+            requestType: "BACKDATE_SUBSCRIPTION",
+            targetEntityType: "SUBSCRIPTION",
+            targetEntityId: subscriptionId,
+            payload: { subscriptionId, newStartDate: newStartTrim, reason },
+            approverRole: r.approverRole,
+            actionLabel: `Backdate subscription #${subscriptionId} to ${newStartTrim}`,
+            contextSummary: `Subscription #${subscriptionId}${subscription.productName ? ` — ${subscription.productName}` : ""}, current start ${subscription.startDate || "(unknown)"}`,
+          });
+          return;
+        }
+      }
+      setActionError(error instanceof Error ? error.message : "Unable to backdate subscription.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
   const handleTransfer = async () => {
     if (!token || !selectedSubscriptionId || !transferForm.targetMemberId) {
       setActionError("Choose the target member before transferring.");
@@ -6381,6 +6570,16 @@ export default function MemberProfilePage() {
                             >
                               <Share2 className="h-4 w-4" />
                             </button>
+                            <button
+                              type="button"
+                              title={`Void invoice ${invoice.invoiceNumber}`}
+                              aria-label={`Void invoice ${invoice.invoiceNumber}`}
+                              onClick={() => void handleVoidInvoice({ id: invoice.id, invoiceNumber: invoice.invoiceNumber, amount: invoiceView.amount })}
+                              disabled={actionBusy}
+                              className="rounded-lg border border-rose-500/25 bg-rose-500/10 p-2 text-rose-100 hover:bg-rose-500/20 disabled:opacity-50"
+                            >
+                              <Ban className="h-4 w-4" />
+                            </button>
                           </div>
                         </td>
                       </tr>
@@ -6449,6 +6648,26 @@ export default function MemberProfilePage() {
                             className="rounded-lg border border-white/10 bg-white/[0.04] p-2 text-slate-100 hover:bg-white/[0.08] disabled:opacity-50"
                           >
                             <Share2 className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            title={`Void receipt ${receipt.receiptNumber}`}
+                            aria-label={`Void receipt ${receipt.receiptNumber}`}
+                            onClick={() => void handleVoidReceipt({ id: receipt.id, receiptNumber: receipt.receiptNumber, amount: receipt.amount })}
+                            disabled={actionBusy}
+                            className="rounded-lg border border-rose-500/25 bg-rose-500/10 p-2 text-rose-100 hover:bg-rose-500/20 disabled:opacity-50"
+                          >
+                            <Ban className="h-4 w-4" />
+                          </button>
+                          <button
+                            type="button"
+                            title={`Delete payment on receipt ${receipt.receiptNumber}`}
+                            aria-label={`Delete payment on receipt ${receipt.receiptNumber}`}
+                            onClick={() => void handleDeletePayment({ id: receipt.id, receiptNumber: receipt.receiptNumber, amount: receipt.amount })}
+                            disabled={actionBusy}
+                            className="rounded-lg border border-rose-500/25 bg-rose-500/10 p-2 text-rose-100 hover:bg-rose-500/20 disabled:opacity-50"
+                          >
+                            <Trash2 className="h-4 w-4" />
                           </button>
                         </div>
                       </td>
@@ -8869,6 +9088,25 @@ export default function MemberProfilePage() {
               setActionModal(null);
             }}
           />
+
+          {riskyOpModalState ? (
+            <RiskyOpApprovalModal
+              open
+              onClose={() => setRiskyOpModalState(null)}
+              requestType={riskyOpModalState.requestType}
+              targetEntityType={riskyOpModalState.targetEntityType}
+              targetEntityId={riskyOpModalState.targetEntityId}
+              payload={riskyOpModalState.payload}
+              branchCode={branchCode || undefined}
+              approverRole={riskyOpModalState.approverRole}
+              actionLabel={riskyOpModalState.actionLabel}
+              contextSummary={riskyOpModalState.contextSummary}
+              onSubmitted={({ requestId }) => {
+                setActionSuccess(`Approval request #${requestId} submitted. The action runs automatically once approved.`);
+                setRiskyOpModalState(null);
+              }}
+            />
+          ) : null}
 
           <Modal
             open={actionModal === "unfreeze-billing"}

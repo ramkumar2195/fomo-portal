@@ -1336,6 +1336,60 @@ export const subscriptionService = {
     return mapPaymentReceipt(unwrapData<unknown>(response));
   },
 
+  // ----- B4-B7 / Phase 2B-3..6 risky-op endpoints -----
+  // SUPER_ADMIN can call these directly. GYM_MANAGER + below get back
+  // a 400 with prefix `<TYPE>_APPROVAL_REQUIRED:approver=SUPER_ADMIN: ...`
+  // — caller catches via ApiError.riskyOpApproval and submits a request
+  // through approvalsService.submit with the matching payload shape.
+
+  async voidReceipt(token: string, receiptId: number, reason: string, idempotencyKey?: string): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/receipts/${receiptId}/void`,
+      token,
+      method: "POST",
+      body: { reason, idempotencyKey },
+    });
+    return unwrapData<Record<string, unknown>>(response);
+  },
+
+  async voidInvoice(token: string, invoiceId: number, reason: string, idempotencyKey?: string): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/invoices/${invoiceId}/void`,
+      token,
+      method: "POST",
+      body: { reason, idempotencyKey },
+    });
+    return unwrapData<Record<string, unknown>>(response);
+  },
+
+  async deletePayment(token: string, receiptId: number, reason: string, idempotencyKey?: string): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/payments/${receiptId}/soft-delete`,
+      token,
+      method: "POST",
+      body: { reason, idempotencyKey },
+    });
+    return unwrapData<Record<string, unknown>>(response);
+  },
+
+  async backdateSubscription(
+    token: string,
+    subscriptionId: number,
+    payload: { newStartDate: string; newEndDate?: string; reason: string; idempotencyKey?: string },
+  ): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/subscriptions/${subscriptionId}/backdate`,
+      token,
+      method: "POST",
+      body: payload,
+    });
+    return unwrapData<Record<string, unknown>>(response);
+  },
+
   async addFlexVisit(
     token: string,
     subscriptionId: string | number,

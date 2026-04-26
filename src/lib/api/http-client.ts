@@ -36,6 +36,28 @@ export class ApiError extends Error {
       humanMessage: m[3],
     };
   }
+
+  /**
+   * Returns parsed metadata when this error is a risky-op approval signal
+   * from subscription-service for B4-B7 (Phase 2B-3..6 / DEC-019). Backend
+   * prefixes the message as:
+   *   "<TYPE>_APPROVAL_REQUIRED:approver=<ROLE>: <human msg>"
+   * where TYPE ∈ {VOID_RECEIPT, VOID_INVOICE, DELETE_PAYMENT,
+   * BACKDATE_SUBSCRIPTION}. Returns null when the error is anything else.
+   * Frontend handlers use this to detect the case and open the matching
+   * submit-for-approval modal.
+   */
+  get riskyOpApproval(): { requestType: "VOID_RECEIPT" | "VOID_INVOICE" | "DELETE_PAYMENT" | "BACKDATE_SUBSCRIPTION"; approverRole: string; humanMessage: string } | null {
+    if (this.status !== 400) return null;
+    const msg = String(this.message || "");
+    const m = msg.match(/^(VOID_RECEIPT|VOID_INVOICE|DELETE_PAYMENT|BACKDATE_SUBSCRIPTION)_APPROVAL_REQUIRED:approver=([A-Z_]+):\s*(.*)$/);
+    if (!m) return null;
+    return {
+      requestType: m[1] as "VOID_RECEIPT" | "VOID_INVOICE" | "DELETE_PAYMENT" | "BACKDATE_SUBSCRIPTION",
+      approverRole: m[2],
+      humanMessage: m[3],
+    };
+  }
 }
 
 type QueryValue = string | number | boolean | null | undefined;
