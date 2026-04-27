@@ -3,10 +3,11 @@
 /**
  * Dashboard widget: "Today's Check-ins".
  *
- * Shows the number of unique people who walked in through the flap gate so
- * far today, with a male/female breakdown and a role split (members vs
- * staff vs coaches). Clicking "View all" opens a modal listing every person
- * with their first check-in time.
+ * Shows the number of unique people who walked in through the flap gate
+ * today, broken down by gender (Male / Female) and role (Members /
+ * Staff+Trainers). Each of the five stat cards is clickable: opens a
+ * wide modal showing the filtered list with their first check-in time,
+ * entries count, mobile, and plan/designation.
  *
  * Data composition: we deliberately do NOT add a cross-service aggregate
  * endpoint in engagement-service. Instead we reuse the existing
@@ -22,7 +23,6 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowRight } from "lucide-react";
 import { Modal } from "@/components/common/modal";
 import { SectionCard } from "@/components/common/section-card";
 import { useAuth } from "@/contexts/auth-context";
@@ -34,6 +34,9 @@ import type { UserDirectoryItem } from "@/types/models";
 
 type RoleKey = "MEMBER" | "STAFF" | "COACH" | "ADMIN" | "UNKNOWN";
 type GenderKey = "MALE" | "FEMALE" | "OTHER" | "UNKNOWN";
+
+/** Drill-down filter applied to the modal when one of the 5 stat cards is clicked. */
+type CheckInFilter = "ALL" | "MALE" | "FEMALE" | "MEMBERS" | "STAFF_AND_COACHES";
 
 const REFRESH_INTERVAL_MS = 60_000;
 
@@ -62,13 +65,28 @@ function formatTime12h(iso?: string | null): string {
   return d.toLocaleTimeString("en-IN", { hour: "numeric", minute: "2-digit", hour12: true });
 }
 
+function modalTitleFor(filter: CheckInFilter, count: number): string {
+  switch (filter) {
+    case "MALE":
+      return `Today's Male Check-ins · ${count}`;
+    case "FEMALE":
+      return `Today's Female Check-ins · ${count}`;
+    case "MEMBERS":
+      return `Today's Member Check-ins · ${count}`;
+    case "STAFF_AND_COACHES":
+      return `Today's Staff & Trainer Check-ins · ${count}`;
+    default:
+      return `Today's Check-ins · ${count} visit${count === 1 ? "" : "s"}`;
+  }
+}
+
 export function TodayCheckInsTile() {
   const { token } = useAuth();
   const { effectiveBranchId } = useBranch();
   const [rows, setRows] = useState<BiometricGymAttendanceRow[]>([]);
   const [userMap, setUserMap] = useState<Map<number, UserDirectoryItem>>(new Map());
   const [loading, setLoading] = useState(true);
-  const [modalOpen, setModalOpen] = useState(false);
+  const [filter, setFilter] = useState<CheckInFilter | null>(null);
 
   const load = useCallback(async () => {
     if (!token) return;
@@ -114,6 +132,12 @@ export function TodayCheckInsTile() {
           return {
             ...row,
             name: user?.name || `#${row.memberId}`,
+            mobile: user?.mobile,
+            // For Members the membership plan would be ideal here, but the
+            // UserDirectoryItem doesn't carry it; surface the designation
+            // as a fallback (works correctly for STAFF/COACH; Members get
+            // an em-dash since no per-row plan join exists at this layer).
+            plan: user?.designation,
             gender: normalizeGender(user?.gender),
             role: normalizeRole(user?.role),
             designation: user?.designation,
@@ -143,47 +167,66 @@ export function TodayCheckInsTile() {
     return { total: enriched.length, byGender, byRole };
   }, [enriched]);
 
+  // Apply the active drill-down filter to the modal's row list.
+  const filteredRows = useMemo(() => {
+    if (!filter || filter === "ALL") return enriched;
+    if (filter === "MALE") return enriched.filter((r) => r.gender === "MALE");
+    if (filter === "FEMALE") return enriched.filter((r) => r.gender === "FEMALE");
+    if (filter === "MEMBERS") return enriched.filter((r) => r.role === "MEMBER");
+    if (filter === "STAFF_AND_COACHES") return enriched.filter((r) => r.role === "STAFF" || r.role === "COACH");
+    return enriched;
+  }, [enriched, filter]);
+
   return (
     <>
       <SectionCard
         title="Today's Check-ins"
-        subtitle="Live view of everyone who's walked in through the flap gate today"
-        actions={
-          <button
-            type="button"
-            onClick={() => setModalOpen(true)}
-            disabled={enriched.length === 0}
-            className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            View all
-            <ArrowRight className="h-3.5 w-3.5" />
-          </button>
-        }
+        subtitle="Live view of everyone who's walked in through the flap gate today — click any tile for the full list"
       >
         {loading ? (
           <p className="text-sm text-slate-400">Loading…</p>
         ) : (
           <div className="grid grid-cols-2 gap-4 md:grid-cols-5">
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Total Visits</p>
-              <p className="mt-2 text-3xl font-bold text-white">{counts.total}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Male</p>
-              <p className="mt-2 text-2xl font-semibold text-sky-200">{counts.byGender.MALE}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Female</p>
-              <p className="mt-2 text-2xl font-semibold text-rose-200">{counts.byGender.FEMALE}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Members</p>
-              <p className="mt-2 text-2xl font-semibold text-emerald-200">{counts.byRole.MEMBER}</p>
-            </div>
-            <div className="rounded-2xl border border-white/10 bg-white/[0.03] p-4">
-              <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">Staff + Trainers</p>
-              <p className="mt-2 text-2xl font-semibold text-amber-200">{counts.byRole.STAFF + counts.byRole.COACH}</p>
-            </div>
+            {/* Issue: each stat is now its own button — clicking opens the
+                modal pre-filtered to that segment. The legacy "View all"
+                button is gone since clicking "Total Visits" does the same
+                thing now (and the per-segment clicks are more useful for
+                the operator's typical "who's male and here?" question). */}
+            <CheckInStatTile
+              label="Total Visits"
+              value={counts.total}
+              tone="white"
+              disabled={counts.total === 0}
+              onClick={() => setFilter("ALL")}
+            />
+            <CheckInStatTile
+              label="Male"
+              value={counts.byGender.MALE}
+              tone="sky"
+              disabled={counts.byGender.MALE === 0}
+              onClick={() => setFilter("MALE")}
+            />
+            <CheckInStatTile
+              label="Female"
+              value={counts.byGender.FEMALE}
+              tone="rose"
+              disabled={counts.byGender.FEMALE === 0}
+              onClick={() => setFilter("FEMALE")}
+            />
+            <CheckInStatTile
+              label="Members"
+              value={counts.byRole.MEMBER}
+              tone="emerald"
+              disabled={counts.byRole.MEMBER === 0}
+              onClick={() => setFilter("MEMBERS")}
+            />
+            <CheckInStatTile
+              label="Staff + Trainers"
+              value={counts.byRole.STAFF + counts.byRole.COACH}
+              tone="amber"
+              disabled={counts.byRole.STAFF + counts.byRole.COACH === 0}
+              onClick={() => setFilter("STAFF_AND_COACHES")}
+            />
           </div>
         )}
         {counts.byGender.UNKNOWN > 0 ? (
@@ -194,34 +237,38 @@ export function TodayCheckInsTile() {
       </SectionCard>
 
       <Modal
-        open={modalOpen}
-        title={`Today's Check-ins · ${counts.total} visits`}
-        onClose={() => setModalOpen(false)}
+        open={filter !== null}
+        title={modalTitleFor(filter || "ALL", filteredRows.length)}
+        onClose={() => setFilter(null)}
+        size="xxl"
       >
-        {enriched.length === 0 ? (
-          <p className="text-sm text-slate-400">No gym entries recorded today yet.</p>
+        {filteredRows.length === 0 ? (
+          <p className="text-sm text-slate-400">No matching check-ins recorded today yet.</p>
         ) : (
-          <div className="overflow-hidden rounded-2xl border border-white/10">
+          <div className="overflow-x-auto rounded-2xl border border-white/10">
             <table className="min-w-full text-sm">
               <thead>
                 <tr className="bg-white/[0.03] text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
                   <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Role / Designation</th>
+                  <th className="px-4 py-3">Mobile</th>
+                  <th className="px-4 py-3">Role</th>
+                  <th className="px-4 py-3">Plan / Designation</th>
                   <th className="px-4 py-3">Gender</th>
                   <th className="px-4 py-3">First Check-in</th>
                   <th className="px-4 py-3">Entries</th>
                 </tr>
               </thead>
               <tbody className="divide-y divide-white/8">
-                {enriched.map((row) => (
+                {filteredRows.map((row) => (
                   <tr key={`${row.memberId}-${row.visitDate}`} className="hover:bg-white/[0.02]">
                     <td className="px-4 py-2.5 font-medium text-white">{row.name}</td>
+                    <td className="px-4 py-2.5 text-slate-300">{row.mobile || "—"}</td>
                     <td className="px-4 py-2.5 text-slate-300">
                       <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.14em]">
                         {row.role === "UNKNOWN" ? "—" : row.role}
                       </span>
-                      {row.designation ? <span className="ml-2 text-slate-400">{row.designation}</span> : null}
                     </td>
+                    <td className="px-4 py-2.5 text-slate-300">{row.plan || row.designation || "—"}</td>
                     <td className="px-4 py-2.5 text-slate-300">{row.gender === "UNKNOWN" ? "—" : row.gender}</td>
                     <td className="px-4 py-2.5 text-slate-200">{formatTime12h(row.firstCheckInAt)}</td>
                     <td className="px-4 py-2.5 text-slate-300">
@@ -235,5 +282,39 @@ export function TodayCheckInsTile() {
         )}
       </Modal>
     </>
+  );
+}
+
+function CheckInStatTile({
+  label,
+  value,
+  tone,
+  disabled,
+  onClick,
+}: {
+  label: string;
+  value: number;
+  tone: "white" | "sky" | "rose" | "emerald" | "amber";
+  disabled: boolean;
+  onClick: () => void;
+}) {
+  const valueClass = {
+    white: "text-white",
+    sky: "text-sky-200",
+    rose: "text-rose-200",
+    emerald: "text-emerald-200",
+    amber: "text-amber-200",
+  }[tone];
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={disabled}
+      aria-label={`Show ${label.toLowerCase()} check-ins`}
+      className="rounded-2xl border border-white/10 bg-white/[0.03] p-4 text-left transition hover:bg-white/[0.06] focus:outline-none focus:ring-2 focus:ring-[#c42924] disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <p className="text-[11px] font-semibold uppercase tracking-[0.16em] text-slate-400">{label}</p>
+      <p className={`mt-2 text-2xl font-semibold ${valueClass}`}>{value}</p>
+    </button>
   );
 }

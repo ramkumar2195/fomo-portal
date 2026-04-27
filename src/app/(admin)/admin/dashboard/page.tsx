@@ -960,11 +960,19 @@ export default function AdminDashboardPage({
                   }
                 />
               ))}
-              <SnapshotStat
-                label="Pending Revenue"
-                value={formatInr(resolvedBalanceDueAmount)}
-                subtitle={`${formatCount(resolvedBalanceDueInvoices)} invoice${resolvedBalanceDueInvoices === 1 ? "" : "s"} awaiting collection`}
-                tone="amber"
+              {/* Pending Revenue rendered as a MetricValueCard for icon
+                  parity with the other 4 revenue cards on this row. Was a
+                  SnapshotStat which doesn't carry an icon — looked like
+                  the odd one out. */}
+              <MetricValueCard
+                card={createMetricCard(
+                  "Pending Revenue",
+                  formatInr(resolvedBalanceDueAmount),
+                  `${formatCount(resolvedBalanceDueInvoices)} invoice${resolvedBalanceDueInvoices === 1 ? "" : "s"} awaiting collection`,
+                  <IndianRupee className="h-4 w-4" />,
+                  "bg-amber-500/15 text-amber-100",
+                  "PENDING_REVENUE",
+                )}
                 onClick={() =>
                   setSelectedCard(
                     createMetricCard(
@@ -1009,21 +1017,29 @@ export default function AdminDashboardPage({
 
         <div className="xl:col-span-4">
           <SurfaceCard title="PT Health">
-            <div className="grid gap-4 md:grid-cols-1">
-              {ptHealthCards.map((card) => (
-                <CompactMetricCard
-                  key={card.metricKey}
-                  card={card}
-                  onClick={() => setSelectedCard(card)}
-                  badge={
-                    card.metricKey === "PT_ACTIVE_CLIENTS"
-                      ? <DashboardPill label="Active PT cycles" tone="green" />
-                      : card.metricKey === "PT_INACTIVE_CLIENTS"
-                        ? <DashboardPill label="Historical PT" tone="neutral" />
-                        : undefined
-                  }
-                />
-              ))}
+            {/* PT Health was 3 cards stacked vertically (md:grid-cols-1)
+                while Member Health on its left rendered 4 cards as 2x2.
+                Heights mismatched. Now: 2 cards (Active + Inactive) in a
+                2-up grid for visual parity, total surfaced as a footer
+                line — matches the Team card pattern. */}
+            <div className="grid gap-4 md:grid-cols-2">
+              {ptHealthCards
+                .filter((c) => c.metricKey === "PT_ACTIVE_CLIENTS" || c.metricKey === "PT_INACTIVE_CLIENTS")
+                .map((card) => (
+                  <CompactMetricCard
+                    key={card.metricKey}
+                    card={card}
+                    onClick={() => setSelectedCard(card)}
+                    badge={
+                      card.metricKey === "PT_ACTIVE_CLIENTS"
+                        ? <DashboardPill label="Active PT cycles" tone="green" />
+                        : <DashboardPill label="Historical PT" tone="neutral" />
+                    }
+                  />
+                ))}
+            </div>
+            <div className="mt-4 border-t border-white/8 pt-4 text-sm text-slate-300">
+              {formatCount(dashboard.summary.pt.ptClients)} total PT-linked members across active and historical cycles.
             </div>
           </SurfaceCard>
         </div>
@@ -1138,14 +1154,20 @@ export default function AdminDashboardPage({
 
         <div className="xl:col-span-6">
           <SurfaceCard title="Alerts">
-            {/* Issue L6 — 5 stacked full-width rows compressed to a 5-up chip
-                strip at xl. Each chip stays clickable + colored by tone. */}
+            {/* Stacked layout: number above title. The earlier
+                `items-baseline justify-between` row layout caused the
+                number to overlap the wrapped 2-line title in narrower
+                chips ("MEMBERSHIPS EXPIRING SOON" wraps to 2 lines and
+                the right-aligned number landed mid-baseline of the
+                wrapped text). Stacking puts the number on top, title
+                on bottom — predictable spacing regardless of title
+                length. */}
             <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
               {alerts.map((item) => (
                 <div key={item.title} className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">
-                  <div className="flex items-baseline justify-between gap-2">
-                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 leading-tight">{item.title}</p>
-                    <span className="text-xl font-bold tracking-tight text-white">{item.value}</span>
+                  <div>
+                    <span className="text-2xl font-bold tracking-tight text-white">{item.value}</span>
+                    <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 leading-tight">{item.title}</p>
                   </div>
                   <p className="mt-1 text-sm text-slate-400">{item.subtitle}</p>
                 </div>
