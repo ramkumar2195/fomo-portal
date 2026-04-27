@@ -7,13 +7,19 @@ import { useAuth } from "@/contexts/auth-context";
 import { approvalsService } from "@/lib/api/services/approvals-service";
 
 /**
- * Compact dashboard tile showing the count of pending approval requests
- * the current user can decide on. Backend scopes by role + branch (DEC-019)
- * so we don't filter on the client.
+ * Compact dashboard tile for the approval queue (DEC-019).
  *
- * Renders nothing if the user can't approve (anyone other than SUPER_ADMIN
- * or GYM_MANAGER) — caller should also gate at the parent level so the
- * fetch never fires for non-approvers.
+ * <p>Two modes, auto-selected by role:
+ * <ul>
+ *   <li><b>Approver mode</b> (SUPER_ADMIN / ADMIN / GYM_MANAGER) — count of
+ *       requests awaiting their decision (calls {@code /approvals/pending/count}).</li>
+ *   <li><b>Submitter mode</b> (issue #5 — every other staff designation) —
+ *       count of the operator's own pending submissions (calls
+ *       {@code /approvals/mine}, filters to status PENDING). Closes the gap
+ *       where Sales / Front Desk / Fitness staff could submit DISCOUNT,
+ *       VOID_*, DELETE_PAYMENT, BACKDATE_SUBSCRIPTION requests but had no
+ *       way to see them on their dashboard.</li>
+ * </ul>
  */
 export function PendingApprovalsTile() {
   const { token, user } = useAuth();
@@ -25,13 +31,17 @@ export function PendingApprovalsTile() {
     || user?.designation === "GYM_MANAGER";
 
   useEffect(() => {
-    if (!token || !isApprover) {
+    if (!token) {
       setLoading(false);
       return;
     }
     let cancelled = false;
-    approvalsService
-      .pendingCount(token)
+    const work = isApprover
+      ? approvalsService.pendingCount(token)
+      : approvalsService
+          .listMine(token, 0, 50)
+          .then((page) => page.content.filter((r) => r.status === "PENDING").length);
+    work
       .then((value) => {
         if (!cancelled) setCount(value);
       })
@@ -46,12 +56,18 @@ export function PendingApprovalsTile() {
     };
   }, [token, isApprover]);
 
-  if (!isApprover) return null;
-
   const tone =
     count && count > 0
       ? "border-amber-500/40 bg-amber-500/10"
       : "border-white/10 bg-white/[0.03]";
+
+  const heading = isApprover ? "Pending Approvals" : "My Submitted Approvals";
+  const emptyHint = isApprover
+    ? "Nothing in the queue right now"
+    : "No pending approval requests submitted by you";
+  const activeHint = isApprover
+    ? "Risky operations awaiting your decision"
+    : "Awaiting approver decision — track here";
 
   return (
     <Link
@@ -64,15 +80,13 @@ export function PendingApprovalsTile() {
         </div>
         <div>
           <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">
-            Pending Approvals
+            {heading}
           </p>
           <p className="mt-1 text-2xl font-semibold text-white">
             {loading ? "—" : count ?? 0}
           </p>
           <p className="text-xs text-slate-400">
-            {count && count > 0
-              ? "Risky operations awaiting your decision"
-              : "Nothing in the queue right now"}
+            {count && count > 0 ? activeHint : emptyHint}
           </p>
         </div>
       </div>

@@ -4,7 +4,7 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ComponentType, SVGProps, useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowRight, Clock3, Play, ShieldAlert, Sparkles, Target, Users2 } from "lucide-react";
+import { ArrowRight, Clock3, MapPin, Play, RefreshCw, ShieldAlert, Sparkles, Target, Users2 } from "lucide-react";
 import {
   ActiveMembersIcon,
   BiometricIcon,
@@ -154,11 +154,16 @@ const PRIMARY_CARD_KEYS: Record<OperationalDesignation | "DEFAULT", CardKey[]> =
     "totalMembers",
     "todaysBirthdays",
   ],
+  // Issue #7 — was 'totalStaff' which is odd for a fitness role; the
+  // adminOverview API doesn't carry a dedicated coach count today, so we
+  // surface 'expiredMembers' here (recoverable retention is the most
+  // fitness-relevant team-adjacent metric). A real "Active Coaches" card
+  // depends on the backend expansion in issue #11.
   FITNESS_MANAGER: [
     "ptClients",
     "irregularMembers",
     "activeMembers",
-    "totalStaff",
+    "expiredMembers",
     "renewals",
     "todaysBirthdays",
   ],
@@ -284,33 +289,38 @@ function formatCount(value: number): string {
   return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(value || 0);
 }
 
+// Issue #1 — tone palettes converted from the original light theme
+// (bg-*-50 / border-*-200 / text-*-700) to a dark-theme palette that
+// matches the rest of the portal (bg-*-500/10 / border-*-500/30 /
+// text-*-100). Keeps the semantic color signal but reads correctly
+// on the dark page background.
 function toneClasses(tone: FocusPanel["tone"]): string {
   switch (tone) {
     case "blue":
-      return "border-blue-200 bg-blue-50 text-blue-700";
+      return "border-blue-500/30 bg-blue-500/10 text-blue-100";
     case "emerald":
-      return "border-emerald-200 bg-emerald-50 text-emerald-700";
+      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-100";
     case "amber":
-      return "border-amber-200 bg-amber-50 text-amber-700";
+      return "border-amber-500/30 bg-amber-500/10 text-amber-100";
     case "rose":
-      return "border-rose-200 bg-rose-50 text-rose-700";
+      return "border-rose-500/30 bg-rose-500/10 text-rose-100";
     case "violet":
-      return "border-violet-200 bg-violet-50 text-violet-700";
+      return "border-violet-500/30 bg-violet-500/10 text-violet-100";
     default:
-      return "border-slate-200 bg-slate-50 text-slate-700";
+      return "border-white/10 bg-white/[0.04] text-slate-100";
   }
 }
 
 function watchlistToneClasses(tone: WatchlistItem["tone"]): string {
   switch (tone) {
     case "green":
-      return "border-green-200 bg-green-50 text-green-700";
+      return "border-emerald-500/30 bg-emerald-500/10 text-emerald-100";
     case "amber":
-      return "border-amber-200 bg-amber-50 text-amber-700";
+      return "border-amber-500/30 bg-amber-500/10 text-amber-100";
     case "rose":
-      return "border-rose-200 bg-rose-50 text-rose-700";
+      return "border-rose-500/30 bg-rose-500/10 text-rose-100";
     default:
-      return "border-slate-200 bg-slate-50 text-slate-700";
+      return "border-white/10 bg-white/[0.04] text-slate-100";
   }
 }
 
@@ -354,90 +364,92 @@ function buildAllCards(
   followUpsDueToday: number,
   overdueFollowUps: number,
 ): Record<CardKey, MetricCard> {
+  // Issue #1 — icon-bubble palettes converted to dark variants. Same
+  // semantic colour per metric, just darkened for the dark page background.
   return {
     activeMembers: {
       label: "Active Members",
       value: formatCount(overview.totalActiveMembers),
       subtitle: "Current live member base",
-      color: "bg-blue-50 text-blue-700",
+      color: "bg-blue-500/15 text-blue-100",
     },
     expiredMembers: {
       label: "Expired Members",
       value: formatCount(overview.expiredMembers),
       subtitle: "Memberships requiring renewal action",
-      color: "bg-rose-50 text-rose-700",
+      color: "bg-rose-500/15 text-rose-100",
     },
     irregularMembers: {
       label: "Irregular Members",
       value: formatCount(overview.irregularMembers),
       subtitle: "Retention watchlist",
-      color: "bg-amber-50 text-amber-700",
+      color: "bg-amber-500/15 text-amber-100",
     },
     ptClients: {
       label: "PT Clients",
       value: formatCount(overview.totalPtClients),
       subtitle: "Members in personal training",
-      color: "bg-emerald-50 text-emerald-700",
+      color: "bg-emerald-500/15 text-emerald-100",
     },
     revenueToday: {
       label: "Revenue Today",
       value: formatCurrency(overview.todaysRevenue || metrics.revenueToday),
       subtitle: "Collections closed today",
-      color: "bg-fuchsia-50 text-fuchsia-700",
+      color: "bg-fuchsia-500/15 text-fuchsia-100",
     },
     revenueMonth: {
       label: "Revenue This Month",
       value: formatCurrency(overview.monthRevenue || metrics.revenueThisMonth),
       subtitle: "Month-to-date collection pace",
-      color: "bg-violet-50 text-violet-700",
+      color: "bg-violet-500/15 text-violet-100",
     },
     renewals: {
       label: "Upcoming Renewals",
       value: formatCount(overview.upcomingRenewals7Days),
       subtitle: "Expiring in the next 7 days",
-      color: "bg-indigo-50 text-indigo-700",
+      color: "bg-indigo-500/15 text-indigo-100",
     },
     todaysInquiries: {
       label: "Today's Leads",
       value: formatCount(metrics.todaysInquiries),
       subtitle: "Fresh CRM intake for the day",
-      color: "bg-green-50 text-green-700",
+      color: "bg-green-500/15 text-green-100",
     },
     followUpsDue: {
       label: "Follow-ups Due",
       value: formatCount(followUpsDueToday),
       subtitle: "Scheduled for action today",
-      color: "bg-orange-50 text-orange-700",
+      color: "bg-orange-500/15 text-orange-100",
     },
     overdueFollowUps: {
       label: "Overdue Follow-ups",
       value: formatCount(overdueFollowUps),
       subtitle: "Immediate recovery queue",
-      color: "bg-red-50 text-red-700",
+      color: "bg-red-500/15 text-red-100",
     },
     conversionRate: {
       label: "Conversion Rate",
       value: formatPercent(metrics.conversionRate),
       subtitle: "Lead to member conversion",
-      color: "bg-sky-50 text-sky-700",
+      color: "bg-sky-500/15 text-sky-100",
     },
     totalMembers: {
       label: "Total Members",
       value: formatCount(overview.totalMembers),
       subtitle: "All registered members",
-      color: "bg-slate-50 text-slate-700",
+      color: "bg-slate-500/20 text-slate-100",
     },
     totalStaff: {
       label: "Team Strength",
       value: formatCount(overview.totalStaff),
       subtitle: "Staff and coach headcount",
-      color: "bg-teal-50 text-teal-700",
+      color: "bg-teal-500/15 text-teal-100",
     },
     todaysBirthdays: {
       label: "Birthdays Today",
       value: formatCount(overview.todaysBirthdays),
       subtitle: "Members to celebrate or notify",
-      color: "bg-pink-50 text-pink-700",
+      color: "bg-pink-500/15 text-pink-100",
     },
   };
 }
@@ -725,10 +737,10 @@ function AlertsSection({ overview }: { overview: AdminOverviewMetrics }) {
         {alerts.map((alert) => {
           const toneClass =
             alert.tone === "rose"
-              ? "border-rose-200 bg-rose-50 text-rose-700"
+              ? "border-rose-500/30 bg-rose-500/10 text-rose-100"
               : alert.tone === "amber"
-                ? "border-amber-200 bg-amber-50 text-amber-700"
-                : "border-slate-200 bg-slate-50 text-slate-700";
+                ? "border-amber-500/30 bg-amber-500/10 text-amber-100"
+                : "border-white/10 bg-white/[0.04] text-slate-100";
           return (
             <div key={alert.label} className={`rounded-xl border px-3 py-2 text-sm font-medium ${toneClass}`}>
               {alert.label}
@@ -1043,7 +1055,7 @@ function LeaderboardSection({ leaderboard }: { leaderboard: LeaderboardEntry[] }
   if (leaderboard.length === 0) {
     return (
       <SectionCard title="Conversion Leaderboard" subtitle="Available when team ranking data is returned">
-        <p className="text-sm text-slate-500">No leaderboard data is available for this role right now.</p>
+        <p className="text-sm text-slate-400">No leaderboard data is available for this role right now.</p>
       </SectionCard>
     );
   }
@@ -1054,15 +1066,15 @@ function LeaderboardSection({ leaderboard }: { leaderboard: LeaderboardEntry[] }
         {leaderboard.slice(0, 5).map((entry, index) => (
           <div
             key={entry.userId}
-            className="flex items-center justify-between rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3"
+            className="flex items-center justify-between rounded-2xl border border-white/10 bg-white/[0.04] px-4 py-3"
           >
             <div>
-              <p className="text-sm font-semibold text-slate-800">
+              <p className="text-sm font-semibold text-white">
                 {index + 1}. {entry.userName}
               </p>
-              <p className="text-xs text-slate-500">{formatCount(entry.conversions)} conversions</p>
+              <p className="text-xs text-slate-400">{formatCount(entry.conversions)} conversions</p>
             </div>
-            <p className="text-sm font-semibold text-slate-700">{formatCurrency(entry.revenue)}</p>
+            <p className="text-sm font-semibold text-slate-200">{formatCurrency(entry.revenue)}</p>
           </div>
         ))}
       </div>
@@ -1534,15 +1546,79 @@ function QuickActionTiles({
   );
 }
 
+/**
+ * Compact header for the SUPER_ADMIN and GYM_MANAGER dashboard paths
+ * (Path 1 + Path 2). Adds a greeting (issue #2), a refresh button
+ * (issue #3), and a branch-scope pill (issue #8) — all of which Path 3
+ * already has but the rich admin dashboard was missing.
+ *
+ * <p>Refresh uses next/navigation's {@code router.refresh()} which
+ * re-runs RSC data fetches and forces the dynamically-imported
+ * {@code AdminDashboardContent} subtree to re-fetch its
+ * {@code getAdminDashboard} call.
+ */
+function AdminDashboardHeader({
+  userName,
+  designation,
+  selectedBranchName,
+  isAllBranches,
+  onRefresh,
+}: {
+  userName?: string;
+  designation?: UserDesignation;
+  selectedBranchName?: string;
+  isAllBranches: boolean;
+  onRefresh: () => void;
+}) {
+  const greetingHour = new Date().getHours();
+  const greeting =
+    greetingHour < 12 ? "Good Morning" : greetingHour < 17 ? "Good Afternoon" : "Good Evening";
+  const branchLabel = isAllBranches ? "All Branches" : selectedBranchName || "Branch";
+
+  return (
+    <section className="rounded-[28px] border border-white/10 bg-gradient-to-br from-[#1a2030] via-[#121722] to-[#7f1d1d]/40 p-6 shadow-sm">
+      <div className="flex flex-col gap-4 lg:flex-row lg:items-center lg:justify-between">
+        <div>
+          <p className="text-xs font-semibold uppercase tracking-[0.28em] text-rose-200/80">
+            {displayDesignation(designation)} dashboard
+          </p>
+          <h1 className="mt-3 text-3xl font-bold tracking-tight text-white sm:text-4xl">
+            {greeting}
+            {userName ? `, ${userName.split(" ")[0]}` : ""}
+          </h1>
+        </div>
+        <div className="flex flex-wrap items-center gap-3">
+          <span className="inline-flex items-center gap-2 rounded-full border border-white/10 bg-white/5 px-3 py-1.5 text-xs font-semibold uppercase tracking-[0.18em] text-slate-200">
+            <MapPin className="h-3.5 w-3.5" />
+            {branchLabel}
+          </span>
+          <button
+            type="button"
+            onClick={onRefresh}
+            className="inline-flex items-center gap-2 rounded-2xl bg-[#C42429] px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-[#a61e22]"
+          >
+            <RefreshCw className="h-4 w-4" />
+            Refresh
+          </button>
+        </div>
+      </div>
+    </section>
+  );
+}
+
 export default function UnifiedDashboardPage() {
+  const router = useRouter();
   const { token, user } = useAuth();
   const { selectedBranchName, effectiveBranchId, selectedBranchCode } = useBranch();
   const [state, setState] = useState<DashboardState>(EMPTY_STATE);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  const isSuperAdmin = user?.role === "ADMIN" && user.designation === "SUPER_ADMIN";
-  const isGymManager = user?.designation === "GYM_MANAGER";
+  // Issue #12 — any ADMIN role gets the full admin dashboard, not just the
+  // SUPER_ADMIN designation. Avoids the silent fallthrough to Path 3 if an
+  // ADMIN user ever lands without a designation (or with a non-standard one).
+  const isSuperAdmin = user?.role === "ADMIN";
+  const isGymManager = user?.role === "STAFF" && user.designation === "GYM_MANAGER";
   const designation = user?.designation;
 
   const loadDashboard = useCallback(async () => {
@@ -1640,9 +1716,29 @@ export default function UnifiedDashboardPage() {
   const greeting =
     greetingHour < 12 ? "Good Morning" : greetingHour < 17 ? "Good Afternoon" : "Good Evening";
 
+  // Issue #3 — refresh trigger for admin/manager paths. router.refresh()
+  // re-runs server data fetches; window.location.reload() is a hard fallback
+  // to also refresh the dynamically-imported admin dashboard subtree.
+  const handleRefresh = useCallback(() => {
+    router.refresh();
+    if (typeof window !== "undefined") {
+      window.location.reload();
+    }
+  }, [router]);
+
+  const isAllBranches = !selectedBranchName || selectedBranchName === "All Branches";
+
   if (isSuperAdmin) {
     return (
       <div className="space-y-8 pb-12">
+        {/* Issue #2/#3/#8 — greeting + branch indicator + refresh button. */}
+        <AdminDashboardHeader
+          userName={user?.name}
+          designation={designation}
+          selectedBranchName={selectedBranchName}
+          isAllBranches={isAllBranches}
+          onRefresh={handleRefresh}
+        />
         {/* Live flap-gate entries — placed at the top so whoever opens the
             dashboard first sees who's in the gym right now. */}
         {token ? <TodayCheckInsTile /> : null}
@@ -1664,6 +1760,13 @@ export default function UnifiedDashboardPage() {
   if (isGymManager) {
     return (
       <div className="space-y-8 pb-12">
+        <AdminDashboardHeader
+          userName={user?.name}
+          designation={designation}
+          selectedBranchName={selectedBranchName}
+          isAllBranches={isAllBranches}
+          onRefresh={handleRefresh}
+        />
         {token ? <GymManagerQuickActions token={token} userName={user?.name} /> : null}
         {token ? <TodayCheckInsTile /> : null}
         {token ? <PendingApprovalsTile /> : null}
@@ -1688,14 +1791,28 @@ export default function UnifiedDashboardPage() {
     return <PageLoader label="Loading dashboard..." />;
   }
 
+  // Issue #10 — empty-state hint for the metric-card grid below. Path 3
+  // hydrates state from the staff dashboard endpoint which today returns
+  // only check-ins + currently-inside (issue #11), so every primary card
+  // value resolves to 0. Until the backend expansion lands, render a
+  // gentle "no data wired yet" note instead of a wall of zeros.
+  const allPrimaryCardsZero = primaryCards.every((card) => {
+    const numeric = String(card.value).replace(/[^0-9.-]/g, "");
+    return numeric === "0" || numeric === "" || numeric === "0.0";
+  });
+
   return (
     <div className="space-y-8 pb-12">
-      {/* Visible to FRONT_DESK_EXECUTIVE too — walk-in verification is their
-          bread-and-butter workflow. Other designations (SALES_*, FITNESS_MANAGER)
-          don't see it per role-scope tile policy but this page fallthrough
-          doesn't differentiate beyond designation, so we rely on the widget's
-          own data-empty state if there's nothing for them to show. */}
-      {token && designation === "FRONT_DESK_EXECUTIVE" ? <TodayCheckInsTile /> : null}
+      {/* Issue #6 — TodayCheckInsTile is now visible to every staff designation
+          on the dashboard, not just FRONT_DESK_EXECUTIVE. Sales / Fitness
+          staff also benefit from the "is so-and-so already in the gym today?"
+          context (chasing renewals, recovering at-risk members, etc.). */}
+      {token ? <TodayCheckInsTile /> : null}
+      {/* Issue #5 — PendingApprovalsTile surfaces requests the operator has
+          submitted (DISCOUNT, VOID_*, DELETE_PAYMENT, BACKDATE_SUBSCRIPTION
+          per DEC-019). Backend filters to "approvals visible to caller" so
+          non-approver staff see only their own pending submissions. */}
+      {token ? <PendingApprovalsTile /> : null}
       {token ? (
         <QuickActionTiles
           token={token}
@@ -1704,7 +1821,9 @@ export default function UnifiedDashboardPage() {
           selectedBranchCode={selectedBranchCode}
         />
       ) : null}
-      <section className="overflow-hidden rounded-[32px] border border-slate-200 bg-white shadow-sm">
+      {/* Issue #1 — hero + side panel converted from light theme to the
+          portal's dark palette so Path 3 reads as a single coherent surface. */}
+      <section className="overflow-hidden rounded-[32px] border border-white/10 bg-[#15181f] shadow-sm">
         <div className="grid gap-0 lg:grid-cols-[1.8fr_1fr]">
           <div className="bg-[radial-gradient(circle_at_top_left,_rgba(196,36,41,0.18),_transparent_45%),linear-gradient(135deg,#111827_0%,#1f2937_45%,#7f1d1d_100%)] px-6 py-8 text-white sm:px-8">
             <p className="text-xs font-semibold uppercase tracking-[0.28em] text-rose-100">
@@ -1723,41 +1842,42 @@ export default function UnifiedDashboardPage() {
             <p className="mt-5 max-w-2xl text-sm leading-6 text-rose-50/90">{hero.description}</p>
           </div>
 
-          <div className="grid gap-0 border-t border-slate-200 bg-slate-50 lg:border-t-0 lg:border-l">
-            <div className="border-b border-slate-200 p-5">
+          <div className="grid gap-0 border-t border-white/8 bg-white/[0.02] lg:border-t-0 lg:border-l">
+            <div className="border-b border-white/8 p-5">
               <div className="flex items-center gap-3">
-                <div className="rounded-2xl bg-white p-3 text-[#C42429] shadow-sm">
+                <div className="rounded-2xl bg-white/[0.06] p-3 text-[#ffd6d4] shadow-sm">
                   <Target className="h-5 w-5" />
                 </div>
                 <div>
-                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">
-                    Main KPI
+                  {/* Issue #9 — was "Main KPI" hardcoded, but the actual lane
+                      is whatever the first focus panel is for this designation
+                      (e.g. "Lead Pipeline" for sales, "Member Health" for
+                      front desk). Show the panel's own title here. */}
+                  <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
+                    {focusPanels[0]?.title || "Operating summary"}
                   </p>
-                  <p className="text-xl font-bold text-slate-900">{focusPanels[0]?.value || "0"}</p>
+                  <p className="text-xl font-bold text-white">{focusPanels[0]?.value || "0"}</p>
                 </div>
               </div>
-              <p className="mt-3 text-sm font-semibold text-slate-800">
-                {focusPanels[0]?.title || "Operating summary"}
-              </p>
-              <p className="mt-1 text-sm text-slate-500">
+              <p className="mt-3 text-sm leading-6 text-slate-300">
                 {focusPanels[0]?.description || "Live branch-side indicators update from the backend."}
               </p>
             </div>
 
             <div className="grid gap-3 p-5">
-              <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">
+              <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
                   Today&apos;s Watch
                 </p>
-                <p className="mt-2 text-sm font-semibold text-slate-900">
+                <p className="mt-2 text-sm font-semibold text-white">
                   {formatCount(state.followUpsDueToday)} follow-ups due, {formatCount(state.overdueFollowUps)} overdue
                 </p>
               </div>
-              <div className="rounded-2xl border border-slate-200 bg-white p-4">
-                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-500">
+              <div className="rounded-2xl border border-white/8 bg-white/[0.04] p-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.22em] text-slate-400">
                   Branch Pulse
                 </p>
-                <p className="mt-2 text-sm font-semibold text-slate-900">
+                <p className="mt-2 text-sm font-semibold text-white">
                   {formatCount(state.adminOverview.totalActiveMembers)} active members, {formatCount(state.adminOverview.upcomingRenewals7Days)} renewals due
                 </p>
               </div>
@@ -1775,7 +1895,7 @@ export default function UnifiedDashboardPage() {
       </section>
 
       {error ? (
-        <p className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+        <p className="rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3 text-sm text-rose-100">
           {error}
         </p>
       ) : null}
@@ -1786,13 +1906,13 @@ export default function UnifiedDashboardPage() {
           return (
             <article
               key={card.label}
-              className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm"
+              className="rounded-2xl border border-white/10 bg-[#15181f] p-5 shadow-sm"
             >
               <div className="flex items-start justify-between gap-4">
                 <div>
-                  <p className="text-sm font-semibold text-slate-500">{card.label}</p>
-                  <p className="mt-3 text-3xl font-bold tracking-tight text-slate-900">{card.value}</p>
-                  <p className="mt-2 text-sm text-slate-500">{card.subtitle}</p>
+                  <p className="text-sm font-semibold text-slate-400">{card.label}</p>
+                  <p className="mt-3 text-3xl font-bold tracking-tight text-white">{card.value}</p>
+                  <p className="mt-2 text-sm text-slate-400">{card.subtitle}</p>
                 </div>
                 <div className={`rounded-2xl p-3 ${card.color}`}>
                   <MetricIcon className="h-5 w-5" />
@@ -1802,6 +1922,17 @@ export default function UnifiedDashboardPage() {
           );
         })}
       </div>
+
+      {allPrimaryCardsZero && !loading ? (
+        <div className="rounded-2xl border border-amber-500/30 bg-amber-500/10 px-4 py-3 text-sm text-amber-100">
+          <p className="font-semibold">No metrics loaded yet for this role.</p>
+          <p className="mt-1 text-amber-100/80">
+            The branch-scoped staff dashboard endpoint is being expanded (tracked as issue #11). The
+            counts above will populate once the backend wiring lands. Quick Actions tiles above
+            already pull live data and are the most reliable signal in the meantime.
+          </p>
+        </div>
+      ) : null}
 
       <div className="grid gap-6 xl:grid-cols-[1.45fr_1fr]">
         <SectionCard
@@ -1852,14 +1983,14 @@ export default function UnifiedDashboardPage() {
               <Link
                 key={item.title}
                 href={item.href}
-                className="group rounded-2xl border border-slate-200 bg-slate-50 p-5 transition hover:border-[#C42429] hover:bg-white hover:shadow-sm"
+                className="group rounded-2xl border border-white/10 bg-white/[0.04] p-5 transition hover:border-[#c42924] hover:bg-white/[0.08]"
               >
                 <div className="flex items-start justify-between gap-3">
                   <div>
-                    <p className="text-lg font-semibold text-slate-900">{item.title}</p>
-                    <p className="mt-2 text-sm leading-6 text-slate-500">{item.description}</p>
+                    <p className="text-lg font-semibold text-white">{item.title}</p>
+                    <p className="mt-2 text-sm leading-6 text-slate-400">{item.description}</p>
                   </div>
-                  <ArrowRight className="mt-1 h-5 w-5 text-slate-400 transition group-hover:text-[#C42429]" />
+                  <ArrowRight className="mt-1 h-5 w-5 text-slate-500 transition group-hover:text-[#ffd6d4]" />
                 </div>
               </Link>
             ))}
@@ -1873,17 +2004,17 @@ export default function UnifiedDashboardPage() {
             title="Operating Notes"
             subtitle="What this dashboard currently represents"
           >
-            <div className="space-y-3 text-sm text-slate-600">
-              <div className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <Clock3 className="mt-0.5 h-4 w-4 text-slate-500" />
+            <div className="space-y-3 text-sm text-slate-300">
+              <div className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                <Clock3 className="mt-0.5 h-4 w-4 text-slate-400" />
                 <p>The portal already supports a single dashboard route with role-specific content instead of separate dashboard entries.</p>
               </div>
-              <div className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <ShieldAlert className="mt-0.5 h-4 w-4 text-slate-500" />
+              <div className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                <ShieldAlert className="mt-0.5 h-4 w-4 text-slate-400" />
                 <p>Operational cards here are built from live backend metrics already exposed by the existing dashboard and follow-up APIs.</p>
               </div>
-              <div className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-slate-50 p-4">
-                <BiometricIcon className="mt-0.5 h-4 w-4 text-slate-500" />
+              <div className="flex items-start gap-3 rounded-2xl border border-white/10 bg-white/[0.04] p-4">
+                <BiometricIcon className="mt-0.5 h-4 w-4 text-slate-400" />
                 <p>Branch managers continue to use the richer branch-scoped HQ dashboard, while coach users remain blocked from portal access.</p>
               </div>
             </div>
