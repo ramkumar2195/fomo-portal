@@ -39,6 +39,10 @@ export interface FollowUpRecord {
   followUpId: number;
   inquiryId: number;
   memberId: number | null;
+  /** Display name resolved from the originating Inquiry (server-side). */
+  memberName?: string | null;
+  /** Same as memberName, surfaced separately for lead-vs-member call sites. */
+  inquiryName?: string | null;
   branchId?: number | null;
   branchCode?: string | null;
   assignedToStaffId: number | null;

@@ -289,6 +289,39 @@ function formatCount(value: number): string {
   return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(value || 0);
 }
 
+/**
+ * Tighter, human-readable second-line for follow-up tile rows. Uses the
+ * follow-up type as a sentence-cased lead ("Membership renewal · Due …")
+ * instead of the legacy SHOUT_CASE primary fallback.
+ */
+function buildFollowUpRowSecondary(row: { followUpType?: string | null; dueAt?: string | null }): string | undefined {
+  const typeLabel = row.followUpType ? humanizeFollowUpType(row.followUpType) : "Follow-up";
+  if (!row.dueAt) return typeLabel;
+  const due = new Date(row.dueAt);
+  // For very-near-future dueAts (today), show time. For past or future days,
+  // show the calendar date — operators care about "is this overdue?" not
+  // "what hour was this scheduled at" once the day has passed.
+  const isToday = due.toDateString() === new Date().toDateString();
+  const dueLabel = isToday
+    ? `Due ${due.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}`
+    : `Due ${due.toLocaleDateString()}`;
+  return `${typeLabel} · ${dueLabel}`;
+}
+
+const FOLLOW_UP_TYPE_LABELS: Record<string, string> = {
+  MEMBERSHIP_RENEWAL: "Membership renewal",
+  BALANCE_DUE: "Balance due",
+  GENERAL_FOLLOW_UP: "General follow-up",
+  TRIAL_FOLLOW_UP: "Trial follow-up",
+  ENQUIRY: "Enquiry",
+  CONFIRMATION_CALLS: "Confirmation call",
+  GYM_STUDIO_TRIAL: "Gym/studio trial",
+};
+
+function humanizeFollowUpType(value: string): string {
+  return FOLLOW_UP_TYPE_LABELS[value] || value.replace(/_/g, " ").toLowerCase().replace(/^\w/, (c) => c.toUpperCase());
+}
+
 // Issue #1 — tone palettes converted from the original light theme
 // (bg-*-50 / border-*-200 / text-*-700) to a dark-theme palette that
 // matches the rest of the portal (bg-*-500/10 / border-*-500/30 /
@@ -1226,6 +1259,7 @@ function QuickActionTiles({
     EXPIRED: { rows: [], loading: true },
     PAYMENT_DUE: { rows: [], loading: true },
   });
+  const [showEmptyTiles, setShowEmptyTiles] = useState(false);
 
   const designation = user?.designation;
   const visibleTiles: TileKey[] =
@@ -1365,8 +1399,8 @@ function QuickActionTiles({
               loading: false,
               rows: res.content.slice(0, 5).map((row) => ({
                 key: `due-${row.followUpId}`,
-                primary: row.followUpType ? String(row.followUpType).replace(/_/g, " ") : `Follow-up #${row.followUpId}`,
-                secondary: row.dueAt ? `Due ${new Date(row.dueAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}` : undefined,
+                primary: row.memberName || row.inquiryName || `Follow-up #${row.followUpId}`,
+                secondary: buildFollowUpRowSecondary(row),
                 href: row.memberId
                   ? `/admin/members/${row.memberId}`
                   : row.inquiryId
@@ -1398,8 +1432,8 @@ function QuickActionTiles({
               loading: false,
               rows: res.content.slice(0, 5).map((row) => ({
                 key: `overdue-${row.followUpId}`,
-                primary: row.followUpType ? String(row.followUpType).replace(/_/g, " ") : `Follow-up #${row.followUpId}`,
-                secondary: row.dueAt ? `Due ${new Date(row.dueAt).toLocaleDateString()}` : undefined,
+                primary: row.memberName || row.inquiryName || `Follow-up #${row.followUpId}`,
+                secondary: buildFollowUpRowSecondary(row),
                 badge: "OVERDUE",
                 href: row.memberId
                   ? `/admin/members/${row.memberId}`
@@ -1432,8 +1466,8 @@ function QuickActionTiles({
               loading: false,
               rows: res.content.slice(0, 5).map((row) => ({
                 key: `mine-${row.followUpId}`,
-                primary: row.followUpType ? String(row.followUpType).replace(/_/g, " ") : `Follow-up #${row.followUpId}`,
-                secondary: row.dueAt ? `Due ${new Date(row.dueAt).toLocaleDateString()}` : undefined,
+                primary: row.memberName || row.inquiryName || `Follow-up #${row.followUpId}`,
+                secondary: buildFollowUpRowSecondary(row),
                 href: row.memberId
                   ? `/admin/members/${row.memberId}`
                   : row.inquiryId
@@ -1528,16 +1562,41 @@ function QuickActionTiles({
     },
   };
 
+  // Issue L2 + S3 — hide empty tiles by default. Operator scrolls past
+  // a wall of "No X." otherwise. A small toggle reveals them on demand.
+  const populatedTiles = visibleTiles.filter((k) => {
+    const t = tiles[k];
+    return t.loading || (t.rows && t.rows.length > 0) || t.error;
+  });
+  const emptyTileCount = visibleTiles.length - populatedTiles.length;
+  const tilesToRender = showEmptyTiles ? visibleTiles : populatedTiles;
+
   return (
     <section className="space-y-4">
-      <div>
-        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">
-          Quick actions
-        </h2>
-        <p className="text-xs text-slate-500">Today's work, grouped by what needs attention.</p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">
+            Quick actions
+          </h2>
+          <p className="text-xs text-slate-500">Today&apos;s work, grouped by what needs attention.</p>
+        </div>
+        {emptyTileCount > 0 ? (
+          <button
+            type="button"
+            onClick={() => setShowEmptyTiles((v) => !v)}
+            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-white/[0.08]"
+          >
+            {showEmptyTiles ? `Hide ${emptyTileCount} empty` : `Show ${emptyTileCount} empty`}
+          </button>
+        ) : null}
       </div>
+      {populatedTiles.length === 0 && !showEmptyTiles ? (
+        <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 px-5 py-4 text-sm text-emerald-100">
+          Nothing on your plate right now — every queue is clear. Use the toggle above to peek at the empty tiles.
+        </div>
+      ) : null}
       <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
-        {visibleTiles.map((key) => (
+        {tilesToRender.map((key) => (
           <QuickActionTile
             key={key}
             title={tileConfig[key].title}
@@ -1758,7 +1817,7 @@ export default function UnifiedDashboardPage() {
             selectedBranchCode={selectedBranchCode}
           />
         ) : null}
-        <AdminDashboardContent />
+        <AdminDashboardContent hideHeading />
       </div>
     );
   }
@@ -1786,6 +1845,7 @@ export default function UnifiedDashboardPage() {
         ) : null}
         <AdminDashboardContent
           branchScoped
+          hideHeading
           headingTitle={`${selectedBranchName || "Branch"} Dashboard`}
           headingSubtitle={`${selectedBranchName || "Selected branch"} overview`}
         />

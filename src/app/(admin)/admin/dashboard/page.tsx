@@ -462,12 +462,20 @@ interface AdminDashboardProps {
   headingTitle?: string;
   /** Override the heading subtitle */
   headingSubtitle?: string;
+  /**
+   * Suppress the heading + Live pill row entirely. Used when this dashboard
+   * is embedded inside the Super Admin / Gym Manager sales-dashboard route
+   * which renders its own AdminDashboardHeader at the top — without this
+   * the page shows two competing heading rows (issue L1).
+   */
+  hideHeading?: boolean;
 }
 
 export default function AdminDashboardPage({
   branchScoped = false,
   headingTitle,
   headingSubtitle,
+  hideHeading = false,
 }: AdminDashboardProps = {}) {
   const { token } = useAuth();
   const { isLoadingBranches, effectiveBranchId, selectedBranchName } = useBranch();
@@ -830,23 +838,25 @@ export default function AdminDashboardPage({
       <section className="grid gap-4 xl:grid-cols-12">
         <div className="xl:col-span-12">
           <section className="rounded-[30px] border border-white/10 bg-[#121722] p-6 shadow-sm">
-            <div className="flex flex-col gap-5 border-b border-white/10 pb-6 lg:flex-row lg:items-start lg:justify-between">
-              <div>
-                <p className="text-4xl font-bold tracking-tight text-white">{headingTitle || "Super Admin"}</p>
-                <p className="mt-2 text-base text-slate-300">
-                  {headingSubtitle || (selectedBranchName && selectedBranchName !== "All Branches" ? `${selectedBranchName} overview` : "All branches overview")}{generatedDateLabel ? ` - ${generatedDateLabel}` : ""}
-                </p>
+            {hideHeading ? null : (
+              <div className="flex flex-col gap-5 border-b border-white/10 pb-6 lg:flex-row lg:items-start lg:justify-between">
+                <div>
+                  <p className="text-4xl font-bold tracking-tight text-white">{headingTitle || "Super Admin"}</p>
+                  <p className="mt-2 text-base text-slate-300">
+                    {headingSubtitle || (selectedBranchName && selectedBranchName !== "All Branches" ? `${selectedBranchName} overview` : "All branches overview")}{generatedDateLabel ? ` - ${generatedDateLabel}` : ""}
+                  </p>
+                </div>
+                <div className="inline-flex items-center gap-2 rounded-full bg-[#E8F2D7] px-4 py-2 text-sm font-semibold text-[#5B7F2B]">
+                  <span className="relative flex h-2.5 w-2.5">
+                    <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#84CC16] opacity-75" />
+                    <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#84CC16]" />
+                  </span>
+                  Live
+                </div>
               </div>
-              <div className="inline-flex items-center gap-2 rounded-full bg-[#E8F2D7] px-4 py-2 text-sm font-semibold text-[#5B7F2B]">
-                <span className="relative flex h-2.5 w-2.5">
-                  <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-[#84CC16] opacity-75" />
-                  <span className="relative inline-flex h-2.5 w-2.5 rounded-full bg-[#84CC16]" />
-                </span>
-                Live
-              </div>
-            </div>
+            )}
 
-            <div className="mt-6 grid gap-4 xl:grid-cols-4">
+            <div className={`grid gap-4 sm:grid-cols-2 lg:grid-cols-4 ${hideHeading ? "" : "mt-6"}`}>
               {heroCards.map((card) => {
                 const accentClass =
                   card.metricKey === "TOTAL_MEMBERS"
@@ -937,7 +947,7 @@ export default function AdminDashboardPage({
 
         <div className="xl:col-span-12">
           <SurfaceCard title="Revenue">
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
               {revenueCards.map((card) => (
                 <MetricValueCard
                   key={card.metricKey}
@@ -1020,7 +1030,8 @@ export default function AdminDashboardPage({
 
         <div className="xl:col-span-4">
           <SurfaceCard title="Subscription Health">
-            <div className="grid gap-3 sm:grid-cols-2">
+            {/* Issue L5 — was 2x2 grid; flatten to a tighter 2x2 with smaller gap. */}
+            <div className="grid gap-2 sm:grid-cols-2">
               <SnapshotStat
                 label="Active Subscriptions"
                 value={formatCount(dashboard.summary.subscriptions.activeSubscriptions)}
@@ -1127,12 +1138,14 @@ export default function AdminDashboardPage({
 
         <div className="xl:col-span-6">
           <SurfaceCard title="Alerts">
-            <div className="space-y-3">
+            {/* Issue L6 — 5 stacked full-width rows compressed to a 5-up chip
+                strip at xl. Each chip stays clickable + colored by tone. */}
+            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
               {alerts.map((item) => (
-                <div key={item.title} className="rounded-2xl border border-white/8 bg-white/[0.03] px-4 py-3">
-                  <div className="flex items-start justify-between gap-2">
-                    <p className="text-sm font-semibold text-white">{item.title}</p>
-                    <span className="text-2xl font-bold tracking-tight text-white">{item.value}</span>
+                <div key={item.title} className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">
+                  <div className="flex items-baseline justify-between gap-2">
+                    <p className="text-xs font-semibold uppercase tracking-[0.14em] text-slate-400 leading-tight">{item.title}</p>
+                    <span className="text-xl font-bold tracking-tight text-white">{item.value}</span>
                   </div>
                   <p className="mt-1 text-sm text-slate-400">{item.subtitle}</p>
                 </div>
