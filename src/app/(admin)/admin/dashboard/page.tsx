@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import {
   Activity,
   IndianRupee,
@@ -161,6 +162,28 @@ function formatInr(value: number): string {
   }).format(value || 0);
 }
 
+/**
+ * Compact currency for the dashboard's metric cards. Indian convention:
+ *   ≥ 1 crore   → "₹1.27 Cr"
+ *   ≥ 1 lakh    → "₹4.40 L"
+ *   < 1 lakh    → fall back to standard formatInr (e.g. "₹98,500")
+ *
+ * Used in Revenue cards where the full number "₹1,27,12,427" was wrapping
+ * to two lines and misaligning the icon. The card title still gets the
+ * exact value via {@link formatInr} on click drill-down; the card face
+ * just needs an at-a-glance number.
+ */
+function formatInrCompact(value: number): string {
+  const v = value || 0;
+  if (v >= 10_000_000) {
+    return `₹${(v / 10_000_000).toFixed(2)} Cr`;
+  }
+  if (v >= 100_000) {
+    return `₹${(v / 100_000).toFixed(2)} L`;
+  }
+  return formatInr(v);
+}
+
 function formatCount(value: number): string {
   return new Intl.NumberFormat("en-IN", { maximumFractionDigits: 0 }).format(value || 0);
 }
@@ -244,9 +267,13 @@ function MetricValueCard({
       className="rounded-3xl border border-white/10 bg-[#121722] p-5 text-left shadow-sm transition hover:border-[#C42429] hover:bg-[#171d29] hover:shadow-md"
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <p className="break-words text-sm font-semibold text-slate-100">{card.title}</p>
-          <p className="mt-4 break-words text-3xl font-bold leading-tight tracking-tight text-white xl:text-4xl">{card.value}</p>
+          {/* whitespace-nowrap keeps the metric value on a single line so
+              the icon bubble stays vertically aligned across cards on the
+              same row. Combined with formatInrCompact (₹1.27 Cr) the
+              value comfortably fits even in narrow cards. */}
+          <p className="mt-4 truncate whitespace-nowrap text-3xl font-bold leading-tight tracking-tight text-white xl:text-4xl">{card.value}</p>
           <p className="mt-2 break-words text-sm leading-6 text-slate-400">{card.subtitle}</p>
         </div>
         <div className={`inline-flex shrink-0 rounded-2xl border border-white/10 p-3 shadow-sm [&_svg]:h-5 [&_svg]:w-5 ${card.iconClass}`}>{card.icon}</div>
@@ -643,10 +670,14 @@ export default function AdminDashboardPage({
 
   const revenueCards = useMemo<DashboardMetricCard[]>(() => {
     const summary = dashboard.summary;
+    // formatInrCompact keeps each card's value to a single line — large
+    // cumulative amounts like Revenue Lifetime would otherwise read as
+    // "₹1,27,12,427" and break to a second line, misaligning the icon
+    // bubble against neighboring cards.
     return [
       createMetricCard(
         "Revenue Today",
-        formatInr(summary.revenue.revenueToday),
+        formatInrCompact(summary.revenue.revenueToday),
         "Collected today",
         <IndianRupee className="h-4 w-4" />,
         "bg-emerald-500/15 text-emerald-100",
@@ -654,7 +685,7 @@ export default function AdminDashboardPage({
       ),
       createMetricCard(
         "Revenue This Month",
-        formatInr(summary.revenue.revenueThisMonth),
+        formatInrCompact(summary.revenue.revenueThisMonth),
         "Current month collection",
         <IndianRupee className="h-4 w-4" />,
         "bg-rose-500/15 text-rose-100",
@@ -666,7 +697,7 @@ export default function AdminDashboardPage({
           : [
               createMetricCard(
                 "Revenue This Year",
-                formatInr(summary.revenue.revenueThisYear),
+                formatInrCompact(summary.revenue.revenueThisYear),
                 "Jan 1 to today",
                 <IndianRupee className="h-4 w-4" />,
                 "bg-violet-500/15 text-violet-100",
@@ -674,7 +705,7 @@ export default function AdminDashboardPage({
               ),
               createMetricCard(
                 "Revenue Lifetime",
-                formatInr(summary.revenue.revenueLifetime),
+                formatInrCompact(summary.revenue.revenueLifetime),
                 "Platform lifetime collection",
                 <IndianRupee className="h-4 w-4" />,
                 "bg-amber-500/15 text-amber-100",
@@ -792,32 +823,42 @@ export default function AdminDashboardPage({
   }, [dashboard.summary]);
   const generatedDateLabel = useMemo(() => formatGeneratedDate(dashboard.generatedAt), [dashboard.generatedAt]);
 
+  // Each alert chip is now clickable — the operator's intuitive next step
+  // when they see "Follow-ups Overdue: 24" is to dive into that filtered
+  // list. href maps each alert to the right page + filter. Routes are
+  // defensive: if the target page doesn't yet support the query param,
+  // it'll just open the unfiltered list (no broken state).
   const alerts = useMemo(
     () => [
       {
         title: "Memberships Expiring Soon",
         value: formatCount(dashboard.alerts.membershipsExpiringSoon),
         subtitle: "Next 7 days",
+        href: "/portal/renewals",
       },
       {
         title: "Follow-ups Due Today",
         value: formatCount(dashboard.alerts.followUpsDueToday),
         subtitle: "Needs same-day action",
+        href: "/portal/follow-ups?dueWindow=TODAY",
       },
       {
         title: "Follow-ups Overdue",
         value: formatCount(dashboard.alerts.followUpsOverdue),
         subtitle: "Requires immediate action",
+        href: "/portal/follow-ups?status=OVERDUE",
       },
       {
         title: "Credits Expiring",
         value: formatCount(dashboard.alerts.creditsExpiringSoon),
         subtitle: "Expiring soon",
+        href: "/admin/credits?filter=EXPIRING",
       },
       {
         title: "Trainer Schedule Conflicts",
         value: formatCount(dashboard.alerts.trainerScheduleConflicts),
         subtitle: "Overlapping trainer sessions",
+        href: "/portal/trainers?filter=CONFLICTS",
       },
     ],
     [dashboard],
@@ -967,7 +1008,7 @@ export default function AdminDashboardPage({
               <MetricValueCard
                 card={createMetricCard(
                   "Pending Revenue",
-                  formatInr(resolvedBalanceDueAmount),
+                  formatInrCompact(resolvedBalanceDueAmount),
                   `${formatCount(resolvedBalanceDueInvoices)} invoice${resolvedBalanceDueInvoices === 1 ? "" : "s"} awaiting collection`,
                   <IndianRupee className="h-4 w-4" />,
                   "bg-amber-500/15 text-amber-100",
@@ -1152,26 +1193,34 @@ export default function AdminDashboardPage({
           </SurfaceCard>
         </div>
 
-        <div className="xl:col-span-6">
+        <div className="xl:col-span-12">
           <SurfaceCard title="Alerts">
-            {/* Stacked layout: number above title. The earlier
-                `items-baseline justify-between` row layout caused the
-                number to overlap the wrapped 2-line title in narrower
-                chips ("MEMBERSHIPS EXPIRING SOON" wraps to 2 lines and
-                the right-aligned number landed mid-baseline of the
-                wrapped text). Stacking puts the number on top, title
-                on bottom — predictable spacing regardless of title
-                length. */}
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-              {alerts.map((item) => (
-                <div key={item.title} className="rounded-2xl border border-white/8 bg-white/[0.03] px-3 py-3">
-                  <div>
-                    <span className="text-2xl font-bold tracking-tight text-white">{item.value}</span>
-                    <p className="mt-1 text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-400 leading-tight">{item.title}</p>
-                  </div>
-                  <p className="mt-1 text-sm text-slate-400">{item.subtitle}</p>
-                </div>
-              ))}
+            {/* Single horizontal row with horizontal scroll on narrow
+                viewports. flex-1 + min-w-0 on each chip means they share
+                the row equally; flex-nowrap + overflow-x-auto stops the
+                grid from breaking into multiple congested rows. Each
+                chip is now a Link so clicking jumps to the matching
+                filtered page. */}
+            <div className="flex gap-3 overflow-x-auto pb-1">
+              {alerts.map((item) => {
+                const tone = item.value !== "0"
+                  ? "border-amber-500/30 bg-amber-500/10 hover:bg-amber-500/15"
+                  : "border-white/8 bg-white/[0.03] hover:bg-white/[0.06]";
+                const numberClass = item.value !== "0" ? "text-amber-100" : "text-white";
+                return (
+                  <Link
+                    key={item.title}
+                    href={item.href || "#"}
+                    className={`flex min-w-[180px] flex-1 items-center gap-3 rounded-2xl border px-4 py-3 transition ${tone}`}
+                  >
+                    <span className={`text-2xl font-bold tracking-tight tabular-nums ${numberClass}`}>{item.value}</span>
+                    <div className="min-w-0">
+                      <p className="text-[11px] font-semibold uppercase tracking-[0.14em] text-slate-300 leading-tight">{item.title}</p>
+                      <p className="mt-0.5 truncate text-xs text-slate-400">{item.subtitle}</p>
+                    </div>
+                  </Link>
+                );
+              })}
             </div>
           </SurfaceCard>
         </div>

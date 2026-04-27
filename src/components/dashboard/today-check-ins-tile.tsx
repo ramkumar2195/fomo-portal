@@ -133,10 +133,12 @@ export function TodayCheckInsTile() {
             ...row,
             name: user?.name || `#${row.memberId}`,
             mobile: user?.mobile,
-            // For Members the membership plan would be ideal here, but the
-            // UserDirectoryItem doesn't carry it; surface the designation
-            // as a fallback (works correctly for STAFF/COACH; Members get
-            // an em-dash since no per-row plan join exists at this layer).
+            // STAFF/COACH show their designation here. MEMBERS will fall
+            // through to "—" since the UserDirectoryItem doesn't carry an
+            // active membership plan name today. Surfacing the plan
+            // requires either denormalising the column on users or a
+            // batch lookup against subscription-service — tracked as a
+            // dashboard follow-up; the modal otherwise stays useful.
             plan: user?.designation,
             gender: normalizeGender(user?.gender),
             role: normalizeRole(user?.role),
@@ -176,6 +178,17 @@ export function TodayCheckInsTile() {
     if (filter === "STAFF_AND_COACHES") return enriched.filter((r) => r.role === "STAFF" || r.role === "COACH");
     return enriched;
   }, [enriched, filter]);
+
+  // Pagination state for the modal table. Resets to page 0 whenever the
+  // filter changes so opening "Male" and then "Female" doesn't strand
+  // you on a page that no longer exists.
+  const [page, setPage] = useState(0);
+  const PAGE_SIZE = 20;
+  useEffect(() => {
+    setPage(0);
+  }, [filter]);
+  const totalPages = Math.max(1, Math.ceil(filteredRows.length / PAGE_SIZE));
+  const pageRows = filteredRows.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
   return (
     <>
@@ -245,40 +258,70 @@ export function TodayCheckInsTile() {
         {filteredRows.length === 0 ? (
           <p className="text-sm text-slate-400">No matching check-ins recorded today yet.</p>
         ) : (
-          <div className="overflow-x-auto rounded-2xl border border-white/10">
-            <table className="min-w-full text-sm">
-              <thead>
-                <tr className="bg-white/[0.03] text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
-                  <th className="px-4 py-3">Name</th>
-                  <th className="px-4 py-3">Mobile</th>
-                  <th className="px-4 py-3">Role</th>
-                  <th className="px-4 py-3">Plan / Designation</th>
-                  <th className="px-4 py-3">Gender</th>
-                  <th className="px-4 py-3">First Check-in</th>
-                  <th className="px-4 py-3">Entries</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/8">
-                {filteredRows.map((row) => (
-                  <tr key={`${row.memberId}-${row.visitDate}`} className="hover:bg-white/[0.02]">
-                    <td className="px-4 py-2.5 font-medium text-white">{row.name}</td>
-                    <td className="px-4 py-2.5 text-slate-300">{row.mobile || "—"}</td>
-                    <td className="px-4 py-2.5 text-slate-300">
-                      <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.14em]">
-                        {row.role === "UNKNOWN" ? "—" : row.role}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 text-slate-300">{row.plan || row.designation || "—"}</td>
-                    <td className="px-4 py-2.5 text-slate-300">{row.gender === "UNKNOWN" ? "—" : row.gender}</td>
-                    <td className="px-4 py-2.5 text-slate-200">{formatTime12h(row.firstCheckInAt)}</td>
-                    <td className="px-4 py-2.5 text-slate-300">
-                      {row.totalPunches === 1 ? "1" : `${row.totalPunches} entries`}
-                    </td>
+          <>
+            <div className="overflow-x-auto rounded-2xl border border-white/10">
+              <table className="min-w-full text-sm">
+                <thead>
+                  <tr className="bg-white/[0.03] text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
+                    <th className="px-4 py-3">Name</th>
+                    <th className="px-4 py-3">Mobile</th>
+                    <th className="px-4 py-3">Role</th>
+                    <th className="px-4 py-3">Plan / Designation</th>
+                    <th className="px-4 py-3">Gender</th>
+                    <th className="px-4 py-3">First Check-in</th>
+                    <th className="px-4 py-3">Entries</th>
                   </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
+                </thead>
+                <tbody className="divide-y divide-white/8">
+                  {pageRows.map((row) => (
+                    <tr key={`${row.memberId}-${row.visitDate}`} className="hover:bg-white/[0.02]">
+                      <td className="px-4 py-2.5 font-medium text-white">{row.name}</td>
+                      <td className="px-4 py-2.5 text-slate-300">{row.mobile || "—"}</td>
+                      <td className="px-4 py-2.5 text-slate-300">
+                        <span className="rounded-full border border-white/10 bg-white/[0.03] px-2 py-0.5 text-[11px] font-semibold uppercase tracking-[0.14em]">
+                          {row.role === "UNKNOWN" ? "—" : row.role}
+                        </span>
+                      </td>
+                      <td className="px-4 py-2.5 text-slate-300">{row.plan || row.designation || "—"}</td>
+                      <td className="px-4 py-2.5 text-slate-300">{row.gender === "UNKNOWN" ? "—" : row.gender}</td>
+                      <td className="px-4 py-2.5 text-slate-200">{formatTime12h(row.firstCheckInAt)}</td>
+                      <td className="px-4 py-2.5 text-slate-300">
+                        {row.totalPunches === 1 ? "1" : `${row.totalPunches} entries`}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+            {totalPages > 1 ? (
+              <div className="mt-3 flex flex-wrap items-center justify-between gap-3 text-sm text-slate-300">
+                <span>
+                  Showing {page * PAGE_SIZE + 1}–{Math.min((page + 1) * PAGE_SIZE, filteredRows.length)} of {filteredRows.length}
+                </span>
+                <div className="flex items-center gap-2">
+                  <button
+                    type="button"
+                    onClick={() => setPage((p) => Math.max(0, p - 1))}
+                    disabled={page === 0}
+                    className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Previous
+                  </button>
+                  <span className="text-xs text-slate-400">
+                    Page {page + 1} / {totalPages}
+                  </span>
+                  <button
+                    type="button"
+                    onClick={() => setPage((p) => Math.min(totalPages - 1, p + 1))}
+                    disabled={page >= totalPages - 1}
+                    className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/[0.08] disabled:cursor-not-allowed disabled:opacity-40"
+                  >
+                    Next
+                  </button>
+                </div>
+              </div>
+            ) : null}
+          </>
         )}
       </Modal>
     </>

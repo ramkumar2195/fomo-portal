@@ -56,11 +56,6 @@ export function PendingApprovalsTile() {
     };
   }, [token, isApprover]);
 
-  const tone =
-    count && count > 0
-      ? "border-amber-500/40 bg-amber-500/10"
-      : "border-white/10 bg-white/[0.03]";
-
   const heading = isApprover ? "Pending Approvals" : "My Submitted Approvals";
   const emptyHint = isApprover
     ? "Nothing in the queue right now"
@@ -68,6 +63,32 @@ export function PendingApprovalsTile() {
   const activeHint = isApprover
     ? "Risky operations awaiting your decision"
     : "Awaiting approver decision — track here";
+
+  // When count is 0 (or still loading), render as a thin one-line strip
+  // instead of a full card. The card-sized layout was eating a row of
+  // dashboard real estate for "0 / Nothing in the queue right now" 90%
+  // of the time. The compact version keeps the link affordance but
+  // doesn't dominate.
+  const isEmpty = !loading && (!count || count === 0);
+  if (isEmpty) {
+    return (
+      <Link
+        href="/portal/approvals"
+        className="flex items-center justify-between gap-3 rounded-xl border border-white/8 bg-white/[0.02] px-4 py-2 text-xs text-slate-400 transition hover:bg-white/[0.05]"
+      >
+        <span className="inline-flex items-center gap-2">
+          <ShieldCheck className="h-3.5 w-3.5 text-slate-500" />
+          <span className="font-semibold uppercase tracking-[0.16em] text-slate-500">{heading}</span>
+          <span>· {emptyHint}</span>
+        </span>
+        <ArrowRight className="h-3.5 w-3.5 text-slate-500" />
+      </Link>
+    );
+  }
+
+  const tone = count && count > 0
+    ? "border-amber-500/40 bg-amber-500/10"
+    : "border-white/10 bg-white/[0.03]";
 
   return (
     <Link
@@ -85,9 +106,7 @@ export function PendingApprovalsTile() {
           <p className="mt-1 text-2xl font-semibold text-white">
             {loading ? "—" : count ?? 0}
           </p>
-          <p className="text-xs text-slate-400">
-            {count && count > 0 ? activeHint : emptyHint}
-          </p>
+          <p className="text-xs text-slate-400">{activeHint}</p>
         </div>
       </div>
       <ArrowRight className="h-4 w-4 text-slate-300" />

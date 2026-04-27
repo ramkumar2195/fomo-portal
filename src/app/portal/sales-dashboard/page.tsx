@@ -1595,7 +1595,12 @@ function QuickActionTiles({
           Nothing on your plate right now — every queue is clear. Use the toggle above to peek at the empty tiles.
         </div>
       ) : null}
-      <div className="grid gap-5 sm:grid-cols-2 xl:grid-cols-3">
+      {/* Auto-resize: when fewer tiles are visible than would fill the
+          standard 3-column grid, the grid expands each tile to use the
+          available row instead of leaving empty columns. minmax(280px, 1fr)
+          + auto-fit gives us 1/2/3-column responsive behavior with no
+          breakpoint hardcoding. */}
+      <div className="grid gap-5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
         {tilesToRender.map((key) => (
           <QuickActionTile
             key={key}
