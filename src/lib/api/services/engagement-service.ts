@@ -523,15 +523,38 @@ export const engagementService = {
     return mapTrainerUtilization(unwrapData<unknown>(response));
   },
 
+  /**
+   * Issue #11 — sales-dashboard's Path 3 (sales / front-desk / fitness
+   * staff) used to call {@code /api/dashboard/staff/{id}} which only
+   * returned check-in counts, leaving every primary metric card showing
+   * 0 forever. Routes STAFF to the users-service super-admin dashboard
+   * endpoint instead — the backend (per
+   * {@code SuperAdminDashboardService.resolveAccessibleBranchId}) auto-
+   * scopes results to the staff member's default branch when called by
+   * a STAFF user, so there's no privacy escalation.
+   *
+   * <p>The richer response shape is flattened here into the existing
+   * {@code AdminOverviewMetrics} key names so the upstream mappers and
+   * dashboard cards don't need to change.
+   */
   async getSalesDashboard(token: string, staffId: string, role: UserRole): Promise<SalesDashboardPayload> {
+    const useRichEndpoint = role !== "ADMIN";
     const dashboardPath = role === "ADMIN" ? "/api/dashboard/admin/metrics" : `/api/dashboard/staff/${staffId}`;
 
+    const dashboardCall = useRichEndpoint
+      ? apiRequest<unknown | { data: unknown }>({
+          service: "users",
+          path: "/api/users/dashboard/super-admin",
+          token,
+        })
+      : apiRequest<unknown | { data: unknown }>({
+          service: "engagement",
+          path: dashboardPath,
+          token,
+        });
+
     const [dashboardResponse, leaderboardResponse] = await Promise.all([
-      apiRequest<unknown | { data: unknown }>({
-        service: "engagement",
-        path: dashboardPath,
-        token,
-      }),
+      dashboardCall,
       apiRequest<unknown | { data: unknown }>({
         service: "engagement",
         path: "/api/retention/leaderboard",
@@ -539,9 +562,47 @@ export const engagementService = {
       }),
     ]);
 
+    // For staff-rich responses we flatten the nested
+    // {summary:{members,revenue,...}, alerts:{...}} shape into the legacy
+    // flat field names the existing mappers + dashboard cards consume.
+    let dashboardForMappers: unknown = unwrapData<unknown>(dashboardResponse);
+    if (useRichEndpoint) {
+      const rich = (dashboardForMappers || {}) as Record<string, unknown>;
+      const summary = (rich.summary || {}) as Record<string, Record<string, unknown>>;
+      const alerts = (rich.alerts || {}) as Record<string, unknown>;
+      const inquiry = (rich.inquiryAnalytics || {}) as Record<string, unknown>;
+      const num = (v: unknown) => Number(v ?? 0) || 0;
+      dashboardForMappers = {
+        // mapDashboardMetrics keys
+        todaysInquiries: 0,
+        followUpsDue: num(alerts.followUpsDueToday),
+        conversionRate: num(inquiry.totalInquiries) > 0
+          ? Math.round((num(inquiry.convertedInquiries) / num(inquiry.totalInquiries)) * 1000) / 10
+          : 0,
+        revenueToday: num((summary.revenue || {}).revenueToday),
+        revenueThisMonth: num((summary.revenue || {}).revenueThisMonth),
+        // mapAdminOverviewMetrics keys
+        totalActiveMembers: num((summary.members || {}).activeMembers),
+        expiredMembers: num((summary.members || {}).expiredMembers),
+        irregularMembers: num((summary.members || {}).irregularMembers),
+        totalPtClients: num((summary.pt || {}).ptClients),
+        todaysRevenue: num((summary.revenue || {}).revenueToday),
+        monthRevenue: num((summary.revenue || {}).revenueThisMonth),
+        todaysBirthdays: 0,
+        upcomingRenewals7Days: num(alerts.membershipsExpiringSoon),
+        upcomingRenewals15Days: 0,
+        upcomingRenewals30Days: 0,
+        totalMembers: num((summary.members || {}).totalMembers),
+        totalStaff: num((summary.staff || {}).totalStaff),
+        // bonus exposed for #7 follow-up
+        totalCoaches: num((summary.coaches || {}).totalCoaches),
+        activeCoaches: num((summary.coaches || {}).activeCoaches),
+      };
+    }
+
     return {
-      metrics: mapDashboardMetrics(unwrapData<unknown>(dashboardResponse)),
-      adminOverview: mapAdminOverviewMetrics(unwrapData<unknown>(dashboardResponse)),
+      metrics: mapDashboardMetrics(dashboardForMappers),
+      adminOverview: mapAdminOverviewMetrics(dashboardForMappers),
       leaderboard: mapLeaderboard(unwrapData<unknown>(leaderboardResponse)),
     };
   },

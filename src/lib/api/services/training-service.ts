@@ -698,6 +698,35 @@ export const trainingService = {
     return mapTrainerSchedule(unwrapData<unknown>(response));
   },
 
+  /**
+   * Bulk variant of {@code getTrainerSchedule} (issue #4) — flattens what
+   * was N HTTP round trips (one per coach) into a single network call. The
+   * Gym Manager dashboard's PT quick-actions widget consumes this; the
+   * server still aggregates per-coach data internally but the client pays
+   * just one round trip + JWT validation.
+   */
+  async getTrainerSchedulesBulk(
+    token: string,
+    trainerIds: Array<string | number>,
+    from?: string,
+    to?: string,
+  ): Promise<TrainerScheduleResponse[]> {
+    if (trainerIds.length === 0) return [];
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "training",
+      path: "/api/training/trainers/schedules",
+      token,
+      query: {
+        trainerIds: trainerIds.join(","),
+        from,
+        to,
+      },
+    });
+    const list = unwrapData<unknown>(response);
+    if (!Array.isArray(list)) return [];
+    return list.map((entry) => mapTrainerSchedule(entry));
+  },
+
   async createTrainerAvailability(
     token: string,
     trainerId: string | number,

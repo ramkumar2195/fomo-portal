@@ -857,12 +857,18 @@ function GymManagerQuickActions({
     try {
       const today = toDateKey(new Date());
       const trainers = await usersService.searchUsers(token, { role: "COACH", active: true });
-      const schedules = await Promise.all(
-        trainers.map(async (trainer) => ({
-          trainer,
-          schedule: await trainingService.getTrainerSchedule(token, trainer.id, today, today).catch(() => null),
-        })),
-      );
+      // Issue #4 — single bulk fetch instead of N per-coach round trips.
+      // Server still aggregates per coach internally but the network cost
+      // is now O(1) instead of O(coaches).
+      const trainerIds = trainers.map((trainer) => trainer.id);
+      const bulk = await trainingService
+        .getTrainerSchedulesBulk(token, trainerIds, today, today)
+        .catch(() => [] as Awaited<ReturnType<typeof trainingService.getTrainerSchedulesBulk>>);
+      const scheduleByTrainer = new Map(bulk.map((s) => [String(s.trainerId), s]));
+      const schedules = trainers.map((trainer) => ({
+        trainer,
+        schedule: scheduleByTrainer.get(String(trainer.id)) || null,
+      }));
       const nextRows = schedules.flatMap(({ trainer, schedule }) =>
         (schedule?.entries || [])
           .filter((entry) => (entry.entryType === "PT_SESSION" || entry.entryType === "PT_SLOT") && entryDateKey(entry) === today)
