@@ -206,9 +206,13 @@ function HeroStatCard({
       className={`rounded-3xl border border-white/10 bg-[#121722] p-5 text-left shadow-sm transition hover:border-[#C42429] hover:bg-[#171d29] hover:shadow-md ${accentClass}`}
     >
       <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
+        <div className="min-w-0 flex-1">
           <p className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-200 break-words">{card.title}</p>
-          <p className="mt-3 break-words text-3xl font-bold leading-tight tracking-tight text-white xl:text-4xl">{card.value}</p>
+          {/* truncate + whitespace-nowrap keeps the metric value on a
+              single line even when the underlying number is long. The
+              accompanying revenue cards already use formatInrCompact so
+              this is a belt-and-braces guarantee against future regressions. */}
+          <p className="mt-3 truncate whitespace-nowrap text-3xl font-bold leading-tight tracking-tight text-white xl:text-4xl">{card.value}</p>
           <p className="mt-2 break-words text-sm leading-6 text-slate-300">{card.subtitle}</p>
         </div>
         <div className={`inline-flex shrink-0 rounded-2xl border border-white/10 p-3 shadow-sm [&_svg]:h-5 [&_svg]:w-5 ${card.iconClass}`}>{card.icon}</div>
@@ -269,11 +273,12 @@ function MetricValueCard({
       <div className="flex items-start justify-between gap-3">
         <div className="min-w-0 flex-1">
           <p className="break-words text-sm font-semibold text-slate-100">{card.title}</p>
-          {/* whitespace-nowrap keeps the metric value on a single line so
-              the icon bubble stays vertically aligned across cards on the
-              same row. Combined with formatInrCompact (₹1.27 Cr) the
-              value comfortably fits even in narrow cards. */}
-          <p className="mt-4 truncate whitespace-nowrap text-3xl font-bold leading-tight tracking-tight text-white xl:text-4xl">{card.value}</p>
+          {/* whitespace-nowrap + truncate keeps the metric value on a
+              single line so the icon bubble stays vertically aligned
+              across cards on the same row. Font sized to fit 5-up at
+              xl breakpoint — text-3xl was overflowing on Revenue cards
+              packed tighter than 4-up. */}
+          <p className="mt-4 truncate whitespace-nowrap text-2xl font-bold leading-tight tracking-tight text-white xl:text-3xl">{card.value}</p>
           <p className="mt-2 break-words text-sm leading-6 text-slate-400">{card.subtitle}</p>
         </div>
         <div className={`inline-flex shrink-0 rounded-2xl border border-white/10 p-3 shadow-sm [&_svg]:h-5 [&_svg]:w-5 ${card.iconClass}`}>{card.icon}</div>
@@ -643,7 +648,7 @@ export default function AdminDashboardPage({
       ),
       createMetricCard(
         "Revenue This Month",
-        formatInr(summary.revenue.revenueThisMonth),
+        formatInrCompact(summary.revenue.revenueThisMonth),
         "Current month collection",
         <IndianRupee className="h-4 w-4" />,
         "bg-rose-500/15 text-rose-100",
@@ -912,7 +917,7 @@ export default function AdminDashboardPage({
                   card.metricKey === "TOTAL_MEMBERS"
                     ? `${formatCount(dashboard.summary.members.activeMembers)} active`
                     : card.metricKey === "REVENUE_THIS_MONTH"
-                      ? `${formatInr(dashboard.summary.revenue.revenueToday)} today`
+                      ? `${formatInrCompact(dashboard.summary.revenue.revenueToday)} today`
                       : card.metricKey === "ACTIVE_SUBSCRIPTIONS"
                         ? `${formatCount(resolvedExpiringSoon)} expire soon`
                         : `+${formatCount(dashboard.summary.newMembers.today)} today`;
@@ -1167,9 +1172,12 @@ export default function AdminDashboardPage({
       </section>
 
       <section className="grid gap-4 xl:grid-cols-12">
-        <div className="xl:col-span-6">
+        {/* Team promoted from col-span-6 to col-span-12 (full row) so the
+            right half doesn't sit empty since Alerts moved to its own row.
+            Cards inside go from 2x2 to 4-up at xl. */}
+        <div className="xl:col-span-12">
           <SurfaceCard title="Team">
-            <div className="grid gap-3 sm:grid-cols-2">
+            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
               {teamCards.map((card) => (
                 <CompactMetricCard
                   key={card.metricKey}
