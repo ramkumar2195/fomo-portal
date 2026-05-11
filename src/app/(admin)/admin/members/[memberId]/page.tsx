@@ -5356,6 +5356,7 @@ export default function MemberProfilePage() {
     targetMemberEmail?: string,
     coupleGroupId?: number,
     couplePartnerMemberId?: number,
+    couplePartnerMemberEmail?: string,
   ) => {
     if (!token || !memberId || !ptForm.coachId || !selectedPtVariant) {
       throw new Error("PT assignment details are incomplete.");
@@ -5379,6 +5380,11 @@ export default function MemberProfilePage() {
       slotDurationMinutes: PT_SLOT_DURATION_MINUTES,
       coupleGroupId,
       couplePartnerMemberId,
+      // ISS-027 — pass partner email so the backend can auto-create the
+      // mirrored client_assignment for the partner without waiting for a
+      // second UI call (which often never arrives when the partner's invoice
+      // is still PARTIALLY_PAID and the activation gate hasn't fired).
+      couplePartnerMemberEmail,
       slots: selectedPtDays.map((dayCode) => ({
         dayOfWeek: dayCode,
         slotStartTime: `${ptForm.slotStartTime}:00`,
@@ -5565,6 +5571,7 @@ export default function MemberProfilePage() {
         addOn: { invoiceId: number; invoiceNumber: string; addOnSubscriptionId: number },
         partnerId?: number,
         inquiryId?: number,
+        partnerEmail?: string,
       ) => {
         let paymentReceipt: Awaited<ReturnType<typeof subscriptionService.recordPayment>> | null = null;
         let membershipActivated = false;
@@ -5595,6 +5602,7 @@ export default function MemberProfilePage() {
                 targetEmail,
                 coupleGroupId,
                 partnerId,
+                partnerEmail,
               );
             } catch (setupError) {
               ptSetupPendingReason = setupError instanceof ApiError
@@ -5626,12 +5634,16 @@ export default function MemberProfilePage() {
 
       const currentAddOn = await createAddOn(String(memberId), Number(selectedSubscriptionId), sourceInquiryId || undefined);
       const currentEmail = resolveMemberEmail(String(memberId), memberRecord);
+      const partnerEmailForPrimary = isCouplePt && partnerMember
+        ? resolveMemberEmail(partnerMemberId, partnerMember)
+        : undefined;
       const currentPayment = await recordPaymentFor(
         String(memberId),
         currentEmail,
         currentAddOn,
         isCouplePt ? Number(partnerMemberId) : undefined,
         sourceInquiryId || undefined,
+        partnerEmailForPrimary,
       );
 
       let partnerAddOn: { invoiceId: number; invoiceNumber: string; addOnSubscriptionId: number } | null = null;
@@ -5644,6 +5656,8 @@ export default function MemberProfilePage() {
           partnerEmail,
           partnerAddOn,
           Number(memberId),
+          undefined,
+          currentEmail,
         );
       }
 
