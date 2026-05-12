@@ -21,7 +21,7 @@ import { approvalsService } from "@/lib/api/services/approvals-service";
  *       way to see them on their dashboard.</li>
  * </ul>
  */
-export function PendingApprovalsTile() {
+export function PendingApprovalsTile({ variant = "card" }: { variant?: "card" | "button" } = {}) {
   const { token, user } = useAuth();
   const [count, setCount] = useState<number | null>(null);
   const [loading, setLoading] = useState(true);
@@ -63,6 +63,29 @@ export function PendingApprovalsTile() {
   const activeHint = isApprover
     ? "Risky operations awaiting your decision"
     : "Awaiting approver decision — track here";
+
+  // Button variant — used inline next to the Quick Actions header so the
+  // approval queue lives on the same row as the chip strip without eating
+  // its own card. Compact pill with count + arrow.
+  if (variant === "button") {
+    const buttonTone = count && count > 0
+      ? "border-amber-400/40 bg-amber-500/10 text-amber-100 hover:bg-amber-500/15"
+      : "border-white/10 bg-white/[0.03] text-slate-400 hover:bg-white/[0.06]";
+    return (
+      <Link
+        href="/portal/approvals"
+        className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs font-semibold transition ${buttonTone}`}
+        title={count && count > 0 ? activeHint : emptyHint}
+      >
+        <ShieldCheck className="h-3.5 w-3.5" aria-hidden />
+        <span className="tabular-nums text-sm font-bold">
+          {loading ? "—" : count ?? 0}
+        </span>
+        <span className="uppercase tracking-wider text-[10px]">{heading}</span>
+        <ArrowRight className="h-3 w-3 opacity-60" />
+      </Link>
+    );
+  }
 
   // When count is 0 (or still loading), render as a thin one-line strip
   // instead of a full card. The card-sized layout was eating a row of

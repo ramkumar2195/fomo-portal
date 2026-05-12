@@ -3,7 +3,7 @@
 import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { ComponentType, SVGProps, useCallback, useEffect, useMemo, useState } from "react";
+import { ComponentType, ReactNode, SVGProps, useCallback, useEffect, useMemo, useState } from "react";
 import {
   ArrowRight,
   AlertTriangle,
@@ -1179,6 +1179,27 @@ interface QuickTileRow {
   secondary?: string;
   badge?: string;
   href?: string;
+  // Per-queue structured fields rendered as table columns in the modal popup.
+  // Each queue uses a subset — the table component picks columns based on
+  // the queue type. Optional fields stay undefined when the backend row
+  // doesn't carry them.
+  details?: {
+    mobile?: string;
+    planName?: string;
+    expiresAt?: string;
+    expiredAt?: string;
+    lastVisitAt?: string;
+    dueAt?: string;
+    daysOverdue?: number;
+    daysLeft?: number;
+    daysInactive?: number;
+    followUpType?: string;
+    channel?: string;
+    sourceLabel?: string;     // "Member" | "Lead"
+    invoiceNumber?: string;
+    amount?: number;
+    issuedAt?: string;
+  };
 }
 
 interface QuickTileData {
@@ -1340,13 +1361,23 @@ function QuickActionTiles({
               rows: res.content.slice(0, 5).map((raw) => {
                 const r = raw as Record<string, unknown>;
                 const mid = String(r.memberId ?? "");
+                const expIso = r.expiresAt ? String(r.expiresAt) : undefined;
+                const daysLeft = expIso
+                  ? Math.ceil((new Date(expIso).getTime() - Date.now()) / 86400000)
+                  : undefined;
                 return {
                   key: `exp-${mid}`,
                   primary: String(r.fullName ?? r.memberName ?? "Member"),
-                  secondary: r.expiresAt
-                    ? `Expires ${new Date(String(r.expiresAt)).toLocaleDateString()}`
+                  secondary: expIso
+                    ? `Expires ${new Date(expIso).toLocaleDateString()}`
                     : String(r.planName ?? ""),
                   href: mid ? `/admin/members/${mid}` : undefined,
+                  details: {
+                    mobile: r.mobileNumber ? String(r.mobileNumber) : undefined,
+                    planName: r.planName ? String(r.planName) : undefined,
+                    expiresAt: expIso,
+                    daysLeft,
+                  },
                 };
               }),
               totalCount: res.totalElements,
@@ -1371,11 +1402,19 @@ function QuickActionTiles({
               rows: res.content.slice(0, 5).map((raw) => {
                 const r = raw as Record<string, unknown>;
                 const mid = String(r.memberId ?? "");
+                const expIso = r.expiredAt || r.expiresAt
+                  ? String(r.expiredAt ?? r.expiresAt)
+                  : undefined;
                 return {
                   key: `expired-${mid}`,
                   primary: String(r.fullName ?? r.memberName ?? "Member"),
                   secondary: String(r.mobileNumber ?? r.planName ?? "-"),
                   href: mid ? `/admin/members/${mid}` : undefined,
+                  details: {
+                    mobile: r.mobileNumber ? String(r.mobileNumber) : undefined,
+                    planName: r.planName ? String(r.planName) : undefined,
+                    expiredAt: expIso,
+                  },
                 };
               }),
               totalCount: res.totalElements,
@@ -1400,13 +1439,23 @@ function QuickActionTiles({
               rows: res.content.slice(0, 5).map((raw) => {
                 const r = raw as Record<string, unknown>;
                 const mid = String(r.memberId ?? "");
+                const lvIso = r.lastVisitAt ? String(r.lastVisitAt) : undefined;
+                const daysInactive = lvIso
+                  ? Math.floor((Date.now() - new Date(lvIso).getTime()) / 86400000)
+                  : undefined;
                 return {
                   key: `irr-${mid}`,
                   primary: String(r.fullName ?? r.memberName ?? "Member"),
-                  secondary: r.lastVisitAt
-                    ? `Last visit ${new Date(String(r.lastVisitAt)).toLocaleDateString()}`
+                  secondary: lvIso
+                    ? `Last visit ${new Date(lvIso).toLocaleDateString()}`
                     : String(r.mobileNumber ?? "-"),
                   href: mid ? `/admin/members/${mid}` : undefined,
+                  details: {
+                    mobile: r.mobileNumber ? String(r.mobileNumber) : undefined,
+                    planName: r.planName ? String(r.planName) : undefined,
+                    lastVisitAt: lvIso,
+                    daysInactive,
+                  },
                 };
               }),
               totalCount: res.totalElements,
@@ -1442,6 +1491,12 @@ function QuickActionTiles({
                   : row.inquiryId
                     ? `/portal/inquiries?focusInquiryId=${row.inquiryId}`
                     : undefined,
+                details: {
+                  dueAt: row.dueAt,
+                  followUpType: row.followUpType || undefined,
+                  channel: row.channel || undefined,
+                  sourceLabel: row.memberId ? "Member" : "Lead",
+                },
               })),
               totalCount: res.totalElements,
             });
@@ -1466,17 +1521,30 @@ function QuickActionTiles({
           .then((res) => {
             setTile("OVERDUE", {
               loading: false,
-              rows: res.content.slice(0, 5).map((row) => ({
-                key: `overdue-${row.followUpId}`,
-                primary: row.memberName || row.inquiryName || `Follow-up #${row.followUpId}`,
-                secondary: buildFollowUpRowSecondary(row),
-                badge: "OVERDUE",
-                href: row.memberId
-                  ? `/admin/members/${row.memberId}`
-                  : row.inquiryId
-                    ? `/portal/inquiries?focusInquiryId=${row.inquiryId}`
-                    : undefined,
-              })),
+              rows: res.content.slice(0, 5).map((row) => {
+                const dueIso = row.dueAt;
+                const daysOverdue = dueIso
+                  ? Math.floor((Date.now() - new Date(dueIso).getTime()) / 86400000)
+                  : undefined;
+                return {
+                  key: `overdue-${row.followUpId}`,
+                  primary: row.memberName || row.inquiryName || `Follow-up #${row.followUpId}`,
+                  secondary: buildFollowUpRowSecondary(row),
+                  badge: "OVERDUE",
+                  href: row.memberId
+                    ? `/admin/members/${row.memberId}`
+                    : row.inquiryId
+                      ? `/portal/inquiries?focusInquiryId=${row.inquiryId}`
+                      : undefined,
+                  details: {
+                    dueAt: dueIso,
+                    daysOverdue,
+                    followUpType: row.followUpType || undefined,
+                    channel: row.channel || undefined,
+                    sourceLabel: row.memberId ? "Member" : "Lead",
+                  },
+                };
+              }),
               totalCount: res.totalElements,
             });
           })
@@ -1509,6 +1577,12 @@ function QuickActionTiles({
                   : row.inquiryId
                     ? `/portal/inquiries?focusInquiryId=${row.inquiryId}`
                     : undefined,
+                details: {
+                  dueAt: row.dueAt,
+                  followUpType: row.followUpType || undefined,
+                  channel: row.channel || undefined,
+                  sourceLabel: row.memberId ? "Member" : "Lead",
+                },
               })),
               totalCount: res.totalElements,
             });
@@ -1530,11 +1604,20 @@ function QuickActionTiles({
               rows: arr.slice(0, 5).map((r, i) => {
                 const mid = String(r.memberId ?? "");
                 const amount = typeof r.balanceAmount === "number" ? r.balanceAmount : Number(r.balanceAmount ?? 0);
+                const issuedIso = r.invoiceDate || r.issuedAt
+                  ? String(r.invoiceDate ?? r.issuedAt)
+                  : undefined;
                 return {
                   key: `bal-${mid || i}`,
                   primary: String(r.memberName ?? r.fullName ?? r.customerName ?? "Member"),
                   secondary: `Balance ${formatCurrency(amount)}`,
                   href: mid ? `/admin/members/${mid}` : undefined,
+                  details: {
+                    mobile: r.mobileNumber ? String(r.mobileNumber) : undefined,
+                    invoiceNumber: r.invoiceNumber ? String(r.invoiceNumber) : undefined,
+                    amount,
+                    issuedAt: issuedIso,
+                  },
                 };
               }),
               totalCount: arr.length,
@@ -1667,23 +1750,20 @@ function QuickActionTiles({
 
   return (
     <section className="space-y-3">
-      <div>
-        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">
-          Quick actions
-        </h2>
-        <p className="text-xs text-slate-500">
-          Today&apos;s work — click a chip to peek, or use View all.
-        </p>
+      <div className="flex flex-wrap items-end justify-between gap-3">
+        <div>
+          <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">
+            Quick actions
+          </h2>
+          <p className="text-xs text-slate-500">
+            Today&apos;s work — click a chip to open the full table.
+          </p>
+        </div>
+        {/* Pending Approvals lives on the same row as the Quick Actions
+            header so the two "work queue" affordances share one strip. */}
+        <PendingApprovalsTile variant="button" />
       </div>
-      {/*
-        Option A redesign — chip strip replaces the 3-column tile grid. The
-        primary signal an operator scans is the COUNT per queue (e.g. "115
-        overdue"). The 5-row preview is a drill-down that ~10% of clicks
-        actually need, so we hide it behind the chip and reveal it inline
-        below the strip. Saves ~500 px of vertical real estate; lets the
-        downstream KPI / Revenue / Health sections appear above the fold
-        on a 13" laptop without scrolling.
-      */}
+      {/* Chip strip — click a chip to open the modal with a detailed table */}
       <div className="flex flex-wrap gap-2" role="tablist" aria-label="Quick action queues">
         {visibleTiles.map((key) => {
           const data = tiles[key];
@@ -1697,7 +1777,6 @@ function QuickActionTiles({
               type="button"
               role="tab"
               aria-selected={isOpen}
-              aria-controls={isOpen ? `quick-action-panel-${key}` : undefined}
               onClick={() => setOpenTile(isOpen ? null : key)}
               disabled={data.loading && !data.error}
               className={chipClass(key)}
@@ -1714,19 +1793,248 @@ function QuickActionTiles({
         })}
       </div>
       {openConfig && openData && openTile ? (
-        <div id={`quick-action-panel-${openTile}`}>
-          <QuickActionTile
-            title={openConfig.title}
-            subtitle={openConfig.subtitle}
-            viewAllHref={openConfig.viewAllHref}
-            emptyLabel={openConfig.emptyLabel}
-            tile={openData}
-            onClose={() => setOpenTile(null)}
-          />
-        </div>
+        <QuickActionModal
+          tileKey={openTile}
+          title={openConfig.title}
+          subtitle={openConfig.subtitle}
+          viewAllHref={openConfig.viewAllHref}
+          emptyLabel={openConfig.emptyLabel}
+          tile={openData}
+          onClose={() => setOpenTile(null)}
+        />
       ) : null}
     </section>
   );
+}
+
+// ── Modal popup with queue-specific table ────────────────────────────────────
+// When an operator clicks a Quick Actions chip we open a centered modal
+// instead of expanding inline. The modal renders a TABLE whose columns
+// adapt to the queue type (follow-up vs member-list vs invoice), so the
+// operator gets the full row context (mobile, plan, dates, days overdue,
+// amount, etc.) without leaving the dashboard.
+function QuickActionModal({
+  tileKey,
+  title,
+  subtitle,
+  tile,
+  viewAllHref,
+  emptyLabel,
+  onClose,
+}: {
+  tileKey: TileKey;
+  title: string;
+  subtitle: string;
+  tile: QuickTileData;
+  viewAllHref: string;
+  emptyLabel: string;
+  onClose: () => void;
+}) {
+  // Esc closes the modal so keyboard users don't get trapped.
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") onClose();
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Per-queue column definitions. Each entry is { header, render(row) }.
+  // The label column always comes first (the member/lead name) and the
+  // action column always comes last.
+  const columns = quickActionColumnsFor(tileKey);
+
+  return (
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={title}
+      className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 backdrop-blur-sm p-4"
+      onClick={(e) => {
+        if (e.target === e.currentTarget) onClose();
+      }}
+    >
+      <div className="w-full max-w-5xl max-h-[85vh] overflow-hidden rounded-2xl border border-white/10 bg-[#15181f] shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-white/10 px-5 py-4">
+          <div>
+            <h3 className="text-lg font-semibold text-white">{title}</h3>
+            <p className="text-xs text-slate-400">{subtitle}</p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Link
+              href={viewAllHref}
+              className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/[0.08]"
+            >
+              View all
+              <ArrowRight className="h-3.5 w-3.5" />
+            </Link>
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close"
+              className="inline-flex h-8 w-8 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+        </div>
+        <div className="max-h-[68vh] overflow-y-auto px-5 py-4">
+          {tile.loading ? (
+            <p className="text-sm text-slate-400">Loading…</p>
+          ) : tile.error ? (
+            <p className="text-sm text-rose-300">{tile.error}</p>
+          ) : tile.rows.length === 0 ? (
+            <p className="text-sm text-slate-400">{emptyLabel}</p>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-left text-sm">
+                <thead>
+                  <tr className="border-b border-white/10 text-[11px] uppercase tracking-wider text-slate-400">
+                    {columns.map((c) => (
+                      <th key={c.key} className="px-3 py-2 font-semibold">
+                        {c.header}
+                      </th>
+                    ))}
+                    <th className="px-3 py-2 text-right font-semibold">Action</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  {tile.rows.map((row) => (
+                    <tr key={row.key} className="border-b border-white/5 hover:bg-white/[0.03]">
+                      {columns.map((c) => (
+                        <td key={c.key} className="px-3 py-2 align-top">
+                          {c.render(row)}
+                        </td>
+                      ))}
+                      <td className="px-3 py-2 text-right align-top">
+                        {row.href ? (
+                          <Link
+                            href={row.href}
+                            className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-1 text-[11px] font-semibold text-slate-200 hover:bg-white/[0.08]"
+                            onClick={onClose}
+                          >
+                            Open
+                            <ArrowRight className="h-3 w-3" />
+                          </Link>
+                        ) : (
+                          <span className="text-[11px] text-slate-500">—</span>
+                        )}
+                      </td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+              {typeof tile.totalCount === "number" && tile.totalCount > tile.rows.length ? (
+                <p className="pt-3 text-xs text-slate-500">
+                  Showing {tile.rows.length} of {tile.totalCount} · use <span className="font-semibold text-slate-300">View all</span> for the full list.
+                </p>
+              ) : null}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+/**
+ * Column definitions for each queue type. Returns an ordered list of
+ * { key, header, render } — the modal table consumes this and adds an
+ * "Action" column at the end automatically. Keeping the columns close to
+ * the data they describe avoids a giant switch inside the modal body.
+ */
+function quickActionColumnsFor(
+  tileKey: TileKey,
+): Array<{ key: string; header: string; render: (row: QuickTileRow) => ReactNode }> {
+  const memberCol = {
+    key: "member",
+    header: "Member",
+    render: (row: QuickTileRow) => (
+      <div className="min-w-0">
+        <p className="truncate font-semibold text-white">{row.primary}</p>
+        {row.details?.mobile ? (
+          <p className="text-[11px] text-slate-500">{row.details.mobile}</p>
+        ) : null}
+      </div>
+    ),
+  };
+  const fmtDate = (iso?: string) => (iso ? new Date(iso).toLocaleDateString() : "—");
+  const fmtNum = (n?: number) =>
+    typeof n === "number" && Number.isFinite(n) ? n.toString() : "—";
+
+  switch (tileKey) {
+    case "EXPIRING":
+      return [
+        memberCol,
+        { key: "plan", header: "Plan", render: (r) => <span className="text-slate-300">{r.details?.planName ?? "—"}</span> },
+        { key: "expires", header: "Expires on", render: (r) => <span className="text-slate-300">{fmtDate(r.details?.expiresAt)}</span> },
+        {
+          key: "daysLeft",
+          header: "Days left",
+          render: (r) => {
+            const d = r.details?.daysLeft;
+            if (typeof d !== "number") return <span className="text-slate-500">—</span>;
+            const tone = d <= 7 ? "text-rose-300" : d <= 14 ? "text-amber-300" : "text-slate-300";
+            return <span className={`tabular-nums font-semibold ${tone}`}>{d}</span>;
+          },
+        },
+      ];
+    case "EXPIRED":
+      return [
+        memberCol,
+        { key: "plan", header: "Plan", render: (r) => <span className="text-slate-300">{r.details?.planName ?? "—"}</span> },
+        { key: "expired", header: "Expired on", render: (r) => <span className="text-slate-300">{fmtDate(r.details?.expiredAt)}</span> },
+      ];
+    case "IRREGULAR":
+      return [
+        memberCol,
+        { key: "plan", header: "Plan", render: (r) => <span className="text-slate-300">{r.details?.planName ?? "—"}</span> },
+        { key: "lastVisit", header: "Last visit", render: (r) => <span className="text-slate-300">{fmtDate(r.details?.lastVisitAt)}</span> },
+        { key: "daysInactive", header: "Days inactive", render: (r) => <span className="tabular-nums text-slate-300">{fmtNum(r.details?.daysInactive)}</span> },
+      ];
+    case "OVERDUE":
+      return [
+        memberCol,
+        { key: "source", header: "Source", render: (r) => <span className="text-slate-300">{r.details?.sourceLabel ?? "—"}</span> },
+        { key: "type", header: "Type", render: (r) => <span className="text-slate-300">{r.details?.followUpType ?? "—"}</span> },
+        { key: "due", header: "Due", render: (r) => <span className="text-slate-300">{fmtDate(r.details?.dueAt)}</span> },
+        {
+          key: "daysOverdue",
+          header: "Days overdue",
+          render: (r) => {
+            const d = r.details?.daysOverdue;
+            if (typeof d !== "number") return <span className="text-slate-500">—</span>;
+            return <span className="tabular-nums font-semibold text-rose-300">{d}</span>;
+          },
+        },
+      ];
+    case "DUE_TODAY":
+    case "MINE":
+      return [
+        memberCol,
+        { key: "source", header: "Source", render: (r) => <span className="text-slate-300">{r.details?.sourceLabel ?? "—"}</span> },
+        { key: "type", header: "Type", render: (r) => <span className="text-slate-300">{r.details?.followUpType ?? "—"}</span> },
+        { key: "channel", header: "Channel", render: (r) => <span className="text-slate-300">{r.details?.channel ?? "—"}</span> },
+        { key: "due", header: "Due", render: (r) => <span className="text-slate-300">{fmtDate(r.details?.dueAt)}</span> },
+      ];
+    case "PAYMENT_DUE":
+      return [
+        memberCol,
+        { key: "invoice", header: "Invoice", render: (r) => <span className="font-mono text-xs text-slate-300">{r.details?.invoiceNumber ?? "—"}</span> },
+        {
+          key: "amount",
+          header: "Balance",
+          render: (r) => (
+            <span className="tabular-nums font-semibold text-rose-200">
+              {typeof r.details?.amount === "number" ? formatCurrency(r.details.amount) : "—"}
+            </span>
+          ),
+        },
+        { key: "issued", header: "Issued", render: (r) => <span className="text-slate-300">{fmtDate(r.details?.issuedAt)}</span> },
+      ];
+    default:
+      return [memberCol];
+  }
 }
 
 /**
@@ -1925,14 +2233,12 @@ export default function UnifiedDashboardPage() {
         {/* Live flap-gate entries — placed at the top so whoever opens the
             dashboard first sees who's in the gym right now. */}
         {token ? <TodayCheckInsTile /> : null}
-        {/* Pending approvals — surfaces gated risky-op queue (DEC-019). */}
-        {token ? <PendingApprovalsTile /> : null}
         {/*
-          Option D — KPIs / Revenue / Health render FIRST so the dashboard
-          opens with "how is the business doing?" metrics, then the chip
-          strip of Quick Actions sits at the bottom for drill-into-work.
+          Quick Actions sits right under Today's Check-ins. Its header
+          carries the Pending Approvals BUTTON on the right, so the two
+          "work queue" affordances share one line. KPIs / Revenue / Health
+          render below.
         */}
-        <AdminDashboardContent hideHeading />
         {token ? (
           <QuickActionTiles
             token={token}
@@ -1941,6 +2247,7 @@ export default function UnifiedDashboardPage() {
             selectedBranchCode={selectedBranchCode}
           />
         ) : null}
+        <AdminDashboardContent hideHeading />
       </div>
     );
   }
@@ -1957,13 +2264,6 @@ export default function UnifiedDashboardPage() {
         />
         {token ? <GymManagerQuickActions token={token} userName={user?.name} /> : null}
         {token ? <TodayCheckInsTile /> : null}
-        {token ? <PendingApprovalsTile /> : null}
-        <AdminDashboardContent
-          branchScoped
-          hideHeading
-          headingTitle={`${selectedBranchName || "Branch"} Dashboard`}
-          headingSubtitle={`${selectedBranchName || "Selected branch"} overview`}
-        />
         {token ? (
           <QuickActionTiles
             token={token}
@@ -1972,6 +2272,12 @@ export default function UnifiedDashboardPage() {
             selectedBranchCode={selectedBranchCode}
           />
         ) : null}
+        <AdminDashboardContent
+          branchScoped
+          hideHeading
+          headingTitle={`${selectedBranchName || "Branch"} Dashboard`}
+          headingSubtitle={`${selectedBranchName || "Selected branch"} overview`}
+        />
       </div>
     );
   }
