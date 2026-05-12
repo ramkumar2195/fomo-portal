@@ -1025,212 +1025,218 @@ export default function AdminDashboardPage({
           </SurfaceCard>
         </div>
 
+        {/*
+          Consolidated "Financial" section (Phase 3) — Revenue + Subscription
+          Health rolled into ONE SurfaceCard with two horizontal bands
+          divided by a thin rule. Reduces the surface-chrome from 2 borders
+          to 1 and presents money + subscription-pulse as one coherent view.
+        */}
         <div className="xl:col-span-12">
-          <SurfaceCard title="Revenue">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
-              {revenueCards.map((card) => (
-                <MetricValueCard
-                  key={card.metricKey}
-                  card={card}
-                  onClick={() => setSelectedCard(card)}
-                  badge={
-                    card.metricKey === "REVENUE_TODAY"
-                      ? <DashboardPill label={dashboard.summary.revenue.revenueToday > 0 ? "Recorded" : "No collections"} tone="neutral" />
-                      : undefined
-                  }
-                />
-              ))}
-              {/* Pending Revenue rendered as a MetricValueCard for icon
-                  parity with the other 4 revenue cards on this row. Was a
-                  SnapshotStat which doesn't carry an icon — looked like
-                  the odd one out. */}
-              <MetricValueCard
-                card={createMetricCard(
-                  "Pending Revenue",
-                  formatInrCompact(resolvedBalanceDueAmount),
-                  `${formatCount(resolvedBalanceDueInvoices)} invoice${resolvedBalanceDueInvoices === 1 ? "" : "s"} awaiting collection`,
-                  <IndianRupee className="h-4 w-4" />,
-                  "bg-amber-500/15 text-amber-100",
-                  "PENDING_REVENUE",
-                )}
-                onClick={() =>
-                  setSelectedCard(
-                    createMetricCard(
+          <SurfaceCard title="Financial">
+            <div className="space-y-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Revenue</p>
+                <div className="mt-2 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-5">
+                  {revenueCards.map((card) => (
+                    <MetricValueCard
+                      key={card.metricKey}
+                      card={card}
+                      onClick={() => setSelectedCard(card)}
+                      badge={
+                        card.metricKey === "REVENUE_TODAY"
+                          ? <DashboardPill label={dashboard.summary.revenue.revenueToday > 0 ? "Recorded" : "No collections"} tone="neutral" />
+                          : undefined
+                      }
+                    />
+                  ))}
+                  <MetricValueCard
+                    card={createMetricCard(
                       "Pending Revenue",
-                      formatInr(resolvedBalanceDueAmount),
+                      formatInrCompact(resolvedBalanceDueAmount),
                       `${formatCount(resolvedBalanceDueInvoices)} invoice${resolvedBalanceDueInvoices === 1 ? "" : "s"} awaiting collection`,
                       <IndianRupee className="h-4 w-4" />,
                       "bg-amber-500/15 text-amber-100",
                       "PENDING_REVENUE",
-                    ),
-                  )
-                }
-              />
-            </div>
-          </SurfaceCard>
-        </div>
-      </section>
-
-      <section className="grid gap-4 xl:grid-cols-12">
-        <div className="xl:col-span-4">
-          <SurfaceCard title="Member Health">
-            <div className="grid gap-4 md:grid-cols-2">
-              {memberHealthCards.map((card) => (
-                <CompactMetricCard
-                  key={card.metricKey}
-                  card={card}
-                  onClick={() => setSelectedCard(card)}
-                  badge={
-                    card.metricKey === "ACTIVE_MEMBERS"
-                      ? <DashboardPill label="Healthy base" tone="green" />
-                      : card.metricKey === "IRREGULAR_MEMBERS"
-                        ? <DashboardPill label="Needs care" tone="amber" />
-                        : card.metricKey === "EXPIRED_MEMBERS"
-                          ? <DashboardPill label="Renewal risk" tone="rose" />
-                          : undefined
-                  }
-                />
-              ))}
-            </div>
-          </SurfaceCard>
-        </div>
-
-        <div className="xl:col-span-4">
-          <SurfaceCard title="PT Health">
-            {/* PT Health was 3 cards stacked vertically (md:grid-cols-1)
-                while Member Health on its left rendered 4 cards as 2x2.
-                Heights mismatched. Now: 2 cards (Active + Inactive) in a
-                2-up grid for visual parity, total surfaced as a footer
-                line — matches the Team card pattern. */}
-            <div className="grid gap-4 md:grid-cols-2">
-              {ptHealthCards
-                .filter((c) => c.metricKey === "PT_ACTIVE_CLIENTS" || c.metricKey === "PT_INACTIVE_CLIENTS")
-                .map((card) => (
-                  <CompactMetricCard
-                    key={card.metricKey}
-                    card={card}
-                    onClick={() => setSelectedCard(card)}
-                    badge={
-                      card.metricKey === "PT_ACTIVE_CLIENTS"
-                        ? <DashboardPill label="Active PT cycles" tone="green" />
-                        : <DashboardPill label="Historical PT" tone="neutral" />
+                    )}
+                    onClick={() =>
+                      setSelectedCard(
+                        createMetricCard(
+                          "Pending Revenue",
+                          formatInr(resolvedBalanceDueAmount),
+                          `${formatCount(resolvedBalanceDueInvoices)} invoice${resolvedBalanceDueInvoices === 1 ? "" : "s"} awaiting collection`,
+                          <IndianRupee className="h-4 w-4" />,
+                          "bg-amber-500/15 text-amber-100",
+                          "PENDING_REVENUE",
+                        ),
+                      )
                     }
                   />
-                ))}
-            </div>
-            <div className="mt-4 border-t border-white/8 pt-4 text-sm text-slate-300">
-              {formatCount(dashboard.summary.pt.ptClients)} total PT-linked members across active and historical cycles.
-            </div>
-          </SurfaceCard>
-        </div>
-
-        <div className="xl:col-span-4">
-          <SurfaceCard title="Subscription Health">
-            {/* Issue L5 — was 2x2 grid; flatten to a tighter 2x2 with smaller gap. */}
-            <div className="grid gap-2 sm:grid-cols-2">
-              <SnapshotStat
-                label="Active Subscriptions"
-                value={formatCount(dashboard.summary.subscriptions.activeSubscriptions)}
-                subtitle="Currently live memberships"
-                tone="green"
-                onClick={() =>
-                  setSelectedCard(
-                    createMetricCard(
-                      "Active Subscriptions",
-                      formatCount(dashboard.summary.subscriptions.activeSubscriptions),
-                      "Currently live memberships",
-                      <Layers3 className="h-4 w-4" />,
-                      "bg-emerald-500/15 text-emerald-100",
-                      "ACTIVE_SUBSCRIPTIONS",
-                    ),
-                  )
-                }
-              />
-              <SnapshotStat
-                label="Inactive Subscriptions"
-                value={formatCount(dashboard.summary.subscriptions.inactiveSubscriptions || dashboard.subscriptions.inactiveSubscriptions || dashboard.subscriptions.expiredSubscriptions)}
-                subtitle="Expired or no longer live"
-                tone="neutral"
-                onClick={() =>
-                  setSelectedCard(
-                    createMetricCard(
-                      "Inactive Subscriptions",
-                      formatCount(dashboard.summary.subscriptions.inactiveSubscriptions || dashboard.subscriptions.inactiveSubscriptions || dashboard.subscriptions.expiredSubscriptions),
-                      "Expired or no longer live",
-                      <Layers3 className="h-4 w-4" />,
-                      "bg-slate-500/15 text-slate-100",
-                      "INACTIVE_SUBSCRIPTIONS",
-                    ),
-                  )
-                }
-              />
-              <SnapshotStat
-                label="Expiring Soon"
-                value={formatCount(resolvedExpiringSoon)}
-                subtitle="Due for renewal shortly"
-                tone="amber"
-                onClick={() =>
-                  setSelectedCard(
-                    createMetricCard(
-                      "Expiring Soon",
-                      formatCount(resolvedExpiringSoon),
-                      "Due for renewal shortly",
-                      <Layers3 className="h-4 w-4" />,
-                      "bg-amber-500/15 text-amber-100",
-                      "EXPIRING_SOON",
-                    ),
-                  )
-                }
-              />
-              <SnapshotStat
-                label="Balance Due Invoices"
-                value={formatCount(resolvedBalanceDueInvoices)}
-                subtitle="Invoices awaiting collection"
-                tone="rose"
-                onClick={() =>
-                  setSelectedCard(
-                    createMetricCard(
-                      "Balance Due Invoices",
-                      formatCount(resolvedBalanceDueInvoices),
-                      "Invoices awaiting collection",
-                      <IndianRupee className="h-4 w-4" />,
-                      "bg-rose-500/15 text-rose-100",
-                      "PENDING_REVENUE",
-                    ),
-                  )
-                }
-              />
+                </div>
+              </div>
+              <div className="border-t border-white/8 pt-4">
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Subscriptions</p>
+                <div className="mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                  <SnapshotStat
+                    label="Active Subscriptions"
+                    value={formatCount(dashboard.summary.subscriptions.activeSubscriptions)}
+                    subtitle="Currently live memberships"
+                    tone="green"
+                    onClick={() =>
+                      setSelectedCard(
+                        createMetricCard(
+                          "Active Subscriptions",
+                          formatCount(dashboard.summary.subscriptions.activeSubscriptions),
+                          "Currently live memberships",
+                          <Layers3 className="h-4 w-4" />,
+                          "bg-emerald-500/15 text-emerald-100",
+                          "ACTIVE_SUBSCRIPTIONS",
+                        ),
+                      )
+                    }
+                  />
+                  <SnapshotStat
+                    label="Inactive Subscriptions"
+                    value={formatCount(dashboard.summary.subscriptions.inactiveSubscriptions || dashboard.subscriptions.inactiveSubscriptions || dashboard.subscriptions.expiredSubscriptions)}
+                    subtitle="Expired or no longer live"
+                    tone="neutral"
+                    onClick={() =>
+                      setSelectedCard(
+                        createMetricCard(
+                          "Inactive Subscriptions",
+                          formatCount(dashboard.summary.subscriptions.inactiveSubscriptions || dashboard.subscriptions.inactiveSubscriptions || dashboard.subscriptions.expiredSubscriptions),
+                          "Expired or no longer live",
+                          <Layers3 className="h-4 w-4" />,
+                          "bg-slate-500/15 text-slate-100",
+                          "INACTIVE_SUBSCRIPTIONS",
+                        ),
+                      )
+                    }
+                  />
+                  <SnapshotStat
+                    label="Expiring Soon"
+                    value={formatCount(resolvedExpiringSoon)}
+                    subtitle="Due for renewal shortly"
+                    tone="amber"
+                    onClick={() =>
+                      setSelectedCard(
+                        createMetricCard(
+                          "Expiring Soon",
+                          formatCount(resolvedExpiringSoon),
+                          "Due for renewal shortly",
+                          <Layers3 className="h-4 w-4" />,
+                          "bg-amber-500/15 text-amber-100",
+                          "EXPIRING_SOON",
+                        ),
+                      )
+                    }
+                  />
+                  <SnapshotStat
+                    label="Balance Due Invoices"
+                    value={formatCount(resolvedBalanceDueInvoices)}
+                    subtitle="Invoices awaiting collection"
+                    tone="rose"
+                    onClick={() =>
+                      setSelectedCard(
+                        createMetricCard(
+                          "Balance Due Invoices",
+                          formatCount(resolvedBalanceDueInvoices),
+                          "Invoices awaiting collection",
+                          <IndianRupee className="h-4 w-4" />,
+                          "bg-rose-500/15 text-rose-100",
+                          "PENDING_REVENUE",
+                        ),
+                      )
+                    }
+                  />
+                </div>
+              </div>
             </div>
           </SurfaceCard>
         </div>
       </section>
 
+      {/*
+        Consolidated "Operations" section (Phase 3) — Member Health + PT
+        Health + Team folded into ONE SurfaceCard with three sub-bands.
+        Each band has its own tiny uppercase label and is separated by a
+        thin top-border, so the operator reads a single coherent block
+        rather than three separate boxes.
+      */}
       <section className="grid gap-4 xl:grid-cols-12">
-        {/* Team promoted from col-span-6 to col-span-12 (full row) so the
-            right half doesn't sit empty since Alerts moved to its own row.
-            Cards inside go from 2x2 to 4-up at xl. */}
         <div className="xl:col-span-12">
-          <SurfaceCard title="Team">
-            <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-              {teamCards.map((card) => (
-                <CompactMetricCard
-                  key={card.metricKey}
-                  card={card}
-                  onClick={() => setSelectedCard(card)}
-                  badge={
-                    card.metricKey === "ACTIVE_STAFF"
-                      ? <DashboardPill label="On duty" tone="green" />
-                      : card.metricKey === "ACTIVE_COACHES"
-                        ? <DashboardPill label="Coaching live" tone="green" />
-                      : card.metricKey === "TOTAL_COACHES"
-                        ? <DashboardPill label={`${formatCount(dashboard.summary.coaches.activeCoaches)} active`} tone="green" />
-                        : undefined
-                  }
-                />
-              ))}
-            </div>
-            <div className="mt-4 border-t border-white/8 pt-4 text-sm text-slate-300">
-              {formatCount(dashboard.summary.staff.activeStaff)} staff and {formatCount(dashboard.summary.coaches.activeCoaches)} coaches are active in the selected scope.
+          <SurfaceCard title="Operations">
+            <div className="space-y-4">
+              <div>
+                <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Members</p>
+                <div className="mt-2 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {memberHealthCards.map((card) => (
+                    <CompactMetricCard
+                      key={card.metricKey}
+                      card={card}
+                      onClick={() => setSelectedCard(card)}
+                      badge={
+                        card.metricKey === "ACTIVE_MEMBERS"
+                          ? <DashboardPill label="Healthy base" tone="green" />
+                          : card.metricKey === "IRREGULAR_MEMBERS"
+                            ? <DashboardPill label="Needs care" tone="amber" />
+                            : card.metricKey === "EXPIRED_MEMBERS"
+                              ? <DashboardPill label="Renewal risk" tone="rose" />
+                              : undefined
+                      }
+                    />
+                  ))}
+                </div>
+              </div>
+              <div className="border-t border-white/8 pt-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Personal Training</p>
+                  <p className="text-xs text-slate-400">
+                    {formatCount(dashboard.summary.pt.ptClients)} total PT-linked members
+                  </p>
+                </div>
+                <div className="mt-2 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {ptHealthCards
+                    .filter((c) => c.metricKey === "PT_ACTIVE_CLIENTS" || c.metricKey === "PT_INACTIVE_CLIENTS")
+                    .map((card) => (
+                      <CompactMetricCard
+                        key={card.metricKey}
+                        card={card}
+                        onClick={() => setSelectedCard(card)}
+                        badge={
+                          card.metricKey === "PT_ACTIVE_CLIENTS"
+                            ? <DashboardPill label="Active PT cycles" tone="green" />
+                            : <DashboardPill label="Historical PT" tone="neutral" />
+                        }
+                      />
+                    ))}
+                </div>
+              </div>
+              <div className="border-t border-white/8 pt-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-slate-400">Team</p>
+                  <p className="text-xs text-slate-400">
+                    {formatCount(dashboard.summary.staff.activeStaff)} staff · {formatCount(dashboard.summary.coaches.activeCoaches)} coaches active
+                  </p>
+                </div>
+                <div className="mt-2 grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {teamCards.map((card) => (
+                    <CompactMetricCard
+                      key={card.metricKey}
+                      card={card}
+                      onClick={() => setSelectedCard(card)}
+                      badge={
+                        card.metricKey === "ACTIVE_STAFF"
+                          ? <DashboardPill label="On duty" tone="green" />
+                          : card.metricKey === "ACTIVE_COACHES"
+                            ? <DashboardPill label="Coaching live" tone="green" />
+                          : card.metricKey === "TOTAL_COACHES"
+                            ? <DashboardPill label={`${formatCount(dashboard.summary.coaches.activeCoaches)} active`} tone="green" />
+                            : undefined
+                      }
+                    />
+                  ))}
+                </div>
+              </div>
             </div>
           </SurfaceCard>
         </div>
