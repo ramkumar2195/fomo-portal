@@ -4,7 +4,26 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { ComponentType, SVGProps, useCallback, useEffect, useMemo, useState } from "react";
-import { ArrowRight, Clock3, MapPin, Play, RefreshCw, ShieldAlert, Sparkles, Target, Users2 } from "lucide-react";
+import {
+  ArrowRight,
+  AlertTriangle,
+  Ban,
+  CalendarDays,
+  Clock3,
+  Hourglass,
+  MapPin,
+  Play,
+  Receipt,
+  RefreshCw,
+  ShieldAlert,
+  Sparkles,
+  Target,
+  TrendingDown,
+  UserCircle2,
+  Users2,
+  X,
+  type LucideIcon,
+} from "lucide-react";
 import {
   ActiveMembersIcon,
   BiometricIcon,
@@ -1175,25 +1194,39 @@ function QuickActionTile({
   tile,
   viewAllHref,
   emptyLabel,
+  onClose,
 }: {
   title: string;
   subtitle: string;
   tile: QuickTileData;
   viewAllHref: string;
   emptyLabel: string;
+  onClose?: () => void;
 }) {
   return (
     <SectionCard
       title={title}
       subtitle={subtitle}
       actions={
-        <Link
-          href={viewAllHref}
-          className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/[0.08]"
-        >
-          View all
-          <ArrowRight className="h-3.5 w-3.5" />
-        </Link>
+        <div className="flex items-center gap-2">
+          <Link
+            href={viewAllHref}
+            className="inline-flex items-center gap-1 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-200 hover:bg-white/[0.08]"
+          >
+            View all
+            <ArrowRight className="h-3.5 w-3.5" />
+          </Link>
+          {onClose ? (
+            <button
+              type="button"
+              onClick={onClose}
+              aria-label="Close panel"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-lg border border-white/10 bg-white/[0.04] text-slate-300 hover:bg-white/[0.08]"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          ) : null}
+        </div>
       }
     >
       {tile.loading ? (
@@ -1259,7 +1292,10 @@ function QuickActionTiles({
     EXPIRED: { rows: [], loading: true },
     PAYMENT_DUE: { rows: [], loading: true },
   });
-  const [showEmptyTiles, setShowEmptyTiles] = useState(false);
+  // Tracks which chip is currently expanded into the row-preview panel below
+  // the strip. Only one open at a time — clicking a different chip swaps,
+  // clicking the same chip again (or the panel close button) collapses.
+  const [openTile, setOpenTile] = useState<TileKey | null>(null);
 
   const designation = user?.designation;
   const visibleTiles: TileKey[] =
@@ -1517,101 +1553,178 @@ function QuickActionTiles({
 
   if (!user || visibleTiles.length === 0) return null;
 
-  const tileConfig: Record<TileKey, { title: string; subtitle: string; viewAllHref: string; emptyLabel: string }> = {
+  // tileConfig is also used for the chip strip (Option A redesign):
+  //   - shortLabel: chip caption (kept short, ≤10 chars)
+  //   - Icon: small lucide glyph for instant recognition
+  //   - accent: drives chip color — "urgent" goes red, "monitoring" goes amber
+  const tileConfig: Record<
+    TileKey,
+    {
+      title: string;
+      subtitle: string;
+      viewAllHref: string;
+      emptyLabel: string;
+      shortLabel: string;
+      Icon: LucideIcon;
+      accent: "urgent" | "monitoring";
+    }
+  > = {
     EXPIRING: {
       title: "Memberships expiring",
       subtitle: "Next 30 days · member-scoped to this branch",
       viewAllHref: "/portal/renewals",
       emptyLabel: "No memberships expiring in the next 30 days.",
+      shortLabel: "Expiring",
+      Icon: Hourglass,
+      accent: "monitoring",
     },
     DUE_TODAY: {
       title: "Follow-ups due today",
       subtitle: "Scheduled for today · any staff",
       viewAllHref: "/portal/follow-ups",
       emptyLabel: "Nothing due today.",
+      shortLabel: "Due today",
+      Icon: CalendarDays,
+      accent: "monitoring",
     },
     OVERDUE: {
       title: "Overdue follow-ups",
       subtitle: "Missed their due date · still open",
       viewAllHref: "/portal/follow-ups",
       emptyLabel: "No overdue follow-ups.",
+      shortLabel: "Overdue",
+      Icon: AlertTriangle,
+      accent: "urgent",
     },
     MINE: {
       title: "My follow-ups",
       subtitle: "Assigned to you and still open",
       viewAllHref: "/portal/follow-ups",
       emptyLabel: "Nothing on your plate right now.",
+      shortLabel: "My queue",
+      Icon: UserCircle2,
+      accent: "monitoring",
     },
     IRREGULAR: {
       title: "Irregular members",
       subtitle: "Low-frequency visitors this month",
       viewAllHref: "/portal/members",
       emptyLabel: "No irregular members flagged.",
+      shortLabel: "Irregular",
+      Icon: TrendingDown,
+      accent: "monitoring",
     },
     EXPIRED: {
       title: "Expired members",
       subtitle: "Past expiry · no renewal yet",
       viewAllHref: "/portal/members",
       emptyLabel: "No expired memberships.",
+      shortLabel: "Expired",
+      Icon: Ban,
+      accent: "urgent",
     },
     PAYMENT_DUE: {
       title: "Payment follow-ups",
       subtitle: "Invoices with an open balance",
       viewAllHref: "/portal/billing",
       emptyLabel: "All invoices paid up.",
+      shortLabel: "Balance",
+      Icon: Receipt,
+      accent: "urgent",
     },
   };
 
-  // Issue L2 + S3 — hide empty tiles by default. Operator scrolls past
-  // a wall of "No X." otherwise. A small toggle reveals them on demand.
-  const populatedTiles = visibleTiles.filter((k) => {
-    const t = tiles[k];
-    return t.loading || (t.rows && t.rows.length > 0) || t.error;
-  });
-  const emptyTileCount = visibleTiles.length - populatedTiles.length;
-  const tilesToRender = showEmptyTiles ? visibleTiles : populatedTiles;
+  // Chip palette — count drives the urgency colour. When the panel is open
+  // the chip gets a heavier fill + ring so it reads as the "active" filter.
+  const chipClass = (key: TileKey) => {
+    const data = tiles[key];
+    const cfg = tileConfig[key];
+    const count = data.totalCount ?? data.rows.length;
+    const isOpen = openTile === key;
+    const base =
+      "inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs transition focus:outline-none focus-visible:ring-2 focus-visible:ring-white/40";
+    if (data.error) {
+      return `${base} border-rose-500/40 bg-rose-500/10 text-rose-200 hover:bg-rose-500/15`;
+    }
+    if (data.loading) {
+      return `${base} cursor-wait border-white/10 bg-white/[0.04] text-slate-500`;
+    }
+    if (isOpen) {
+      return cfg.accent === "urgent"
+        ? `${base} border-rose-300/60 bg-rose-500/20 text-white ring-2 ring-rose-400/40`
+        : `${base} border-amber-300/60 bg-amber-500/20 text-white ring-2 ring-amber-400/40`;
+    }
+    if (count === 0) {
+      return `${base} border-white/10 bg-white/[0.03] text-slate-500 hover:bg-white/[0.06]`;
+    }
+    return cfg.accent === "urgent"
+      ? `${base} border-rose-400/30 bg-rose-500/10 text-rose-100 hover:bg-rose-500/15`
+      : `${base} border-amber-400/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/15`;
+  };
+
+  const openConfig = openTile ? tileConfig[openTile] : null;
+  const openData = openTile ? tiles[openTile] : null;
 
   return (
-    <section className="space-y-4">
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div>
-          <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">
-            Quick actions
-          </h2>
-          <p className="text-xs text-slate-500">Today&apos;s work, grouped by what needs attention.</p>
-        </div>
-        {emptyTileCount > 0 ? (
-          <button
-            type="button"
-            onClick={() => setShowEmptyTiles((v) => !v)}
-            className="inline-flex items-center gap-1.5 rounded-lg border border-white/10 bg-white/[0.04] px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-white/[0.08]"
-          >
-            {showEmptyTiles ? `Hide ${emptyTileCount} empty` : `Show ${emptyTileCount} empty`}
-          </button>
-        ) : null}
+    <section className="space-y-3">
+      <div>
+        <h2 className="text-sm font-semibold uppercase tracking-[0.2em] text-slate-300">
+          Quick actions
+        </h2>
+        <p className="text-xs text-slate-500">
+          Today&apos;s work — click a chip to peek, or use View all.
+        </p>
       </div>
-      {populatedTiles.length === 0 && !showEmptyTiles ? (
-        <div className="rounded-2xl border border-emerald-500/20 bg-emerald-500/5 px-5 py-4 text-sm text-emerald-100">
-          Nothing on your plate right now — every queue is clear. Use the toggle above to peek at the empty tiles.
+      {/*
+        Option A redesign — chip strip replaces the 3-column tile grid. The
+        primary signal an operator scans is the COUNT per queue (e.g. "115
+        overdue"). The 5-row preview is a drill-down that ~10% of clicks
+        actually need, so we hide it behind the chip and reveal it inline
+        below the strip. Saves ~500 px of vertical real estate; lets the
+        downstream KPI / Revenue / Health sections appear above the fold
+        on a 13" laptop without scrolling.
+      */}
+      <div className="flex flex-wrap gap-2" role="tablist" aria-label="Quick action queues">
+        {visibleTiles.map((key) => {
+          const data = tiles[key];
+          const cfg = tileConfig[key];
+          const count = data.totalCount ?? data.rows.length;
+          const isOpen = openTile === key;
+          const Icon = cfg.Icon;
+          return (
+            <button
+              key={key}
+              type="button"
+              role="tab"
+              aria-selected={isOpen}
+              aria-controls={isOpen ? `quick-action-panel-${key}` : undefined}
+              onClick={() => setOpenTile(isOpen ? null : key)}
+              disabled={data.loading && !data.error}
+              className={chipClass(key)}
+            >
+              <Icon className="h-3.5 w-3.5" aria-hidden />
+              <span className="text-sm font-bold tabular-nums">
+                {data.loading ? "—" : count}
+              </span>
+              <span className="font-semibold uppercase tracking-wider text-[10px]">
+                {cfg.shortLabel}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      {openConfig && openData && openTile ? (
+        <div id={`quick-action-panel-${openTile}`}>
+          <QuickActionTile
+            title={openConfig.title}
+            subtitle={openConfig.subtitle}
+            viewAllHref={openConfig.viewAllHref}
+            emptyLabel={openConfig.emptyLabel}
+            tile={openData}
+            onClose={() => setOpenTile(null)}
+          />
         </div>
       ) : null}
-      {/* Auto-resize: when fewer tiles are visible than would fill the
-          standard 3-column grid, the grid expands each tile to use the
-          available row instead of leaving empty columns. minmax(280px, 1fr)
-          + auto-fit gives us 1/2/3-column responsive behavior with no
-          breakpoint hardcoding. */}
-      <div className="grid gap-5" style={{ gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))" }}>
-        {tilesToRender.map((key) => (
-          <QuickActionTile
-            key={key}
-            title={tileConfig[key].title}
-            subtitle={tileConfig[key].subtitle}
-            viewAllHref={tileConfig[key].viewAllHref}
-            emptyLabel={tileConfig[key].emptyLabel}
-            tile={tiles[key]}
-          />
-        ))}
-      </div>
     </section>
   );
 }
@@ -1814,6 +1927,12 @@ export default function UnifiedDashboardPage() {
         {token ? <TodayCheckInsTile /> : null}
         {/* Pending approvals — surfaces gated risky-op queue (DEC-019). */}
         {token ? <PendingApprovalsTile /> : null}
+        {/*
+          Option D — KPIs / Revenue / Health render FIRST so the dashboard
+          opens with "how is the business doing?" metrics, then the chip
+          strip of Quick Actions sits at the bottom for drill-into-work.
+        */}
+        <AdminDashboardContent hideHeading />
         {token ? (
           <QuickActionTiles
             token={token}
@@ -1822,7 +1941,6 @@ export default function UnifiedDashboardPage() {
             selectedBranchCode={selectedBranchCode}
           />
         ) : null}
-        <AdminDashboardContent hideHeading />
       </div>
     );
   }
@@ -1840,6 +1958,12 @@ export default function UnifiedDashboardPage() {
         {token ? <GymManagerQuickActions token={token} userName={user?.name} /> : null}
         {token ? <TodayCheckInsTile /> : null}
         {token ? <PendingApprovalsTile /> : null}
+        <AdminDashboardContent
+          branchScoped
+          hideHeading
+          headingTitle={`${selectedBranchName || "Branch"} Dashboard`}
+          headingSubtitle={`${selectedBranchName || "Selected branch"} overview`}
+        />
         {token ? (
           <QuickActionTiles
             token={token}
@@ -1848,12 +1972,6 @@ export default function UnifiedDashboardPage() {
             selectedBranchCode={selectedBranchCode}
           />
         ) : null}
-        <AdminDashboardContent
-          branchScoped
-          hideHeading
-          headingTitle={`${selectedBranchName || "Branch"} Dashboard`}
-          headingSubtitle={`${selectedBranchName || "Selected branch"} overview`}
-        />
       </div>
     );
   }
