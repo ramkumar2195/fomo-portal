@@ -949,42 +949,76 @@ export default function AdminDashboardPage({
                 <SnapshotStat label="Overdue" value={formatCount(resolvedFollowUpsOverdue)} subtitle="Needs immediate action" tone="rose" />
                 <SnapshotStat label="Conversion Rate" value={`${resolvedConversionRate.toFixed(1)}%`} subtitle="Enquiry to conversion ratio" tone="green" />
               </div>
-              <div className="grid items-stretch gap-4 xl:grid-cols-2">
+              {/*
+                Compact funnel + sources layout (replaces the old 360px
+                donut + 2-col legend block). The funnel hides 0-count
+                stages so we don't render empty bars for stages that
+                aren't in use. Top Sources renders as inline chips
+                (colour dot + label + count) — much smaller footprint
+                than the donut while preserving the source-mix signal.
+              */}
+              <div className="grid items-stretch gap-4 lg:grid-cols-[1.4fr_1fr]">
                 <div className="rounded-3xl border border-white/8 bg-white/[0.03] p-5">
                   <div className="flex items-center justify-between gap-3">
                     <div>
                       <p className="text-sm font-semibold text-white">Enquiry Funnel</p>
-                      <p className="text-sm text-slate-400">Current stage distribution across the selected scope.</p>
+                      <p className="text-xs text-slate-400">Active stages only · 0-count stages hidden.</p>
                     </div>
                     <DashboardPill
                       label={inquiryTotal > 0 ? `${convertedTotal}/${inquiryTotal} converted` : "No enquiries yet"}
                       tone="green"
                     />
                   </div>
-                  <div className="mt-4">
+                  <div className="mt-3">
                     <FunnelChart
-                      stages={inquiryStages.map((stage) => ({
-                        label: stage.label,
-                        value: stage.value,
-                      }))}
+                      stages={inquiryStages
+                        .filter((stage) => stage.value > 0)
+                        .map((stage) => ({
+                          label: stage.label,
+                          value: stage.value,
+                        }))}
                     />
                   </div>
                 </div>
-                <div className="min-h-[360px]">
-                  <DonutLegendChart
-                    title="Top Sources"
-                    slices={
-                      sourceSlices.length > 0
-                        ? sourceSlices
-                        : [
-                            {
-                              label: "No source data",
-                              value: 0,
-                              color: "#94a3b8",
-                            },
-                          ]
-                    }
-                  />
+                <div className="rounded-3xl border border-white/8 bg-white/[0.03] p-5">
+                  <div className="flex items-center justify-between gap-3">
+                    <p className="text-sm font-semibold text-white">Top Sources</p>
+                    <span className="text-xs text-slate-400 tabular-nums">
+                      {sourceSlices.reduce((sum, s) => sum + s.value, 0)} total
+                    </span>
+                  </div>
+                  {sourceSlices.length === 0 ? (
+                    <p className="mt-3 text-xs text-slate-500">No source data yet.</p>
+                  ) : (
+                    <div className="mt-3 space-y-1.5">
+                      {(() => {
+                        const totalForBar = Math.max(...sourceSlices.map((s) => s.value), 1);
+                        return sourceSlices.map((slice) => {
+                          const widthPct = (slice.value / totalForBar) * 100;
+                          return (
+                            <div key={slice.label} className="flex items-center gap-2 text-xs">
+                              <span
+                                className="h-2 w-2 shrink-0 rounded-full"
+                                style={{ backgroundColor: slice.color }}
+                              />
+                              <span className="w-28 truncate text-slate-300" title={slice.label}>
+                                {slice.label}
+                              </span>
+                              <div className="h-1.5 flex-1 overflow-hidden rounded-full bg-white/[0.06]">
+                                <div
+                                  className="h-full rounded-full"
+                                  style={{ width: `${widthPct}%`, backgroundColor: slice.color, opacity: 0.85 }}
+                                />
+                              </div>
+                              <span className="w-10 text-right tabular-nums font-semibold text-slate-200">
+                                {slice.value}
+                              </span>
+                            </div>
+                          );
+                        });
+                      })()}
+                    </div>
+                  )}
                 </div>
               </div>
             </div>
