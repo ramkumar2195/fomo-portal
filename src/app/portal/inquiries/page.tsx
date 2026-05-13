@@ -1977,8 +1977,13 @@ export default function InquiriesPage() {
           <button
             type="button"
             onClick={() => {
+              // Clear the status filter AND the converted-only filter
+              // when the operator clicks "All". The default state hides
+              // converted enquiries (converted=false) so they don't
+              // clutter the active pipeline — but "All" needs to show
+              // every enquiry, converted or not.
               setCurrentPage(1);
-              setFilters((prev) => ({ ...prev, status: "" }));
+              setFilters((prev) => ({ ...prev, status: "", converted: "" }));
             }}
             className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition ${
               filters.status === ""
@@ -2010,9 +2015,20 @@ export default function InquiriesPage() {
                 onClick={() => {
                   if (isDim) return;
                   setCurrentPage(1);
+                  // CONVERTED chip needs the converted=true filter
+                  // override; the default state hides converted rows.
+                  // Other status chips keep the default converted=false
+                  // (or empty when toggling off, which falls back to
+                  // the default in loadInquiries).
+                  const nextStatus = isActive ? "" : segment.key;
+                  const nextConverted: InquiryFilterState["converted"] =
+                    nextStatus === "CONVERTED" ? "true"
+                    : nextStatus === "" ? "false"
+                    : "";
                   setFilters((prev) => ({
                     ...prev,
-                    status: isActive ? "" : segment.key,
+                    status: nextStatus,
+                    converted: nextConverted,
                   }));
                 }}
                 className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition ${
