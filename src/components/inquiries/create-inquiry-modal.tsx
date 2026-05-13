@@ -64,6 +64,16 @@ interface CreateInquiryModalProps {
    * the number already entered. Empty string = no pre-fill.
    */
   initialMobile?: string;
+  /**
+   * Step 3 — auto-assign suggestion. When provided, an "Auto-assign"
+   * pill appears above the Client Rep dropdown that the operator can
+   * click to pre-fill the field with the least-loaded eligible staff
+   * member (Sales Exec / Sales Mgr / Front Desk Exec / Gym Mgr, in
+   * that priority order). If null, the pill renders as
+   * "No eligible staff to auto-assign" so the operator knows the
+   * round-robin has nothing to pick from.
+   */
+  autoAssignSuggestion?: { id: number; label: string } | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -198,6 +208,7 @@ export function CreateInquiryModal({
   token,
   user,
   initialMobile,
+  autoAssignSuggestion,
 }: CreateInquiryModalProps) {
   const router = useRouter();
   // -- wizard step -----------------------------------------------------------
@@ -841,6 +852,31 @@ export function CreateInquiryModal({
                     {/* Client Rep */}
                     <div>
                       <FieldLabel required>Client Rep</FieldLabel>
+                      {/* Step 3 auto-assign suggestion — operator clicks
+                          to use the least-loaded eligible staff member
+                          (sales / front-desk / gym mgr in priority order).
+                          Designed as a one-click hint, not a forced toggle,
+                          so the operator can still override. */}
+                      {autoAssignSuggestion ? (
+                        <button
+                          type="button"
+                          onClick={() => setIntakeField("clientRepStaffId", String(autoAssignSuggestion.id))}
+                          className={`mb-1.5 inline-flex items-center gap-1.5 rounded-md border px-2 py-1 text-[11px] font-semibold transition ${
+                            String(autoAssignSuggestion.id) === newInquiry.clientRepStaffId
+                              ? "border-emerald-400/60 bg-emerald-500/15 text-emerald-200"
+                              : "border-sky-400/40 bg-sky-500/10 text-sky-200 hover:bg-sky-500/15"
+                          }`}
+                          title="Auto-assign to the least-loaded sales/front-desk/gym-mgr staff"
+                        >
+                          {String(autoAssignSuggestion.id) === newInquiry.clientRepStaffId
+                            ? "✓ Auto-assigned"
+                            : `⚡ Auto-assign → ${autoAssignSuggestion.label}`}
+                        </button>
+                      ) : (
+                        <p className="mb-1.5 text-[11px] text-amber-300">
+                          No eligible staff to auto-assign — pick manually
+                        </p>
+                      )}
                       <select
                         className={SELECT_CLASS}
                         value={newInquiry.clientRepStaffId}

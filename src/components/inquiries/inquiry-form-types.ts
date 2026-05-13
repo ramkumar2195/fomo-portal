@@ -63,6 +63,15 @@ export interface FollowUpPlanValues {
 export interface StaffOption {
   id: number;
   label: string;
+  /**
+   * Step 3 — assignment workflow. Designation kept structured (not
+   * baked into label only) so reassign dropdowns can group by role
+   * (Sales Exec / Sales Manager / Front Desk / Gym Manager / Other)
+   * and the auto-assign algorithm can apply the priority order.
+   */
+  designation?: string;
+  /** Plain name (without the "({designation})" suffix in label). */
+  name?: string;
 }
 
 export interface SelectOption {

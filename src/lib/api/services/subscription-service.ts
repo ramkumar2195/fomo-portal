@@ -936,6 +936,54 @@ export const subscriptionService = {
     return mapBulkAssignResponse(unwrapData<unknown>(response));
   },
 
+  /**
+   * Step 3 — per-staff open enquiry counts for the given branch.
+   * Frontend cross-references its staff directory to label these and
+   * show "{name} · {N} open" in the reassign dropdown.
+   */
+  async getInquiryStaffLoad(
+    token: string,
+    params: { branchId?: number; branchCode?: string } = {},
+  ): Promise<Array<{ staffId: number; openInquiryCount: number }>> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: "/api/subscriptions/v2/inquiries/staff-load",
+      token,
+      query: {
+        branchId: params.branchId,
+        branchCode: params.branchCode,
+      },
+    });
+    const data = unwrapData<unknown>(response);
+    if (!Array.isArray(data)) return [];
+    return (data as Array<Record<string, unknown>>).map((row) => ({
+      staffId: Number(row.staffId ?? 0),
+      openInquiryCount: Number(row.openInquiryCount ?? 0),
+    }));
+  },
+
+  /**
+   * Step 3 — count of OPEN enquiries with no assigned client rep,
+   * scoped to the current branch. Drives the dashboard Unassigned
+   * Quick Action chip.
+   */
+  async getUnassignedInquiryCount(
+    token: string,
+    params: { branchId?: number; branchCode?: string } = {},
+  ): Promise<number> {
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: "/api/subscriptions/v2/inquiries/unassigned/count",
+      token,
+      query: {
+        branchId: params.branchId,
+        branchCode: params.branchCode,
+      },
+    });
+    const data = unwrapData<Record<string, unknown>>(response);
+    return Number(data?.count ?? 0);
+  },
+
   async closeInquiry(token: string, inquiryId: number, payload: CloseInquiryRequest): Promise<InquiryRecord> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "subscription",

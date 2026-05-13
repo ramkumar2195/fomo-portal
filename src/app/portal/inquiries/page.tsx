@@ -584,6 +584,10 @@ export default function InquiriesPage() {
     clientRepStaffId: "",
   });
   const [staffOptions, setStaffOptions] = useState<StaffOption[]>([]);
+  // Step 3 — assignment workflow. Map of staffId → open enquiry count
+  // used for "{name} · {N} open" labels in reassign dropdowns and as
+  // the load-balancing tie-breaker in the auto-assign algorithm.
+  const [staffLoadById, setStaffLoadById] = useState<Map<number, number>>(new Map());
   const [followUpByInquiry, setFollowUpByInquiry] = useState<Record<number, FollowUpPreview>>({});
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [quickFollowUpForm, setQuickFollowUpForm] = useState<QuickFollowUpForm | null>(null);
@@ -863,18 +867,18 @@ export default function InquiriesPage() {
           usersService.searchUsers(token, { role: "ADMIN", active: true }),
         ]);
 
-        const mapped = [...staffUsers, ...adminUsers]
-          .map((record) => {
-            const numericId = parseNumericFromDirectoryUser(record);
-            if (numericId === null) {
-              return null;
-            }
-            return {
-              id: numericId,
-              label: `${record.name} (${record.designation || "STAFF"})`,
-            };
-          })
-          .filter((item): item is StaffOption => Boolean(item));
+        const mapped: StaffOption[] = [];
+        for (const record of [...staffUsers, ...adminUsers]) {
+          const numericId = parseNumericFromDirectoryUser(record);
+          if (numericId === null) continue;
+          const designation = record.designation || "STAFF";
+          mapped.push({
+            id: numericId,
+            label: `${record.name} (${designation})`,
+            designation,
+            name: record.name,
+          });
+        }
 
         if (initialStaffId && user) {
           const selfExists = mapped.some((option) => option.id === initialStaffId);
@@ -882,6 +886,8 @@ export default function InquiriesPage() {
             mapped.unshift({
               id: initialStaffId,
               label: `${user.name || "Current User"} (${user.designation || user.role})`,
+              designation: user.designation || user.role,
+              name: user.name || "Current User",
             });
           }
         }
@@ -908,6 +914,93 @@ export default function InquiriesPage() {
       isCancelled = true;
     };
   }, [token, canCreateInquiry, canViewInquiries, initialStaffId, user]);
+
+  /**
+   * Step 3 — fetch per-staff open enquiry counts so the reassign
+   * dropdowns can show load ("Robin R S · 23 open") and the auto-
+   * assign algorithm can break ties by least-loaded.
+   *
+   * Re-fetched whenever the branch scope changes or after a write
+   * (loadInquiries gets called → effective dep change), so the count
+   * stays roughly current. Failure is silent: we just lose the load
+   * suffix until the next fetch succeeds.
+   */
+  useEffect(() => {
+    if (!token || !canViewInquiries) return;
+    let cancelled = false;
+    subscriptionService
+      .getInquiryStaffLoad(token, { branchId: effectiveBranchId, branchCode: effectiveBranchCode || undefined })
+      .then((rows) => {
+        if (cancelled) return;
+        const map = new Map<number, number>();
+        for (const row of rows) {
+          map.set(Number(row.staffId), Number(row.openInquiryCount));
+        }
+        setStaffLoadById(map);
+      })
+      .catch(() => {
+        if (!cancelled) setStaffLoadById(new Map());
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [token, canViewInquiries, effectiveBranchId, effectiveBranchCode, currentPage]);
+
+  /**
+   * Step 3 — eligible designation priority for auto-assignment. Lower
+   * index = higher priority. Designations not in this list fall under
+   * "Other" in the grouped dropdown and are skipped by auto-assign.
+   *
+   * Sales Exec is intentionally the highest priority because they are
+   * the dedicated sales follow-up role. The fallback order tracks the
+   * realistic chain of "who picks up new leads when X is unavailable."
+   */
+  const ELIGIBLE_DESIGNATION_PRIORITY = useMemo<Record<string, number>>(
+    () => ({
+      SALES_EXECUTIVE: 0,
+      SALES_MANAGER: 1,
+      FRONT_DESK_EXECUTIVE: 2,
+      GYM_MANAGER: 3,
+    }),
+    [],
+  );
+
+  /**
+   * Groups staffOptions into "Recommended" (eligible designations,
+   * ordered by priority then by ascending open-enquiry count) and
+   * "Other" (everyone else, alphabetical). Used by both the row-cell
+   * reassign dropdown and the popup action-bar dropdown so behaviour
+   * is consistent everywhere.
+   */
+  const groupedStaffForReassign = useMemo(() => {
+    const eligible: Array<{ staff: StaffOption; load: number; priority: number }> = [];
+    const other: Array<{ staff: StaffOption; load: number }> = [];
+    for (const staff of staffOptions) {
+      const load = staffLoadById.get(staff.id) ?? 0;
+      const designation = (staff.designation || "").toUpperCase();
+      const priority = ELIGIBLE_DESIGNATION_PRIORITY[designation];
+      if (priority !== undefined) {
+        eligible.push({ staff, load, priority });
+      } else {
+        other.push({ staff, load });
+      }
+    }
+    eligible.sort((a, b) => (a.priority - b.priority) || (a.load - b.load));
+    other.sort((a, b) => (a.staff.name || a.staff.label).localeCompare(b.staff.name || b.staff.label));
+    return { eligible, other };
+  }, [staffOptions, staffLoadById, ELIGIBLE_DESIGNATION_PRIORITY]);
+
+  /**
+   * Auto-assign algorithm — picks the staff with the lowest open-load
+   * within the highest-priority eligible designation that has at
+   * least one member. Returns null if no eligible staff exists, in
+   * which case the enquiry is created UNASSIGNED and surfaces on the
+   * dashboard Unassigned chip the next morning.
+   */
+  const pickAutoAssignee = useCallback((): StaffOption | null => {
+    if (groupedStaffForReassign.eligible.length === 0) return null;
+    return groupedStaffForReassign.eligible[0].staff;
+  }, [groupedStaffForReassign]);
 
   const setEditField = (key: keyof InquiryCoreFormValues, value: string) => {
     setEditForm((prev) => {
@@ -2140,11 +2233,28 @@ export default function InquiriesPage() {
                             className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-xs text-slate-200 outline-none focus:border-white/20"
                           >
                             <option value="">Assign enquiry</option>
-                            {staffOptions.map((staff) => (
-                              <option key={`assign-${staff.id}`} value={String(staff.id)}>
-                                {staff.label}
-                              </option>
-                            ))}
+                            {/* Step 3 — role-grouped + load-sorted. Eligible
+                                designations (Sales Exec / Sales Mgr / Front
+                                Desk Exec / Gym Mgr) appear under "Recommended"
+                                ordered by priority then by least-loaded. */}
+                            {groupedStaffForReassign.eligible.length > 0 ? (
+                              <optgroup label="Recommended">
+                                {groupedStaffForReassign.eligible.map(({ staff, load }) => (
+                                  <option key={`assign-${staff.id}`} value={String(staff.id)}>
+                                    {staff.label} · {load} open
+                                  </option>
+                                ))}
+                              </optgroup>
+                            ) : null}
+                            {groupedStaffForReassign.other.length > 0 ? (
+                              <optgroup label="Other">
+                                {groupedStaffForReassign.other.map(({ staff, load }) => (
+                                  <option key={`assign-${staff.id}`} value={String(staff.id)}>
+                                    {staff.label} · {load} open
+                                  </option>
+                                ))}
+                              </optgroup>
+                            ) : null}
                           </select>
                         ) : (
                           "-"
@@ -2505,10 +2615,9 @@ export default function InquiriesPage() {
                     <MessageSquareText className="h-3.5 w-3.5" />
                     WhatsApp
                   </button>
-                  {/* Reassign — inline staff dropdown.
-                      Step 3 (assignment policy) will replace this with a
-                      smarter popover showing role-grouped staff with
-                      load counts. */}
+                  {/* Step 3 — role-grouped reassign dropdown with load
+                      counts. Matches the table-row dropdown so the
+                      operator sees the same picker everywhere. */}
                   {canUpdateInquiry ? (
                     <select
                       value=""
@@ -2519,11 +2628,24 @@ export default function InquiriesPage() {
                       className="h-8 rounded-lg border border-slate-300 bg-white px-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
                     >
                       <option value="">Reassign to…</option>
-                      {staffOptions.map((staff) => (
-                        <option key={`profile-reassign-${staff.id}`} value={String(staff.id)}>
-                          {staff.label}
-                        </option>
-                      ))}
+                      {groupedStaffForReassign.eligible.length > 0 ? (
+                        <optgroup label="Recommended">
+                          {groupedStaffForReassign.eligible.map(({ staff, load }) => (
+                            <option key={`profile-reassign-${staff.id}`} value={String(staff.id)}>
+                              {staff.label} · {load} open
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : null}
+                      {groupedStaffForReassign.other.length > 0 ? (
+                        <optgroup label="Other">
+                          {groupedStaffForReassign.other.map(({ staff, load }) => (
+                            <option key={`profile-reassign-${staff.id}`} value={String(staff.id)}>
+                              {staff.label} · {load} open
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : null}
                     </select>
                   ) : null}
                   {canUpdateInquiry && !profileIsClosed ? (
@@ -2707,6 +2829,15 @@ export default function InquiriesPage() {
         token={token || ""}
         user={user}
         initialMobile={deepLinkedCreateMobile}
+        autoAssignSuggestion={(() => {
+          const picked = pickAutoAssignee();
+          if (!picked) return null;
+          const load = staffLoadById.get(picked.id) ?? 0;
+          return {
+            id: picked.id,
+            label: `${picked.name || picked.label} (${load} open)`,
+          };
+        })()}
       />
 
       {quickFollowUpForm ? (

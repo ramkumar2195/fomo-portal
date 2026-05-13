@@ -1162,14 +1162,17 @@ type TileKey =
   | "MINE"
   | "IRREGULAR"
   | "EXPIRED"
-  | "PAYMENT_DUE";
+  | "PAYMENT_DUE"
+  // Step 3 — assignment workflow. Counts enquiries with no client rep
+  // assigned. Lets the gym manager triage at the start of the day.
+  | "UNASSIGNED_INQUIRIES";
 
 const TILE_VISIBILITY_BY_DESIGNATION: Record<string, TileKey[]> = {
-  SUPER_ADMIN: ["EXPIRING", "DUE_TODAY", "OVERDUE", "MINE", "IRREGULAR", "EXPIRED", "PAYMENT_DUE"],
-  GYM_MANAGER: ["EXPIRING", "DUE_TODAY", "OVERDUE", "MINE", "IRREGULAR", "EXPIRED", "PAYMENT_DUE"],
-  SALES_MANAGER: ["DUE_TODAY", "OVERDUE", "MINE", "PAYMENT_DUE"],
+  SUPER_ADMIN: ["UNASSIGNED_INQUIRIES", "OVERDUE", "DUE_TODAY", "MINE", "EXPIRING", "IRREGULAR", "EXPIRED", "PAYMENT_DUE"],
+  GYM_MANAGER: ["UNASSIGNED_INQUIRIES", "OVERDUE", "DUE_TODAY", "MINE", "EXPIRING", "IRREGULAR", "EXPIRED", "PAYMENT_DUE"],
+  SALES_MANAGER: ["UNASSIGNED_INQUIRIES", "DUE_TODAY", "OVERDUE", "MINE", "PAYMENT_DUE"],
   SALES_EXECUTIVE: ["DUE_TODAY", "OVERDUE", "MINE", "PAYMENT_DUE"],
-  FRONT_DESK_EXECUTIVE: ["DUE_TODAY", "OVERDUE", "MINE", "PAYMENT_DUE"],
+  FRONT_DESK_EXECUTIVE: ["UNASSIGNED_INQUIRIES", "DUE_TODAY", "OVERDUE", "MINE", "PAYMENT_DUE"],
   FITNESS_MANAGER: ["EXPIRING", "IRREGULAR"],
 };
 
@@ -1312,6 +1315,7 @@ function QuickActionTiles({
     IRREGULAR: { rows: [], loading: true },
     EXPIRED: { rows: [], loading: true },
     PAYMENT_DUE: { rows: [], loading: true },
+    UNASSIGNED_INQUIRIES: { rows: [], loading: true },
   });
   // Tracks which chip is currently expanded into the row-preview panel below
   // the strip. Only one open at a time — clicking a different chip swaps,
@@ -1627,6 +1631,26 @@ function QuickActionTiles({
       );
     }
 
+    if (want("UNASSIGNED_INQUIRIES")) {
+      // Step 3 — surfaces the count of enquiries with no client rep.
+      // We don't fetch the rows list here (the modal would need a
+      // paginated query) — the chip is a count + a "View all" deep
+      // link to the inquiries page with the assignedToStaffId filter
+      // pre-applied. Keeps the dashboard fetch tight.
+      tasks.push(
+        subscriptionService
+          .getUnassignedInquiryCount(token, { branchId: effectiveBranchId, branchCode: selectedBranchCode })
+          .then((count) => {
+            setTile("UNASSIGNED_INQUIRIES", {
+              loading: false,
+              rows: [],
+              totalCount: count,
+            });
+          })
+          .catch((e: unknown) => setTile("UNASSIGNED_INQUIRIES", { loading: false, error: e instanceof Error ? e.message : "Failed" })),
+      );
+    }
+
     await Promise.all(tasks);
   }, [token, user, effectiveBranchId, selectedBranchCode, visibleTiles.join(",")]);
 
@@ -1713,6 +1737,17 @@ function QuickActionTiles({
       emptyLabel: "All invoices paid up.",
       shortLabel: "Balance",
       Icon: Receipt,
+      accent: "urgent",
+    },
+    UNASSIGNED_INQUIRIES: {
+      // Step 3 — drives the gym manager's morning triage of leads
+      // that the team hasn't picked up yet.
+      title: "Unassigned enquiries",
+      subtitle: "Leads with no client rep · need triage",
+      viewAllHref: "/portal/inquiries?status=&assigned=none",
+      emptyLabel: "Every lead has been picked up.",
+      shortLabel: "Unassigned",
+      Icon: UserCircle2,
       accent: "urgent",
     },
   };
