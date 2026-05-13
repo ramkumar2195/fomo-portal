@@ -2387,47 +2387,279 @@ export default function InquiriesPage() {
         })}` : "Enquiry Profile"}
         size="xl"
       >
-        {!viewingInquiry ? null : (
-          <div className="space-y-5">
-            <div className="grid gap-4 lg:grid-cols-2">
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Contact</p>
-                <div className="mt-3 space-y-1 text-sm text-slate-700">
-                  <p><span className="font-medium text-slate-900">Name:</span> {viewingInquiry.fullName || "-"}</p>
-                  <p><span className="font-medium text-slate-900">Mobile:</span> {viewingInquiry.mobileNumber || "-"}</p>
-                  <p><span className="font-medium text-slate-900">Email:</span> {viewingInquiry.email || "-"}</p>
-                  <p><span className="font-medium text-slate-900">Branch:</span> {viewingInquiry.branchCode || "-"}</p>
-                  <p><span className="font-medium text-slate-900">Address:</span> {viewingInquiry.address || "-"}</p>
-                </div>
-              </div>
-              <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sales Context</p>
-                <div className="mt-3 space-y-1 text-sm text-slate-700">
-                  <p><span className="font-medium text-slate-900">Inquiry Date:</span> {formatDateTimeDisplay(viewingInquiry.inquiryAt || viewingInquiry.createdAt)}</p>
-                  <p><span className="font-medium text-slate-900">Status:</span> {formatStatusLabel(deriveDisplayInquiryStatus(viewingInquiry.status, viewFollowUpHistory[0]?.responseType || viewingInquiry.responseType))}</p>
-                  <p><span className="font-medium text-slate-900">Convertibility:</span> {viewingInquiry.convertibility || "-"}</p>
-                  <p><span className="font-medium text-slate-900">Client Rep:</span> {viewingInquiry.clientRepStaffId ? (staffNameById.get(Number(viewingInquiry.clientRepStaffId)) || viewingInquiry.clientRepStaffId) : (getLegacyInquiryHandledBy(viewingInquiry) || "-")}</p>
-                  <p><span className="font-medium text-slate-900">Interested In:</span> {viewingInquiry.interestedIn || "-"}</p>
-                  <p><span className="font-medium text-slate-900">Promotion Source:</span> {formatSourceLabel(viewingInquiry.promotionSource)}</p>
-                </div>
-              </div>
-            </div>
+        {!viewingInquiry ? null : (() => {
+          // ─── Step 2 redesigned popup ────────────────────────────────
+          // Action bar at top + Contact/Sales/Emergency/Trial cards in a
+          // 2-column grid + Status History row + Follow-up History row.
+          // All operations available without leaving the popup.
+          const inq = viewingInquiry;
+          const profileDisplayStatus = deriveDisplayInquiryStatus(
+            inq.status,
+            viewFollowUpHistory[0]?.responseType || inq.responseType,
+          );
+          const profileIsConverted = isConvertedInquiry(inq);
+          const profileIsClosed = isClosedInquiryStatus(profileDisplayStatus);
+          const profileIsConverting = rowActionLoadingId === inq.inquiryId;
+          const initialsForPopup =
+            inq.fullName?.trim().split(" ").map((p) => p.slice(0, 1).toUpperCase()).slice(0, 2).join("") || "?";
+          const ageFromDob = (() => {
+            if (!inq.dateOfBirth) return null;
+            const dob = new Date(inq.dateOfBirth);
+            if (Number.isNaN(dob.getTime())) return null;
+            const ageMs = Date.now() - dob.getTime();
+            const years = Math.floor(ageMs / (365.25 * 24 * 3600 * 1000));
+            return years > 0 ? `${years}y` : null;
+          })();
+          const clientRepName = inq.clientRepStaffId
+            ? (staffNameById.get(Number(inq.clientRepStaffId)) || `Staff #${inq.clientRepStaffId}`)
+            : (getLegacyInquiryHandledBy(inq) || null);
+          const trainerName = inq.defaultTrainerStaffId
+            ? (staffNameById.get(Number(inq.defaultTrainerStaffId)) || `Staff #${inq.defaultTrainerStaffId}`)
+            : null;
+          const customerStatusLabel = inq.customerStatus
+            ? (CUSTOMER_STATUS_OPTIONS.find((o) => o.value === inq.customerStatus)?.label
+                || inq.customerStatus.replace(/_/g, " "))
+            : null;
+          const preferredChannelLabel = inq.preferredContactChannel
+            ? (PREFERRED_CONTACT_CHANNEL_OPTIONS.find((o) => o.value === inq.preferredContactChannel)?.label
+                || inq.preferredContactChannel)
+            : null;
+          const referredByTypeLabel = inq.referredByType
+            ? (REFERRED_BY_TYPE_OPTIONS.find((o) => o.value === inq.referredByType)?.label || inq.referredByType.replace(/_/g, " "))
+            : null;
+          const referredBy = inq.referredByName
+            ? (referredByTypeLabel ? `${inq.referredByName} (${referredByTypeLabel})` : inq.referredByName)
+            : referredByTypeLabel;
 
-            <div className="grid gap-4 lg:grid-cols-2">
-              <div className="rounded-xl border border-slate-200 p-4">
-                <div className="flex items-center justify-between gap-3">
-                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Follow-up History</p>
+          return (
+            <div className="space-y-5">
+              {/* Sticky header: avatar + name + click-to-call + email + branch */}
+              <div className="flex items-start gap-3 rounded-2xl border border-slate-200 bg-white p-4">
+                <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full border border-slate-300 bg-slate-100 text-sm font-semibold text-slate-700">
+                  {initialsForPopup}
+                </div>
+                <div className="min-w-0 flex-1">
+                  <p className="text-base font-semibold text-slate-900">{inq.fullName || "-"}</p>
+                  <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-1 text-xs">
+                    {inq.mobileNumber ? (
+                      <a
+                        href={`tel:${inq.mobileNumber}`}
+                        className="inline-flex items-center gap-1 font-medium text-slate-700 hover:text-sky-600"
+                      >
+                        📞 {inq.mobileNumber}
+                      </a>
+                    ) : null}
+                    {inq.email ? (
+                      <a
+                        href={`mailto:${inq.email}`}
+                        className="inline-flex items-center gap-1 text-slate-700 hover:text-sky-600"
+                      >
+                        ✉ {inq.email}
+                      </a>
+                    ) : null}
+                    {inq.branchCode ? <span className="text-slate-500">· {inq.branchCode}</span> : null}
+                  </div>
+                </div>
+              </div>
+
+              {/* Action bar */}
+              {(canUpdateInquiry || canConvertInquiry) && !profileIsConverted ? (
+                <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-2">
+                  {canConvertInquiry && !profileIsClosed ? (
+                    <button
+                      type="button"
+                      disabled={profileIsConverting}
+                      onClick={() => void convertInquiry(inq)}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-emerald-600 px-3 text-xs font-semibold text-white hover:bg-emerald-500 disabled:bg-emerald-300"
+                    >
+                      <CheckCircle2 className="h-3.5 w-3.5" />
+                      Convert
+                    </button>
+                  ) : null}
+                  {canUpdateInquiry && !profileIsClosed ? (
+                    <button
+                      type="button"
+                      disabled={profileIsConverting}
+                      onClick={() => void openQuickFollowUp(inq)}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-sky-500/40 bg-sky-500/10 px-3 text-xs font-semibold text-sky-700 hover:bg-sky-500/15 disabled:opacity-60"
+                    >
+                      <Plus className="h-3.5 w-3.5" />
+                      Add Follow-up
+                    </button>
+                  ) : null}
                   {canUpdateInquiry ? (
                     <button
                       type="button"
-                      onClick={() => void openQuickFollowUp(viewingInquiry)}
+                      onClick={() => openInquiryEditor(inq)}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-slate-300 bg-white px-3 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                    >
+                      <PencilLine className="h-3.5 w-3.5" />
+                      Edit
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    onClick={() => sendWhatsAppMessage(inq)}
+                    className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-emerald-500/40 bg-emerald-500/10 px-3 text-xs font-semibold text-emerald-700 hover:bg-emerald-500/15"
+                  >
+                    <MessageSquareText className="h-3.5 w-3.5" />
+                    WhatsApp
+                  </button>
+                  {/* Reassign — inline staff dropdown.
+                      Step 3 (assignment policy) will replace this with a
+                      smarter popover showing role-grouped staff with
+                      load counts. */}
+                  {canUpdateInquiry ? (
+                    <select
+                      value=""
+                      onChange={(event) => {
+                        const newId = event.target.value;
+                        if (newId) void assignInquiryToStaff(inq, newId);
+                      }}
+                      className="h-8 rounded-lg border border-slate-300 bg-white px-2 text-xs font-semibold text-slate-700 hover:bg-slate-100"
+                    >
+                      <option value="">Reassign to…</option>
+                      {staffOptions.map((staff) => (
+                        <option key={`profile-reassign-${staff.id}`} value={String(staff.id)}>
+                          {staff.label}
+                        </option>
+                      ))}
+                    </select>
+                  ) : null}
+                  {canUpdateInquiry && !profileIsClosed ? (
+                    <button
+                      type="button"
+                      disabled={profileIsConverting}
+                      onClick={() => openCloseInquiry(inq)}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg border border-rose-500/40 bg-rose-500/10 px-3 text-xs font-semibold text-rose-700 hover:bg-rose-500/15 disabled:opacity-50"
+                    >
+                      <XCircle className="h-3.5 w-3.5" />
+                      Close
+                    </button>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {/* Info cards: 2-column grid */}
+              <div className="grid gap-4 lg:grid-cols-2">
+                {/* Contact */}
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Contact</p>
+                  <div className="mt-3 space-y-1 text-sm text-slate-700">
+                    <p><span className="font-medium text-slate-900">Mobile:</span> {inq.mobileNumber || "-"}</p>
+                    <p><span className="font-medium text-slate-900">Alt mobile:</span> {inq.alternateMobileNumber || "-"}</p>
+                    <p><span className="font-medium text-slate-900">Email:</span> {inq.email || "-"}</p>
+                    <p>
+                      <span className="font-medium text-slate-900">DOB:</span>{" "}
+                      {inq.dateOfBirth ? `${formatDateDisplay(inq.dateOfBirth)}${ageFromDob ? ` (${ageFromDob})` : ""}` : "-"}
+                    </p>
+                    <p><span className="font-medium text-slate-900">Gender:</span> {inq.gender || "-"}</p>
+                    <p><span className="font-medium text-slate-900">Preferred channel:</span> {preferredChannelLabel || "-"}</p>
+                    <p><span className="font-medium text-slate-900">Branch:</span> {inq.branchCode || "-"}</p>
+                    <p><span className="font-medium text-slate-900">Address:</span> {inq.address || "-"}</p>
+                  </div>
+                </div>
+
+                {/* Sales Context */}
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Sales Context</p>
+                  <div className="mt-3 space-y-1 text-sm text-slate-700">
+                    <p><span className="font-medium text-slate-900">Enquiry date:</span> {formatDateTimeDisplay(inq.inquiryAt || inq.createdAt)}</p>
+                    <p><span className="font-medium text-slate-900">Status:</span> {formatStatusLabel(profileDisplayStatus)}{inq.closeReason ? ` (${inq.closeReason})` : ""}</p>
+                    <p><span className="font-medium text-slate-900">Convertibility:</span> {inq.convertibility || "-"}</p>
+                    <p><span className="font-medium text-slate-900">Response type:</span> {formatResponseTypeLabel(viewFollowUpHistory[0]?.responseType || inq.responseType)}</p>
+                    <p><span className="font-medium text-slate-900">Interested in:</span> {inq.interestedIn || "-"}</p>
+                    <p><span className="font-medium text-slate-900">Source:</span> {formatSourceLabel(inq.promotionSource)}</p>
+                    <p><span className="font-medium text-slate-900">Customer status:</span> {customerStatusLabel || "-"}</p>
+                    <p><span className="font-medium text-slate-900">Client rep:</span> {clientRepName || "-"}</p>
+                    <p><span className="font-medium text-slate-900">Default trainer:</span> {trainerName || "-"}</p>
+                    <p><span className="font-medium text-slate-900">Referred by:</span> {referredBy || "-"}</p>
+                  </div>
+                </div>
+
+                {/* Emergency Contact */}
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Emergency Contact</p>
+                  {inq.emergencyContactName || inq.emergencyContactPhone || inq.emergencyContactRelation ? (
+                    <div className="mt-3 space-y-1 text-sm text-slate-700">
+                      <p><span className="font-medium text-slate-900">Name:</span> {inq.emergencyContactName || "-"}</p>
+                      <p>
+                        <span className="font-medium text-slate-900">Phone:</span>{" "}
+                        {inq.emergencyContactPhone ? (
+                          <a href={`tel:${inq.emergencyContactPhone}`} className="text-sky-700 hover:text-sky-900">
+                            {inq.emergencyContactPhone}
+                          </a>
+                        ) : "-"}
+                      </p>
+                      <p><span className="font-medium text-slate-900">Relation:</span> {inq.emergencyContactRelation || "-"}</p>
+                    </div>
+                  ) : (
+                    <p className="mt-3 text-sm text-slate-500">Not provided.</p>
+                  )}
+                </div>
+
+                {/* Trial — surfaces a major sales signal that was hidden before */}
+                <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Trial</p>
+                  {inq.trialGiven || inq.trialDays || inq.trialAttempts || inq.trialExpiryAt ? (
+                    <div className="mt-3 space-y-1 text-sm text-slate-700">
+                      <p>
+                        <span className="font-medium text-slate-900">Status:</span>{" "}
+                        {inq.trialGiven ? (
+                          <span className="inline-flex items-center gap-1 rounded-full border border-emerald-300 bg-emerald-50 px-2 py-0.5 text-xs font-semibold text-emerald-700">
+                            Given
+                          </span>
+                        ) : (
+                          <span className="text-slate-500">Not given</span>
+                        )}
+                      </p>
+                      <p><span className="font-medium text-slate-900">Days:</span> {inq.trialDays ?? "-"}</p>
+                      <p><span className="font-medium text-slate-900">Attempts:</span> {inq.trialAttempts ?? "-"}</p>
+                      <p><span className="font-medium text-slate-900">Expiry:</span> {inq.trialExpiryAt ? formatDateTimeDisplay(inq.trialExpiryAt) : "-"}</p>
+                    </div>
+                  ) : (
+                    <p className="mt-3 text-sm text-slate-500">No trial offered yet.</p>
+                  )}
+                </div>
+              </div>
+
+              {/* Status History full-width */}
+              <div className="rounded-xl border border-slate-200 p-4">
+                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status History</p>
+                <div className="mt-3 max-h-56 space-y-2 overflow-y-auto pr-1">
+                  {loadingViewHistory ? (
+                    <p className="text-sm text-slate-500">Loading status history...</p>
+                  ) : displayViewStatusHistory.length === 0 ? (
+                    <p className="text-sm text-slate-500">No status history recorded.</p>
+                  ) : (
+                    displayViewStatusHistory.map((entry, index) => (
+                      <div key={`${entry.kind}-${entry.changedAt || "history"}-${index}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
+                        <p className="font-semibold text-slate-900">{entry.title}</p>
+                        <p className="mt-1 text-xs text-slate-500">
+                          {entry.changedAt ? new Date(entry.changedAt).toLocaleString("en-IN") : "-"}
+                        </p>
+                        {entry.remarks ? <p className="mt-1">{entry.remarks}</p> : null}
+                      </div>
+                    ))
+                  )}
+                </div>
+              </div>
+
+              {/* Follow-up History full-width */}
+              <div className="rounded-xl border border-slate-200 p-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Follow-up History</p>
+                  {canUpdateInquiry && !profileIsConverted && !profileIsClosed ? (
+                    <button
+                      type="button"
+                      onClick={() => void openQuickFollowUp(inq)}
                       className="rounded-lg border border-blue-200 bg-blue-50 px-2.5 py-1 text-xs font-semibold text-blue-700 hover:bg-blue-100"
                     >
                       Add Follow-up
                     </button>
                   ) : null}
                 </div>
-                <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
+                <div className="mt-3 max-h-80 space-y-2 overflow-y-auto pr-1">
                   {loadingViewHistory ? (
                     <p className="text-sm text-slate-500">Loading follow-up history...</p>
                   ) : viewFollowUpHistory.length === 0 ? (
@@ -2438,7 +2670,7 @@ export default function InquiriesPage() {
                         (entry.assignedToStaffId ? staffNameById.get(Number(entry.assignedToStaffId)) : null) ||
                         getLegacyFollowUpAssignedTo(entry.outcomeNotes) ||
                         getLegacyFollowUpClientRep(entry.outcomeNotes) ||
-                        getLegacyInquiryHandledBy(viewingInquiry);
+                        getLegacyInquiryHandledBy(inq);
                       return (
                         <div key={entry.followUpId} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
                           <div className="flex items-center justify-between gap-3">
@@ -2459,30 +2691,9 @@ export default function InquiriesPage() {
                   )}
                 </div>
               </div>
-
-              <div className="rounded-xl border border-slate-200 p-4">
-                <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status History</p>
-                <div className="mt-3 max-h-72 space-y-2 overflow-y-auto pr-1">
-                  {loadingViewHistory ? (
-                    <p className="text-sm text-slate-500">Loading status history...</p>
-                  ) : displayViewStatusHistory.length === 0 ? (
-                    <p className="text-sm text-slate-500">No status history recorded.</p>
-                  ) : (
-                    displayViewStatusHistory.map((entry, index) => (
-                      <div key={`${entry.kind}-${entry.changedAt || "history"}-${index}`} className="rounded-lg border border-slate-200 bg-slate-50 p-3 text-sm text-slate-700">
-                        <p className="font-semibold text-slate-900">{entry.title}</p>
-                        <p className="mt-1 text-xs text-slate-500">
-                          {entry.changedAt ? new Date(entry.changedAt).toLocaleString("en-IN") : "-"}
-                        </p>
-                        {entry.remarks ? <p className="mt-1">{entry.remarks}</p> : null}
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
             </div>
-          </div>
-        )}
+          );
+        })()}
       </Modal>
 
       <CreateInquiryModal
