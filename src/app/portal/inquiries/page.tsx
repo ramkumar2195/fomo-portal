@@ -559,7 +559,19 @@ export default function InquiriesPage() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const { token, user, accessMetadata } = useAuth();
-  const { selectedBranchCode, effectiveBranchId } = useBranch();
+  const { selectedBranchCode, effectiveBranchId, branches } = useBranch();
+  // code → friendly name lookup so the row-click popup header can show
+  // "Carmelaram" instead of just "CARM". Falls back to the code when
+  // the branch isn't loaded yet (first render).
+  const branchNameByCode = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const b of branches) {
+      const code = (b.branchCode || "").trim();
+      const name = (b.name || "").trim();
+      if (code && name) map.set(code.toUpperCase(), name);
+    }
+    return map;
+  }, [branches]);
   const routeAllowsInquiries = canAccessRoute("/portal/inquiries", user, accessMetadata);
   const staffCapabilityFallback = user?.role !== "STAFF" || user.designation !== "GYM_MANAGER";
   const canViewInquiries = routeAllowsInquiries || hasCapability(user, accessMetadata, CAPABILITIES.viewInquiries, true);
@@ -1847,65 +1859,91 @@ export default function InquiriesPage() {
             </div>
           </div>
           {isFiltersOpen ? (
+            /*
+              Filter panel — 7 filters + Clear button laid out as a 4-col
+              grid (xl), 2-col (md), 1-col (sm). Every filter now has the
+              same uppercase tracking-wide label above it so the panel
+              reads as one coherent strip rather than half-labelled
+              half-not. All inputs share the same height (h-9) and the
+              labels share the same font weight, so vertical alignment
+              stays clean across rows.
+            */
             <div className="mt-3 rounded-lg border border-white/10 bg-[#0d131d] p-3">
-              <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-5">
-                <select
-                  className="rounded-lg border border-white/10 bg-[#121a25] px-3 py-2 text-sm text-white"
-                  value={filters.status}
-                  onChange={(event) => {
-                    setCurrentPage(1);
-                    setFilters((prev) => ({ ...prev, status: event.target.value }));
-                  }}
-                >
-                  <option value="">All Status</option>
-                  {INQUIRY_STATUS_OPTIONS.map((statusOption) => (
-                    <option key={`filter-status-${statusOption.value}`} value={statusOption.value}>
-                      {statusOption.label}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  className="rounded-lg border border-white/10 bg-[#121a25] px-3 py-2 text-sm text-white"
-                  value={filters.converted}
-                  onChange={(event) => {
-                    setCurrentPage(1);
-                    setFilters((prev) => ({ ...prev, converted: event.target.value as "" | "true" | "false" }));
-                  }}
-                >
-                  <option value="">All Conversion</option>
-                  <option value="false">Not Converted</option>
-                  <option value="true">Converted</option>
-                </select>
-                <select
-                  className="rounded-lg border border-white/10 bg-[#121a25] px-3 py-2 text-sm text-white"
-                  value={filters.convertibility}
-                  onChange={(event) => {
-                    setCurrentPage(1);
-                    setFilters((prev) => ({ ...prev, convertibility: event.target.value }));
-                  }}
-                >
-                  <option value="">All Convertibility</option>
-                  {CONVERTIBILITY_OPTIONS.map((option) => (
-                    <option key={`filter-convertibility-${option.value}`} value={option.value}>
-                      {option.label}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  type="text"
-                  className="rounded-lg border border-white/10 bg-[#121a25] px-3 py-2 text-sm text-white placeholder:text-slate-500"
-                  value={filters.closeReason}
-                  placeholder="Close reason contains..."
-                  onChange={(event) => {
-                    setCurrentPage(1);
-                    setFilters((prev) => ({ ...prev, closeReason: event.target.value }));
-                  }}
-                />
+              <div className="grid gap-x-3 gap-y-3 md:grid-cols-2 xl:grid-cols-4">
                 <div>
-                  <label className="mb-1 block text-xs font-semibold text-slate-400">From Date</label>
+                  <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Status</label>
+                  <select
+                    className="h-9 w-full rounded-lg border border-white/10 bg-[#121a25] px-2 text-sm text-white"
+                    value={filters.status}
+                    onChange={(event) => {
+                      setCurrentPage(1);
+                      setFilters((prev) => ({ ...prev, status: event.target.value }));
+                    }}
+                  >
+                    <option value="">All Status</option>
+                    {INQUIRY_STATUS_OPTIONS.map((statusOption) => (
+                      <option key={`filter-status-${statusOption.value}`} value={statusOption.value}>
+                        {statusOption.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Conversion</label>
+                  <select
+                    className="h-9 w-full rounded-lg border border-white/10 bg-[#121a25] px-2 text-sm text-white"
+                    value={filters.converted}
+                    onChange={(event) => {
+                      setCurrentPage(1);
+                      setFilters((prev) => ({ ...prev, converted: event.target.value as "" | "true" | "false" }));
+                    }}
+                  >
+                    <option value="">All</option>
+                    <option value="false">Not Converted</option>
+                    <option value="true">Converted</option>
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Convertibility</label>
+                  <select
+                    className="h-9 w-full rounded-lg border border-white/10 bg-[#121a25] px-2 text-sm text-white"
+                    value={filters.convertibility}
+                    onChange={(event) => {
+                      setCurrentPage(1);
+                      setFilters((prev) => ({ ...prev, convertibility: event.target.value }));
+                    }}
+                  >
+                    <option value="">All</option>
+                    {CONVERTIBILITY_OPTIONS.map((option) => (
+                      <option key={`filter-convertibility-${option.value}`} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Client Rep</label>
+                  <select
+                    className="h-9 w-full rounded-lg border border-white/10 bg-[#121a25] px-2 text-sm text-white"
+                    value={filters.clientRepStaffId}
+                    onChange={(event) => {
+                      setCurrentPage(1);
+                      setFilters((prev) => ({ ...prev, clientRepStaffId: event.target.value }));
+                    }}
+                  >
+                    <option value="">All Client Reps</option>
+                    {staffOptions.map((staff) => (
+                      <option key={`filter-rep-${staff.id}`} value={staff.id}>
+                        {staff.label}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+                <div>
+                  <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">From Date</label>
                   <input
                     type="date"
-                    className="w-full rounded-lg border border-white/10 bg-[#121a25] px-3 py-2 text-sm text-white"
+                    className="h-9 w-full rounded-lg border border-white/10 bg-[#121a25] px-2 text-sm text-white"
                     value={filters.fromDate}
                     onChange={(event) => {
                       setCurrentPage(1);
@@ -1914,10 +1952,10 @@ export default function InquiriesPage() {
                   />
                 </div>
                 <div>
-                  <label className="mb-1 block text-xs font-semibold text-slate-400">To Date</label>
+                  <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">To Date</label>
                   <input
                     type="date"
-                    className="w-full rounded-lg border border-white/10 bg-[#121a25] px-3 py-2 text-sm text-white"
+                    className="h-9 w-full rounded-lg border border-white/10 bg-[#121a25] px-2 text-sm text-white"
                     value={filters.toDate}
                     onChange={(event) => {
                       setCurrentPage(1);
@@ -1925,42 +1963,42 @@ export default function InquiriesPage() {
                     }}
                   />
                 </div>
-                <select
-                  className="rounded-lg border border-white/10 bg-[#121a25] px-3 py-2 text-sm text-white"
-                  value={filters.clientRepStaffId}
-                  onChange={(event) => {
-                    setCurrentPage(1);
-                    setFilters((prev) => ({ ...prev, clientRepStaffId: event.target.value }));
-                  }}
-                >
-                  <option value="">All Client Reps</option>
-                  {staffOptions.map((staff) => (
-                    <option key={`filter-rep-${staff.id}`} value={staff.id}>
-                      {staff.label}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const resetFilters: InquiryFilterState = {
-                      query: "",
-                      status: "",
-                      converted: "false",
-                      convertibility: "",
-                      closeReason: "",
-                      fromDate: "",
-                      toDate: "",
-                      clientRepStaffId: "",
-                    };
-                    setFilters(resetFilters);
-                    setCurrentPage(1);
-                    void loadInquiries(resetFilters, 1);
-                  }}
-                  className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-xs font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.08]"
-                >
-                  Clear Filters
-                </button>
+                <div>
+                  <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Close Reason</label>
+                  <input
+                    type="text"
+                    className="h-9 w-full rounded-lg border border-white/10 bg-[#121a25] px-2 text-sm text-white placeholder:text-slate-500"
+                    value={filters.closeReason}
+                    placeholder="Contains…"
+                    onChange={(event) => {
+                      setCurrentPage(1);
+                      setFilters((prev) => ({ ...prev, closeReason: event.target.value }));
+                    }}
+                  />
+                </div>
+                <div className="flex items-end">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const resetFilters: InquiryFilterState = {
+                        query: "",
+                        status: "",
+                        converted: "false",
+                        convertibility: "",
+                        closeReason: "",
+                        fromDate: "",
+                        toDate: "",
+                        clientRepStaffId: "",
+                      };
+                      setFilters(resetFilters);
+                      setCurrentPage(1);
+                      void loadInquiries(resetFilters, 1);
+                    }}
+                    className="h-9 w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 text-xs font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.08]"
+                  >
+                    Clear Filters
+                  </button>
+                </div>
               </div>
             </div>
           ) : null}
@@ -2583,7 +2621,11 @@ export default function InquiriesPage() {
                         ✉ {inq.email}
                       </a>
                     ) : null}
-                    {inq.branchCode ? <span className="text-slate-500">· {inq.branchCode}</span> : null}
+                    {inq.branchCode ? (
+                      <span className="text-slate-500" title={inq.branchCode}>
+                        · {branchNameByCode.get(inq.branchCode.toUpperCase()) || inq.branchCode}
+                      </span>
+                    ) : null}
                   </div>
                 </div>
               </div>
@@ -2693,7 +2735,10 @@ export default function InquiriesPage() {
                     </p>
                     <p><span className="font-medium text-slate-900">Gender:</span> {inq.gender || "-"}</p>
                     <p><span className="font-medium text-slate-900">Preferred channel:</span> {preferredChannelLabel || "-"}</p>
-                    <p><span className="font-medium text-slate-900">Branch:</span> {inq.branchCode || "-"}</p>
+                    <p>
+                      <span className="font-medium text-slate-900">Branch:</span>{" "}
+                      {inq.branchCode ? (branchNameByCode.get(inq.branchCode.toUpperCase()) || inq.branchCode) : "-"}
+                    </p>
                     <p><span className="font-medium text-slate-900">Address:</span> {inq.address || "-"}</p>
                   </div>
                 </div>

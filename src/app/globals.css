@@ -193,3 +193,45 @@ a {
   color: inherit;
   text-decoration: none;
 }
+
+/*
+ * Themed dark scrollbars — without this, browsers render their default
+ * light-grey scrollbars which break the dark portal theme (especially
+ * obvious on long pages and the inquiries / members tables).
+ * Firefox uses `scrollbar-*` properties; Webkit (Chrome / Safari / Edge)
+ * uses the ::-webkit-scrollbar pseudo-elements. Both are included.
+ *
+ * Wrapped in @layer base because Tailwind v4 with @import "tailwindcss"
+ * strips unlayered un-prefixed rules during purge. The base layer is
+ * loaded after preflight but before utilities, so the scrollbar styles
+ * cascade correctly without overriding anything Tailwind sets.
+ */
+@layer base {
+  * {
+    scrollbar-width: thin;
+    scrollbar-color: #2a3140 #0a0d12;
+  }
+
+  ::-webkit-scrollbar {
+    width: 10px;
+    height: 10px;
+  }
+
+  ::-webkit-scrollbar-track {
+    background: #0a0d12;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    background: #2a3140;
+    border-radius: 6px;
+    border: 2px solid #0a0d12;
+  }
+
+  ::-webkit-scrollbar-thumb:hover {
+    background: #3a4250;
+  }
+
+  ::-webkit-scrollbar-corner {
+    background: #0a0d12;
+  }
+}
