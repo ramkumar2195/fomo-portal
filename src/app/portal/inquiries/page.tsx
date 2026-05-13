@@ -2077,9 +2077,13 @@ export default function InquiriesPage() {
                       <td className="px-4 py-3 text-sm text-slate-300">
                         {formatDateDisplay(inquiry.inquiryAt || inquiry.createdAt)}
                       </td>
+                      {/* Notes — wrap to a max of 3 lines so the operator
+                          can read the actual comment without opening the
+                          row. Full text remains in the tooltip when it
+                          overflows the 3-line cap. */}
                       <td className="px-4 py-3 text-xs text-slate-300">
                         <p
-                          className="max-w-[18rem] truncate"
+                          className="line-clamp-3 max-w-[20rem] whitespace-pre-line break-words leading-snug"
                           title={followUpComment || undefined}
                         >
                           {followUpComment || <span className="text-slate-400">-</span>}
@@ -2207,10 +2211,9 @@ export default function InquiriesPage() {
                                   event.stopPropagation();
                                   void convertInquiry(inquiry);
                                 }}
-                                className="inline-flex h-7 items-center gap-1 rounded-md bg-emerald-600 px-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:bg-emerald-300"
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-emerald-600 text-white hover:bg-emerald-500 disabled:bg-emerald-300"
                               >
                                 <CheckCircle2 className="h-3.5 w-3.5" />
-                                <span>Convert</span>
                               </button>
                             ) : null}
                             {canUpdateInquiry ? (
