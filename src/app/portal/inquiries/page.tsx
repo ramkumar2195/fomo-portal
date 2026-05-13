@@ -359,6 +359,38 @@ function formatSourceLabel(source?: string): string {
   return normalizeInquirySourceLabel(source);
 }
 
+/**
+ * Friendly relative-day label for an ISO timestamp — used in the
+ * "Next Follow-up" column so the operator scans urgency at a glance.
+ * "today" / "in 3 days" / "5 days overdue" / "—".
+ * Always pairs with a `title` tooltip showing the full date so the
+ * exact value is one hover away.
+ */
+function formatRelativeDay(iso?: string | null): string {
+  if (!iso) return "—";
+  const target = new Date(iso);
+  if (Number.isNaN(target.getTime())) return "—";
+  const todayUTC = new Date();
+  todayUTC.setHours(0, 0, 0, 0);
+  const targetUTC = new Date(target);
+  targetUTC.setHours(0, 0, 0, 0);
+  const days = Math.round((targetUTC.getTime() - todayUTC.getTime()) / 86400000);
+  if (days === 0) return "today";
+  if (days === 1) return "tomorrow";
+  if (days === -1) return "yesterday";
+  if (days > 1) return `in ${days} days`;
+  return `${Math.abs(days)} days overdue`;
+}
+
+/** Convertibility dot — replaces the second pill in the Status cell. */
+function convertibilityDotClass(value?: string): string {
+  const v = (value || "").toUpperCase();
+  if (v === "HOT") return "bg-rose-400";
+  if (v === "WARM") return "bg-amber-400";
+  if (v === "COLD") return "bg-slate-400";
+  return "bg-slate-600";
+}
+
 function formatResponseTypeLabel(responseType?: InquiryResponseType): string {
   const value = (responseType || "").trim();
   if (!value) {
@@ -1973,9 +2005,27 @@ export default function InquiriesPage() {
                       .slice(0, 2)
                       .join("") || "?";
 
+                  // Phase 4 chips — derive labels for the inline tags
+                  // beneath the name. Only render chips when the field is
+                  // non-empty and (for customerStatus) different from the
+                  // default NEW_LEAD which carries no extra signal.
+                  const interestedInLabel = (inquiry.interestedIn || "").trim();
+                  const customerStatusValue = (inquiry.customerStatus || "").toUpperCase();
+                  const showCustomerStatus = customerStatusValue
+                    && customerStatusValue !== "NEW_LEAD";
+                  const customerStatusLabel = showCustomerStatus
+                    ? (CUSTOMER_STATUS_OPTIONS.find((o) => o.value === customerStatusValue)?.label
+                        || customerStatusValue.replace(/_/g, " "))
+                    : null;
+                  const inquiryCode = formatInquiryCode(inquiry.inquiryId, {
+                    branchCode: inquiry.branchCode,
+                    createdAt: inquiry.createdAt || inquiry.inquiryAt,
+                  });
+
                   return (
                     <tr
                       key={inquiry.inquiryId}
+                      title={inquiryCode}
                       className="cursor-pointer align-top border-l-2 border-transparent transition hover:border-[#c42924]/70 hover:bg-[#151e2b]"
                       onClick={() => openInquiryProfile(inquiry)}
                     >
@@ -1984,15 +2034,43 @@ export default function InquiriesPage() {
                           <div className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-white/[0.05] text-xs font-semibold text-slate-200">
                             {initials}
                           </div>
-                          <div>
+                          <div className="min-w-0">
                             <p className="font-semibold text-white">{inquiry.fullName || "-"}</p>
-                            <p className="text-xs text-slate-400">{inquiry.mobileNumber || "-"}</p>
-                            <p className="text-[11px] font-medium text-slate-400">
-                              {formatInquiryCode(inquiry.inquiryId, {
-                                branchCode: inquiry.branchCode,
-                                createdAt: inquiry.createdAt || inquiry.inquiryAt,
-                              })}
-                            </p>
+                            {/* Click-to-call: front desk often picks up the
+                                phone immediately. tel: link makes the
+                                mobile number a one-tap action while still
+                                rendering as plain text on desktop. */}
+                            {inquiry.mobileNumber ? (
+                              <a
+                                href={`tel:${inquiry.mobileNumber}`}
+                                onClick={(e) => e.stopPropagation()}
+                                className="text-xs text-slate-400 hover:text-sky-300"
+                              >
+                                {inquiry.mobileNumber}
+                              </a>
+                            ) : (
+                              <p className="text-xs text-slate-400">-</p>
+                            )}
+                            {(interestedInLabel || customerStatusLabel) ? (
+                              <div className="mt-1 flex flex-wrap gap-1">
+                                {interestedInLabel ? (
+                                  <span
+                                    className="rounded-md border border-sky-400/25 bg-sky-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-sky-100"
+                                    title={`Interested in ${interestedInLabel}`}
+                                  >
+                                    {interestedInLabel}
+                                  </span>
+                                ) : null}
+                                {customerStatusLabel ? (
+                                  <span
+                                    className="rounded-md border border-violet-400/25 bg-violet-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-violet-100"
+                                    title={`Customer status: ${customerStatusLabel}`}
+                                  >
+                                    {customerStatusLabel}
+                                  </span>
+                                ) : null}
+                              </div>
+                            ) : null}
                           </div>
                         </div>
                       </td>
@@ -2007,27 +2085,39 @@ export default function InquiriesPage() {
                           {followUpComment || <span className="text-slate-400">-</span>}
                         </p>
                       </td>
+                      {/* Source column — "Handled by" line dropped; that
+                          info already lives in the Assigned Staff column. */}
                       <td className="px-4 py-3 text-slate-200">
-                        <p>{formatSourceLabel(inquiry.promotionSource)}</p>
-                        <p className="text-xs text-slate-500">Handled by: {legacyHandledBy || assignedName}</p>
+                        {formatSourceLabel(inquiry.promotionSource) || (
+                          <span className="text-slate-500">-</span>
+                        )}
                       </td>
+                      {/* Status — single status pill, convertibility as a
+                          small coloured dot (HOT=rose, WARM=amber, COLD=
+                          slate), responseType as a thin secondary line.
+                          closeReason moved to tooltip so the row stays
+                          single-height. */}
                       <td className="px-4 py-3">
-                        <div className="flex flex-wrap items-center gap-2">
+                        <div className="flex items-center gap-2">
                           <span
-                            className={`rounded-full border px-2 py-1 text-xs font-semibold ${getStatusBadgeClass(
+                            className={`inline-flex items-center gap-1.5 rounded-full border px-2 py-1 text-xs font-semibold ${getStatusBadgeClass(
                               displayStatus,
                             )}`}
+                            title={inquiry.closeReason ? `Close reason: ${inquiry.closeReason}` : undefined}
                           >
+                            <span
+                              className={`h-2 w-2 shrink-0 rounded-full ${convertibilityDotClass(inquiry.convertibility)}`}
+                              aria-label={convertibilityTag.label !== "-" ? convertibilityTag.label : "Convertibility not set"}
+                              title={convertibilityTag.label !== "-" ? `${convertibilityTag.label} lead` : "Convertibility not set"}
+                            />
                             {formatStatusLabel(displayStatus)}
                           </span>
-                          <span
-                            className={`rounded-full border px-2 py-1 text-[11px] font-semibold ${convertibilityTag.className}`}
-                          >
-                            {convertibilityTag.label}
-                          </span>
-                          {inquiry.closeReason ? (
-                            <span className="rounded-full border border-slate-300 bg-slate-100 px-2 py-1 text-[11px] text-slate-700">
-                              Reason: {inquiry.closeReason}
+                          {(followUp?.responseType || inquiry.responseType) ? (
+                            <span
+                              className="text-[10px] font-medium uppercase tracking-wider text-slate-500"
+                              title="Last response type"
+                            >
+                              {formatResponseTypeLabel(followUp?.responseType || inquiry.responseType)}
                             </span>
                           ) : null}
                         </div>
@@ -2056,18 +2146,37 @@ export default function InquiriesPage() {
                           "-"
                         )}
                       </td>
+                      {/*
+                        Next Follow-up — relative format ("in 2 days",
+                        "5 days overdue", "today") so the operator can
+                        scan urgency without doing date math. Exact date
+                        + comment timestamp live in the title tooltip.
+                      */}
                       <td className="px-4 py-3 text-sm text-slate-300">
-                        {!isConverted && followUp?.dueAt
-                          ? formatDateDisplay(followUp.dueAt)
-                          : "-"}
-                        {!isConverted && followUp?.createdAt ? (
-                          <p className="mt-1 text-xs text-slate-500">
-                            Commented: {formatDateTimeDisplay(followUp.createdAt)}
-                          </p>
-                        ) : null}
-                        {!isConverted && followUp?.status ? (
-                          <p className="mt-1 text-xs font-medium text-slate-500">{followUp.status}</p>
-                        ) : null}
+                        {!isConverted && followUp?.dueAt ? (
+                          (() => {
+                            const relative = formatRelativeDay(followUp.dueAt);
+                            const isOverdue = relative.endsWith("overdue");
+                            const isToday = relative === "today";
+                            const tone = isOverdue
+                              ? "text-rose-300 font-semibold"
+                              : isToday
+                                ? "text-amber-300 font-semibold"
+                                : "text-slate-300";
+                            const tooltip = `Due ${formatDateDisplay(followUp.dueAt)}${
+                              followUp.createdAt
+                                ? ` · Last comment ${formatDateTimeDisplay(followUp.createdAt)}`
+                                : ""
+                            }`;
+                            return (
+                              <span className={tone} title={tooltip}>
+                                {relative}
+                              </span>
+                            );
+                          })()
+                        ) : (
+                          <span className="text-slate-500">—</span>
+                        )}
                       </td>
                       {/*
                         Phase B refactor — actions compressed from 6 stacked
