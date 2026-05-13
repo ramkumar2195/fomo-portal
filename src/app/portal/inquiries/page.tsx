@@ -2,6 +2,14 @@
 
 import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter, useSearchParams } from "next/navigation";
+import {
+  CheckCircle2,
+  History,
+  MessageSquareText,
+  PencilLine,
+  Plus,
+  XCircle,
+} from "lucide-react";
 import { SectionCard } from "@/components/common/section-card";
 import { ToastBanner } from "@/components/common/toast-banner";
 import { useAuth } from "@/contexts/auth-context";
@@ -1612,10 +1620,33 @@ export default function InquiriesPage() {
     <div className="space-y-8">
       {toast ? <ToastBanner kind={toast.kind} message={toast.message} onClose={() => setToast(null)} /> : null}
 
+      {/*
+        Phase B refactor — page header now carries the only summary stat
+        (conversion %), and the heavy Enquiry Analysis card is gone. The
+        dashboard CRM section is the single source of truth for funnel +
+        source charts; this page is for managing individual enquiries.
+      */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
-        <div>
-          <h1 className="text-2xl font-bold text-gray-900">Enquiry Management</h1>
-          <p className="text-gray-500">Track and manage potential members.</p>
+        <div className="flex flex-wrap items-center gap-4">
+          <div>
+            <h1 className="text-2xl font-bold text-gray-900">Enquiry Management</h1>
+            <p className="text-gray-500">Track and manage potential members.</p>
+          </div>
+          <div className="hidden sm:block h-10 w-px bg-white/10" aria-hidden />
+          <div className="flex items-center gap-3 rounded-xl border border-white/10 bg-white/[0.03] px-3 py-2">
+            <div>
+              <p className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400">Conversion</p>
+              <p className="text-xl font-bold text-emerald-300 leading-none">
+                {inquiryAnalysis.conversionRate}%
+              </p>
+            </div>
+            <div className="h-8 w-px bg-white/10" aria-hidden />
+            <p className="text-xs text-slate-400">
+              <span className="font-semibold text-white">{inquiryAnalysis.convertedCount.toLocaleString()}</span> of{" "}
+              <span className="font-semibold text-white">{inquiryAnalysis.total.toLocaleString()}</span>{" "}
+              <span className="text-slate-500">· {inquiryAnalysis.openCount.toLocaleString()} open</span>
+            </p>
+          </div>
         </div>
         <button
           type="button"
@@ -1625,82 +1656,6 @@ export default function InquiriesPage() {
           Add Enquiry
         </button>
       </div>
-
-      <SectionCard title="Enquiry Analysis" subtitle="Lead status mix, top sources, and enquiry-to-member conversion">
-        <div className="grid gap-4 lg:grid-cols-3">
-          <div className="rounded-xl border border-white/8 bg-white/[0.03] p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Status Overview</p>
-            {statusOverview.total === 0 ? (
-              <p className="mt-3 text-sm text-slate-400">No enquiry status data yet.</p>
-            ) : (
-              <div className="mt-3 space-y-2">
-                {statusOverview.series.map((segment) => (
-                  <div key={segment.label}>
-                    <div className="mb-1 flex items-center justify-between text-xs text-slate-300">
-                      <span>{segment.label}</span>
-                      <span>{segment.count}</span>
-                    </div>
-                    <div className="h-2 rounded-full bg-white/[0.08]">
-                      <div
-                        className="h-2 rounded-full"
-                        style={{
-                          width: `${Math.max(4, (segment.count / statusOverview.maxCount) * 100)}%`,
-                          backgroundColor: segment.color,
-                        }}
-                      />
-                    </div>
-                  </div>
-                ))}
-              </div>
-            )}
-          </div>
-
-          <div className="rounded-xl border border-white/8 bg-white/[0.03] p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Top Sources</p>
-            {sourcePie.total === 0 ? (
-              <p className="mt-3 text-sm text-slate-400">No source data yet.</p>
-            ) : (
-              <div className="mt-3 flex items-center gap-4">
-                <div className="relative h-28 w-28 rounded-full" style={{ background: sourcePie.gradient }}>
-                  <div className="absolute inset-4 rounded-full bg-[#131925]" />
-                </div>
-                <div className="space-y-1 text-xs text-slate-300">
-                  {sourcePie.segments.map((segment) => (
-                    <div key={segment.label} className="flex items-center gap-2">
-                      <span className="inline-block h-2.5 w-2.5 rounded-full" style={{ backgroundColor: segment.color }} />
-                      <span>
-                        {segment.label}: {segment.value} ({segment.percent}%)
-                      </span>
-                    </div>
-                  ))}
-                </div>
-              </div>
-            )}
-          </div>
-
-          <div className="rounded-xl border border-white/8 bg-white/[0.03] p-4">
-            <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Enquiry to Member Conversion</p>
-            <div className="mt-4">
-              <p className="text-3xl font-bold text-white">{inquiryAnalysis.conversionRate}%</p>
-              <p className="mt-1 text-xs text-slate-400">
-                Converted {inquiryAnalysis.convertedCount} of {inquiryAnalysis.total} enquiries
-              </p>
-              <div className="mt-3 h-2.5 rounded-full bg-white/[0.08]">
-                <div
-                  className="h-2.5 rounded-full bg-emerald-500"
-                  style={{ width: `${Math.max(0, Math.min(100, inquiryAnalysis.conversionRate))}%` }}
-                />
-              </div>
-              <div className="mt-3 grid grid-cols-2 gap-2 text-xs">
-                <div className="rounded-md border border-emerald-400/20 bg-emerald-500/10 px-2 py-1 text-emerald-200">
-                  Converted: {inquiryAnalysis.convertedCount}
-                </div>
-                <div className="rounded-md border border-white/8 bg-white/[0.05] px-2 py-1 text-slate-200">Open: {inquiryAnalysis.openCount}</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </SectionCard>
 
       <SectionCard
         title="Enquiry Table"
@@ -1886,6 +1841,67 @@ export default function InquiriesPage() {
           ) : null}
         </form>
 
+        {/*
+          Status filter chip strip — replaces the deleted Status Overview
+          chart. Each chip shows the live count and acts as a one-click
+          status filter; clicking the active chip clears the filter back
+          to All. Counts come from the same inquiryAnalysis memo that
+          fed the old chart, so no extra API calls.
+        */}
+        <div className="mt-3 flex flex-wrap items-center gap-1.5">
+          <button
+            type="button"
+            onClick={() => {
+              setCurrentPage(1);
+              setFilters((prev) => ({ ...prev, status: "" }));
+            }}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition ${
+              filters.status === ""
+                ? "border-rose-300/60 bg-rose-500/20 text-white ring-2 ring-rose-400/40"
+                : "border-white/10 bg-white/[0.03] text-slate-300 hover:bg-white/[0.06]"
+            }`}
+          >
+            <span className="text-sm font-bold tabular-nums">{inquiryAnalysis.total.toLocaleString()}</span>
+            <span className="uppercase tracking-wider text-[10px]">All</span>
+          </button>
+          {inquiryAnalysis.statusSeries.map((segment) => {
+            const isActive = filters.status === segment.key;
+            const isDim = segment.count === 0 && !isActive;
+            // Closed / lost statuses use the rose accent; everything else
+            // uses sky so the operator can scan urgency at a glance.
+            const urgent = segment.key === "NOT_INTERESTED" || segment.key === "LOST";
+            const accentActive = urgent
+              ? "border-rose-300/60 bg-rose-500/20 text-white ring-2 ring-rose-400/40"
+              : "border-sky-300/60 bg-sky-500/20 text-white ring-2 ring-sky-400/40";
+            const accentIdle = segment.count > 0
+              ? urgent
+                ? "border-rose-400/25 bg-rose-500/10 text-rose-100 hover:bg-rose-500/15"
+                : "border-sky-400/25 bg-sky-500/10 text-sky-100 hover:bg-sky-500/15"
+              : "border-white/10 bg-white/[0.03] text-slate-500 hover:bg-white/[0.06]";
+            return (
+              <button
+                key={segment.key}
+                type="button"
+                onClick={() => {
+                  if (isDim) return;
+                  setCurrentPage(1);
+                  setFilters((prev) => ({
+                    ...prev,
+                    status: isActive ? "" : segment.key,
+                  }));
+                }}
+                className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-xs font-semibold transition ${
+                  isActive ? accentActive : accentIdle
+                }`}
+                title={`${segment.label} (${segment.count})`}
+              >
+                <span className="text-sm font-bold tabular-nums">{segment.count}</span>
+                <span className="uppercase tracking-wider text-[10px]">{segment.label}</span>
+              </button>
+            );
+          })}
+        </div>
+
         {error ? <p className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p> : null}
 
         <div className="mt-4 overflow-x-auto rounded-xl border border-white/10 bg-[#101722]">
@@ -1984,8 +2000,11 @@ export default function InquiriesPage() {
                         {formatDateDisplay(inquiry.inquiryAt || inquiry.createdAt)}
                       </td>
                       <td className="px-4 py-3 text-xs text-slate-300">
-                        <p className="max-w-[18rem] truncate">
-                        {followUpComment || <span className="text-slate-400">-</span>}
+                        <p
+                          className="max-w-[18rem] truncate"
+                          title={followUpComment || undefined}
+                        >
+                          {followUpComment || <span className="text-slate-400">-</span>}
                         </p>
                       </td>
                       <td className="px-4 py-3 text-slate-200">
@@ -2050,97 +2069,113 @@ export default function InquiriesPage() {
                           <p className="mt-1 text-xs font-medium text-slate-500">{followUp.status}</p>
                         ) : null}
                       </td>
+                      {/*
+                        Phase B refactor — actions compressed from 6 stacked
+                        text buttons (~150 px row height) into icon-only
+                        buttons in a single 32-px row. Each button carries
+                        a title tooltip so the operator still discovers what
+                        the icon does on hover. Primary action is "Convert"
+                        (emerald) when eligible; the others are neutral.
+                      */}
                       <td className="px-4 py-3">
-                        <div className="space-y-2">
-                          <div className="flex flex-wrap gap-2">
-                            {isConverted || isClosed ? (
-                              <p className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-500">
-                                No actions
-                              </p>
-                            ) : (
-                              <>
-                                {!canUpdateInquiry && !canConvertInquiry ? (
-                                  <p className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-500">
-                                    No actions
-                                  </p>
-                                ) : null}
-                                {canUpdateInquiry ? (
-                                  <button
-                                    type="button"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      openInquiryEditor(inquiry);
-                                    }}
-                                    className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-xs font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.08]"
-                                  >
-                                    Edit
-                                  </button>
-                                ) : null}
-                                {canConvertInquiry ? (
-                                  <button
-                                    type="button"
-                                    disabled={isConverting}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      void convertInquiry(inquiry);
-                                    }}
-                                    className="rounded-lg bg-emerald-600 px-2 py-1 text-xs font-semibold text-white hover:bg-emerald-500 disabled:bg-emerald-300"
-                                  >
-                                    Convert
-                                  </button>
-                                ) : null}
-                                {canUpdateInquiry ? (
-                                  <button
-                                    type="button"
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      void openFollowUpHistory(inquiry);
-                                    }}
-                                    className="rounded-lg border border-white/10 bg-white/[0.04] px-2 py-1 text-xs font-semibold text-slate-200 transition hover:border-white/20 hover:bg-white/[0.08]"
-                                  >
-                                    Follow-up History
-                                  </button>
-                                ) : null}
-                                {canUpdateInquiry ? (
-                                  <button
-                                    type="button"
-                                    disabled={isConverting}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      void openQuickFollowUp(inquiry);
-                                    }}
-                                    className="rounded-lg border border-sky-500/30 bg-sky-500/10 px-2 py-1 text-xs font-semibold text-sky-200 transition hover:bg-sky-500/15 disabled:opacity-60"
-                                  >
-                                    Add Follow-up
-                                  </button>
-                                ) : null}
-                                <button
-                                  type="button"
-                                  onClick={(event) => {
-                                    event.stopPropagation();
-                                    sendWhatsAppMessage(inquiry);
-                                  }}
-                                  className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 px-2 py-1 text-xs font-semibold text-emerald-200 transition hover:bg-emerald-500/15"
-                                >
-                                  WhatsApp
-                                </button>
-                                {canUpdateInquiry ? (
-                                  <button
-                                    type="button"
-                                    disabled={isConverting}
-                                    onClick={(event) => {
-                                      event.stopPropagation();
-                                      openCloseInquiry(inquiry);
-                                    }}
-                                    className="rounded-lg border border-rose-500/30 bg-rose-500/10 px-2 py-1 text-xs font-semibold text-rose-200 transition hover:bg-rose-500/15 disabled:opacity-50"
-                                  >
-                                    {isConverting ? "Working..." : "Close"}
-                                  </button>
-                                ) : null}
-                              </>
-                            )}
+                        {isConverted || isClosed ? (
+                          <p className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-500">
+                            No actions
+                          </p>
+                        ) : !canUpdateInquiry && !canConvertInquiry ? (
+                          <p className="rounded-lg border border-slate-200 bg-slate-50 px-2 py-1 text-xs font-medium text-slate-500">
+                            No actions
+                          </p>
+                        ) : (
+                          <div className="flex items-center gap-1">
+                            {canConvertInquiry ? (
+                              <button
+                                type="button"
+                                disabled={isConverting}
+                                title="Convert to member"
+                                aria-label="Convert to member"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void convertInquiry(inquiry);
+                                }}
+                                className="inline-flex h-7 items-center gap-1 rounded-md bg-emerald-600 px-2 text-xs font-semibold text-white hover:bg-emerald-500 disabled:bg-emerald-300"
+                              >
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                <span>Convert</span>
+                              </button>
+                            ) : null}
+                            {canUpdateInquiry ? (
+                              <button
+                                type="button"
+                                disabled={isConverting}
+                                title="Add follow-up"
+                                aria-label="Add follow-up"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void openQuickFollowUp(inquiry);
+                                }}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-sky-500/30 bg-sky-500/10 text-sky-200 transition hover:bg-sky-500/15 disabled:opacity-60"
+                              >
+                                <Plus className="h-3.5 w-3.5" />
+                              </button>
+                            ) : null}
+                            {canUpdateInquiry ? (
+                              <button
+                                type="button"
+                                title="Follow-up history"
+                                aria-label="Follow-up history"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  void openFollowUpHistory(inquiry);
+                                }}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-white/[0.04] text-slate-200 transition hover:bg-white/[0.08]"
+                              >
+                                <History className="h-3.5 w-3.5" />
+                              </button>
+                            ) : null}
+                            <button
+                              type="button"
+                              title="Send WhatsApp message"
+                              aria-label="Send WhatsApp message"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                sendWhatsAppMessage(inquiry);
+                              }}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-200 transition hover:bg-emerald-500/15"
+                            >
+                              <MessageSquareText className="h-3.5 w-3.5" />
+                            </button>
+                            {canUpdateInquiry ? (
+                              <button
+                                type="button"
+                                title="Edit enquiry"
+                                aria-label="Edit enquiry"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openInquiryEditor(inquiry);
+                                }}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-white/[0.04] text-slate-200 transition hover:bg-white/[0.08]"
+                              >
+                                <PencilLine className="h-3.5 w-3.5" />
+                              </button>
+                            ) : null}
+                            {canUpdateInquiry ? (
+                              <button
+                                type="button"
+                                disabled={isConverting}
+                                title={isConverting ? "Working…" : "Close enquiry"}
+                                aria-label="Close enquiry"
+                                onClick={(event) => {
+                                  event.stopPropagation();
+                                  openCloseInquiry(inquiry);
+                                }}
+                                className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-rose-500/30 bg-rose-500/10 text-rose-200 transition hover:bg-rose-500/15 disabled:opacity-50"
+                              >
+                                <XCircle className="h-3.5 w-3.5" />
+                              </button>
+                            ) : null}
                           </div>
-                        </div>
+                        )}
                       </td>
                     </tr>
                   );
