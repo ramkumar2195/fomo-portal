@@ -1753,6 +1753,10 @@ export default function InquiriesPage() {
     );
   }
 
+  // Converted view toggle — when filters.status === "CONVERTED" the
+  // table swaps to a leaner column set + member-focused actions.
+  const isConvertedView = filters.status === "CONVERTED";
+
   return (
     <div className="space-y-8">
       {toast ? <ToastBanner kind={toast.kind} message={toast.message} onClose={() => setToast(null)} /> : null}
@@ -2083,31 +2087,53 @@ export default function InquiriesPage() {
 
         {error ? <p className="mt-3 rounded-lg border border-rose-500/30 bg-rose-500/10 px-3 py-2 text-sm text-rose-200">{error}</p> : null}
 
+        {/*
+          When the CONVERTED chip is active, the table switches to a
+          "Converted view" — fewer columns + member-focused actions —
+          since these rows are no longer enquiries that need triage,
+          they're members who already paid. Status pill, Convertibility
+          dot, Next Follow-up column, and enquiry-stage action buttons
+          (Convert / Edit / Close / Reassign) all drop. In their place:
+          Member Code (clickable to profile), Converted On date,
+          Closed By (the staff who landed the sale), and a "View
+          Member" + "WhatsApp" action pair.
+        */}
         <div className="mt-4 overflow-x-auto rounded-xl border border-white/10 bg-[#101722]">
           <table className="min-w-full text-sm">
             <thead>
-              <tr className="bg-white/[0.03] text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
-                <th className="px-4 py-3">Name</th>
-                <th className="px-4 py-3">Enquiry Date</th>
-                <th className="px-4 py-3">Notes</th>
-                <th className="px-4 py-3">Source</th>
-                <th className="px-4 py-3">Status</th>
-                <th className="px-4 py-3">Assigned Staff</th>
-                <th className="px-4 py-3">Next Follow-up</th>
-                <th className="px-4 py-3">Actions</th>
-              </tr>
+              {isConvertedView ? (
+                <tr className="bg-white/[0.03] text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  <th className="px-4 py-3">Member</th>
+                  <th className="px-4 py-3">Mobile</th>
+                  <th className="px-4 py-3">Converted On</th>
+                  <th className="px-4 py-3">Source</th>
+                  <th className="px-4 py-3">Closed By</th>
+                  <th className="px-4 py-3">Actions</th>
+                </tr>
+              ) : (
+                <tr className="bg-white/[0.03] text-left text-xs font-semibold uppercase tracking-wide text-slate-400">
+                  <th className="px-4 py-3">Name</th>
+                  <th className="px-4 py-3">Enquiry Date</th>
+                  <th className="px-4 py-3">Notes</th>
+                  <th className="px-4 py-3">Source</th>
+                  <th className="px-4 py-3">Status</th>
+                  <th className="px-4 py-3">Assigned Staff</th>
+                  <th className="px-4 py-3">Next Follow-up</th>
+                  <th className="px-4 py-3">Actions</th>
+                </tr>
+              )}
             </thead>
             <tbody className="divide-y divide-white/[0.06]">
               {loadingInquiries ? (
                 <tr>
-                  <td className="px-4 py-4 text-slate-400" colSpan={8}>
+                  <td className="px-4 py-4 text-slate-400" colSpan={isConvertedView ? 6 : 8}>
                     Loading enquiries...
                   </td>
                 </tr>
               ) : paginatedRows.length === 0 ? (
                 <tr>
-                  <td className="px-4 py-4 text-slate-400" colSpan={8}>
-                    No enquiries found
+                  <td className="px-4 py-4 text-slate-400" colSpan={isConvertedView ? 6 : 8}>
+                    {isConvertedView ? "No converted enquiries in this scope." : "No enquiries found"}
                   </td>
                 </tr>
               ) : (
@@ -2168,6 +2194,110 @@ export default function InquiriesPage() {
                     branchCode: inquiry.branchCode,
                     createdAt: inquiry.createdAt || inquiry.inquiryAt,
                   });
+
+                  // Converted view — render a leaner row with member-focused
+                  // columns. The full Member profile click-through happens
+                  // via the View Member button; the row itself stays
+                  // clickable (opens the existing popup as a quick peek)
+                  // but the popup-vs-profile choice is now explicit.
+                  if (isConvertedView) {
+                    const memberId = inquiry.memberId ? Number(inquiry.memberId) : null;
+                    const memberHref = memberId ? `/admin/members/${memberId}` : null;
+                    const closedByName = inquiry.clientRepStaffId
+                      ? (staffNameById.get(Number(inquiry.clientRepStaffId))
+                          || legacyClientRep || legacyHandledBy
+                          || `Staff #${inquiry.clientRepStaffId}`)
+                      : (legacyClientRep || legacyHandledBy || "-");
+                    const convertedOnIso = inquiry.updatedAt || inquiry.createdAt;
+                    return (
+                      <tr
+                        key={inquiry.inquiryId}
+                        title={inquiryCode}
+                        className="cursor-pointer align-top border-l-2 border-transparent transition hover:border-[#c42924]/70 hover:bg-[#151e2b]"
+                        onClick={() => openInquiryProfile(inquiry)}
+                      >
+                        {/* Member name + code chip */}
+                        <td className="px-4 py-3">
+                          <div className="flex items-start gap-3">
+                            <div className="flex h-9 w-9 items-center justify-center rounded-full border border-white/10 bg-emerald-500/15 text-xs font-semibold text-emerald-200">
+                              {initials}
+                            </div>
+                            <div className="min-w-0">
+                              <p className="font-semibold text-white">{inquiry.fullName || "-"}</p>
+                              {memberHref ? (
+                                <a
+                                  href={memberHref}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="mt-0.5 inline-block rounded-md border border-emerald-400/30 bg-emerald-500/10 px-1.5 py-0.5 text-[10px] font-semibold text-emerald-200 hover:bg-emerald-500/15"
+                                >
+                                  FOMO-{memberId}
+                                </a>
+                              ) : (
+                                <span className="text-[11px] text-slate-500">No member link</span>
+                              )}
+                            </div>
+                          </div>
+                        </td>
+                        {/* Mobile (tel:) */}
+                        <td className="px-4 py-3 text-sm">
+                          {inquiry.mobileNumber ? (
+                            <a
+                              href={`tel:${inquiry.mobileNumber}`}
+                              onClick={(e) => e.stopPropagation()}
+                              className="text-slate-300 hover:text-sky-300"
+                            >
+                              {inquiry.mobileNumber}
+                            </a>
+                          ) : (
+                            <span className="text-slate-500">-</span>
+                          )}
+                        </td>
+                        {/* Converted On */}
+                        <td className="px-4 py-3 text-sm text-slate-300">
+                          {formatDateDisplay(convertedOnIso)}
+                        </td>
+                        {/* Source */}
+                        <td className="px-4 py-3 text-slate-200">
+                          {formatSourceLabel(inquiry.promotionSource) || (
+                            <span className="text-slate-500">-</span>
+                          )}
+                        </td>
+                        {/* Closed By */}
+                        <td className="px-4 py-3 text-sm text-slate-300">
+                          {closedByName}
+                        </td>
+                        {/* Actions: View Member + WhatsApp */}
+                        <td className="px-4 py-3">
+                          <div className="flex items-center gap-1">
+                            {memberHref ? (
+                              <a
+                                href={memberHref}
+                                onClick={(e) => e.stopPropagation()}
+                                title="Open member profile"
+                                aria-label="Open member profile"
+                                className="inline-flex h-7 items-center gap-1 rounded-md bg-emerald-600 px-2 text-xs font-semibold text-white hover:bg-emerald-500"
+                              >
+                                <CheckCircle2 className="h-3.5 w-3.5" />
+                                <span>View</span>
+                              </a>
+                            ) : null}
+                            <button
+                              type="button"
+                              title="Send WhatsApp message"
+                              aria-label="Send WhatsApp message"
+                              onClick={(event) => {
+                                event.stopPropagation();
+                                sendWhatsAppMessage(inquiry);
+                              }}
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-emerald-500/30 bg-emerald-500/10 text-emerald-200 transition hover:bg-emerald-500/15"
+                            >
+                              <MessageSquareText className="h-3.5 w-3.5" />
+                            </button>
+                          </div>
+                        </td>
+                      </tr>
+                    );
+                  }
 
                   return (
                     <tr
