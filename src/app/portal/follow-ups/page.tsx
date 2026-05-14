@@ -388,25 +388,40 @@ export default function FollowUpsPage() {
         page += 1;
       }
 
+      /*
+        F5 — perf. The previous version paginated through EVERY inquiry
+        in the branch (1053+ rows fetched in 6+ HTTP calls in batches
+        of 200) just to enrich the ~115 follow-ups visible on the
+        page. Now we only fetch the inquiries that are actually
+        referenced by the loaded follow-ups — typically <120 — via
+        parallel `getInquiryById` calls. Chunk to 25 at a time so we
+        don't hammer the backend with one giant burst.
+      */
       const inquiryIndex: Record<number, InquiryRecord> = {};
-      let inquiryPage = 0;
-      while (true) {
-        const response = await subscriptionService.searchInquiriesPaged(
-          token,
-          {
-            ...(effectiveBranchId ? { branchId: effectiveBranchId } : {}),
-            ...(selectedBranchCode ? { branchCode: selectedBranchCode } : {}),
-          },
-          inquiryPage,
-          200,
+      const referencedInquiryIds = Array.from(
+        new Set(
+          aggregatedFollowUps
+            .map((f) => f.inquiryId)
+            .filter((id): id is number => typeof id === "number" && id > 0),
+        ),
+      );
+      const INQUIRY_FETCH_CONCURRENCY = 25;
+      for (let i = 0; i < referencedInquiryIds.length; i += INQUIRY_FETCH_CONCURRENCY) {
+        const slice = referencedInquiryIds.slice(i, i + INQUIRY_FETCH_CONCURRENCY);
+        const results = await Promise.all(
+          slice.map(async (id) => {
+            try {
+              return await subscriptionService.getInquiryById(token, id);
+            } catch {
+              return null;
+            }
+          }),
         );
-        response.content.forEach((inquiry) => {
-          inquiryIndex[inquiry.inquiryId] = inquiry;
-        });
-        if (response.last || inquiryPage >= response.totalPages - 1) {
-          break;
+        for (const inquiry of results) {
+          if (inquiry && inquiry.inquiryId) {
+            inquiryIndex[inquiry.inquiryId] = inquiry;
+          }
         }
-        inquiryPage += 1;
       }
 
       const referencedStaffIds = new Set<string>();
@@ -838,65 +853,60 @@ export default function FollowUpsPage() {
 
       {error ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
 
-      <div className="flex flex-wrap items-center gap-3">
-        <div className="inline-flex rounded-xl border border-white/10 bg-white/[0.03] p-1">
-          {[
-            { value: "ALL", label: "All Follow-ups" },
-            { value: "EXPECTED", label: "Upcoming" },
-            { value: "DONE", label: "Done" },
-          ].map((option) => {
-            const active = dashboardView === option.value;
-            return (
-              <button
-                key={option.value}
-                type="button"
-                onClick={() => setDashboardView(option.value as DashboardView)}
-                className={`rounded-lg px-3 py-2 text-xs font-semibold transition ${active ? "bg-[#c42924] text-white" : "text-slate-300 hover:bg-white/[0.05]"}`}
-              >
-                {option.label}
-              </button>
-            );
-          })}
-        </div>
-      </div>
-
       {/*
-        F2 — KPI strip compressed from 5 chunky cards (each ~80 px tall)
-        into a single chip row (~36 px). Same numbers, fraction of the
-        vertical real estate, matches the dashboard Quick Actions chip
-        idiom so the two CRM pages feel cohesive.
-        F4 — "Expected" relabelled to "Upcoming" since the field means
-        "scheduled in the future, not yet overdue, not done" — operators
-        kept confusing the old word with "expected revenue / amount".
+        F6 — combined navigation. The 3-tab row (All / Upcoming / Done)
+        and the 5-card KPI strip are merged into ONE clickable chip
+        strip. Each chip both DISPLAYS the count AND acts as a filter
+        for the dashboardView state. The "Total" chip maps to ALL, the
+        "Done" chip to DONE, etc. This collapses two separate UI
+        controls into one and saves another ~40 px of vertical space.
       */}
-      <div className="flex flex-wrap gap-2">
-        {[
-          { label: "Total", value: counts.total, tone: "neutral" },
-          { label: "Upcoming", value: counts.expected, tone: "sky" },
-          { label: "Due today", value: counts.dueToday, tone: "amber" },
-          { label: "Overdue", value: counts.overdue, tone: "rose" },
-          { label: "Done", value: counts.completed, tone: "emerald" },
-        ].map((item) => {
+      <div className="flex flex-wrap gap-2" role="tablist" aria-label="Follow-up state">
+        {([
+          { label: "Total", view: "ALL", value: counts.total, tone: "neutral" },
+          { label: "Upcoming", view: "EXPECTED", value: counts.expected, tone: "sky" },
+          { label: "Due today", view: "ALL", value: counts.dueToday, tone: "amber" },
+          { label: "Overdue", view: "ALL", value: counts.overdue, tone: "rose" },
+          { label: "Done", view: "DONE", value: counts.completed, tone: "emerald" },
+        ] as const).map((item) => {
           const isZero = !item.value;
-          const accent = isZero
-            ? "border-white/10 bg-white/[0.03] text-slate-400"
-            : item.tone === "rose"
-              ? "border-rose-400/30 bg-rose-500/10 text-rose-100"
-              : item.tone === "amber"
-                ? "border-amber-400/30 bg-amber-500/10 text-amber-100"
-                : item.tone === "emerald"
-                  ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
-                  : item.tone === "sky"
-                    ? "border-sky-400/30 bg-sky-500/10 text-sky-100"
-                    : "border-white/15 bg-white/[0.06] text-slate-200";
+          const isActive = dashboardView === item.view;
+          // tone classes live here so we can change weight when active.
+          // Active: filled + ring; idle non-zero: tinted; idle zero: gray.
+          const tone = item.tone;
+          const cls = isActive
+            ? tone === "rose"
+              ? "border-rose-300/60 bg-rose-500/20 text-white ring-2 ring-rose-400/40"
+              : tone === "amber"
+                ? "border-amber-300/60 bg-amber-500/20 text-white ring-2 ring-amber-400/40"
+                : tone === "emerald"
+                  ? "border-emerald-300/60 bg-emerald-500/20 text-white ring-2 ring-emerald-400/40"
+                  : tone === "sky"
+                    ? "border-sky-300/60 bg-sky-500/20 text-white ring-2 ring-sky-400/40"
+                    : "border-white/30 bg-white/[0.12] text-white ring-2 ring-white/30"
+            : isZero
+              ? "border-white/10 bg-white/[0.03] text-slate-400 hover:bg-white/[0.06]"
+              : tone === "rose"
+                ? "border-rose-400/30 bg-rose-500/10 text-rose-100 hover:bg-rose-500/15"
+                : tone === "amber"
+                  ? "border-amber-400/30 bg-amber-500/10 text-amber-100 hover:bg-amber-500/15"
+                  : tone === "emerald"
+                    ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100 hover:bg-emerald-500/15"
+                    : tone === "sky"
+                      ? "border-sky-400/30 bg-sky-500/10 text-sky-100 hover:bg-sky-500/15"
+                      : "border-white/15 bg-white/[0.06] text-slate-200 hover:bg-white/[0.10]";
           return (
-            <span
+            <button
               key={item.label}
-              className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs ${accent}`}
+              type="button"
+              role="tab"
+              aria-selected={isActive}
+              onClick={() => setDashboardView(item.view as DashboardView)}
+              className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs transition ${cls}`}
             >
               <span className="text-sm font-bold tabular-nums">{item.value}</span>
               <span className="font-semibold uppercase tracking-wider text-[10px]">{item.label}</span>
-            </span>
+            </button>
           );
         })}
       </div>
@@ -972,88 +982,109 @@ export default function FollowUpsPage() {
           />
 
           {filtersOpen ? (
-          <>
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-4">
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Follow-up Type
-              <select value={followUpTypeFilter} onChange={(event) => setFollowUpTypeFilter(event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60">
-                <option value="ALL">All Follow-up Types</option>
-                {followUpTypeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
-            </label>
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Assigned To
-              <select value={assignedToFilter} onChange={(event) => setAssignedToFilter(event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60">
-                <option value="ALL">All Assignees</option>
-                {assignedToOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
-            </label>
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Scheduled By
-              <select value={scheduledByFilter} onChange={(event) => setScheduledByFilter(event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60">
-                <option value="ALL">All Schedulers</option>
-                {scheduledByOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
-            </label>
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Client Type
-              <select value={clientTypeFilter} onChange={(event) => setClientTypeFilter(event.target.value as ClientTypeFilter)} className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60">
-                <option value="ALL">All Clients</option>
-                <option value="INQUIRY">Inquiry</option>
-                <option value="MEMBER">Member</option>
-              </select>
-            </label>
-          </div>
-
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2 xl:grid-cols-5">
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Lead Status
-              <select value={leadStatusFilter} onChange={(event) => setLeadStatusFilter(event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60">
-                <option value="ALL">All Statuses</option>
-                {leadStatusOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
-            </label>
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Response
-              <select value={responseTypeFilter} onChange={(event) => setResponseTypeFilter(event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60">
-                <option value="ALL">All Responses</option>
-                {responseTypeOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
-            </label>
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Convertibility
-              <select value={convertibilityFilter} onChange={(event) => setConvertibilityFilter(event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60">
-                <option value="ALL">All Convertibility</option>
-                {convertibilityOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
-            </label>
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Gender
-              <select value={genderFilter} onChange={(event) => setGenderFilter(event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60">
-                <option value="ALL">All Genders</option>
-                {genderOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
-            </label>
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              Client Rep
-              <select value={clientRepFilter} onChange={(event) => setClientRepFilter(event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60">
-                <option value="ALL">All Client Reps</option>
-                {clientRepOptions.map((option) => <option key={option} value={option}>{option}</option>)}
-              </select>
-            </label>
-          </div>
-
-          <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              From Date
-              <input type="date" value={fromDate} onChange={(event) => setFromDate(event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60" />
-            </label>
-            <label className="space-y-1 text-xs font-semibold uppercase tracking-[0.18em] text-slate-400">
-              To Date
-              <input type="date" value={toDate} onChange={(event) => setToDate(event.target.value)} className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none focus:border-[#c42924]/60" />
-            </label>
-          </div>
-          </>
+            /*
+              F3 — filter panel polish. Was 3 separate grids (4/5/2) with
+              chunky py-3 inputs. Now: single 4-col grid, every filter h-9
+              with a uniform 10-px uppercase label above. 11 filter
+              dropdowns + a 12th "Clear Filters" cell fit cleanly in 3
+              rows of 4. Matches the Enquiries-page filter convention.
+            */
+            <div className="grid gap-x-3 gap-y-3 md:grid-cols-2 xl:grid-cols-4">
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Follow-up Type</label>
+                <select value={followUpTypeFilter} onChange={(e) => setFollowUpTypeFilter(e.target.value)} className="h-9 w-full rounded-lg border border-white/10 bg-[#0f141d] px-2 text-sm text-white">
+                  <option value="ALL">All</option>
+                  {followUpTypeOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Client Type</label>
+                <select value={clientTypeFilter} onChange={(e) => setClientTypeFilter(e.target.value as ClientTypeFilter)} className="h-9 w-full rounded-lg border border-white/10 bg-[#0f141d] px-2 text-sm text-white">
+                  <option value="ALL">All</option>
+                  <option value="INQUIRY">Inquiry</option>
+                  <option value="MEMBER">Member</option>
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Lead Status</label>
+                <select value={leadStatusFilter} onChange={(e) => setLeadStatusFilter(e.target.value)} className="h-9 w-full rounded-lg border border-white/10 bg-[#0f141d] px-2 text-sm text-white">
+                  <option value="ALL">All</option>
+                  {leadStatusOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Response</label>
+                <select value={responseTypeFilter} onChange={(e) => setResponseTypeFilter(e.target.value)} className="h-9 w-full rounded-lg border border-white/10 bg-[#0f141d] px-2 text-sm text-white">
+                  <option value="ALL">All</option>
+                  {responseTypeOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Convertibility</label>
+                <select value={convertibilityFilter} onChange={(e) => setConvertibilityFilter(e.target.value)} className="h-9 w-full rounded-lg border border-white/10 bg-[#0f141d] px-2 text-sm text-white">
+                  <option value="ALL">All</option>
+                  {convertibilityOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Gender</label>
+                <select value={genderFilter} onChange={(e) => setGenderFilter(e.target.value)} className="h-9 w-full rounded-lg border border-white/10 bg-[#0f141d] px-2 text-sm text-white">
+                  <option value="ALL">All</option>
+                  {genderOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Assigned To</label>
+                <select value={assignedToFilter} onChange={(e) => setAssignedToFilter(e.target.value)} className="h-9 w-full rounded-lg border border-white/10 bg-[#0f141d] px-2 text-sm text-white">
+                  <option value="ALL">All</option>
+                  {assignedToOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Scheduled By</label>
+                <select value={scheduledByFilter} onChange={(e) => setScheduledByFilter(e.target.value)} className="h-9 w-full rounded-lg border border-white/10 bg-[#0f141d] px-2 text-sm text-white">
+                  <option value="ALL">All</option>
+                  {scheduledByOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Client Rep</label>
+                <select value={clientRepFilter} onChange={(e) => setClientRepFilter(e.target.value)} className="h-9 w-full rounded-lg border border-white/10 bg-[#0f141d] px-2 text-sm text-white">
+                  <option value="ALL">All</option>
+                  {clientRepOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+                </select>
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">From Date</label>
+                <input type="date" value={fromDate} onChange={(e) => setFromDate(e.target.value)} className="h-9 w-full rounded-lg border border-white/10 bg-[#0f141d] px-2 text-sm text-white" />
+              </div>
+              <div>
+                <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">To Date</label>
+                <input type="date" value={toDate} onChange={(e) => setToDate(e.target.value)} className="h-9 w-full rounded-lg border border-white/10 bg-[#0f141d] px-2 text-sm text-white" />
+              </div>
+              <div className="flex items-end">
+                <button
+                  type="button"
+                  onClick={() => {
+                    setFollowUpTypeFilter("ALL");
+                    setAssignedToFilter("ALL");
+                    setScheduledByFilter("ALL");
+                    setLeadStatusFilter("ALL");
+                    setConvertibilityFilter("ALL");
+                    setResponseTypeFilter("ALL");
+                    setGenderFilter("ALL");
+                    setClientTypeFilter("ALL");
+                    setClientRepFilter("ALL");
+                    setFromDate("");
+                    setToDate("");
+                    setCurrentPage(1);
+                  }}
+                  className="h-9 w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 text-xs font-semibold text-slate-200 hover:border-white/20 hover:bg-white/[0.08]"
+                >
+                  Clear Filters
+                </button>
+              </div>
+            </div>
           ) : null}
         </div>
 
