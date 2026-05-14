@@ -630,6 +630,24 @@ export default function InquiriesPage() {
   // used for "{name} · {N} open" labels in reassign dropdowns and as
   // the load-balancing tie-breaker in the auto-assign algorithm.
   const [staffLoadById, setStaffLoadById] = useState<Map<number, number>>(new Map());
+  /*
+    Visibility scope (DEC-XX). Sales Executives land on "Mine" by
+    default — the table filters to enquiries where they are the
+    Client Rep. Front Desk, Sales Manager, Gym Manager, and Super
+    Admin land on "All" (whole branch). The operator can toggle the
+    view from a pill in the page header.
+  */
+  const defaultViewScope: "MINE" | "ALL" = useMemo(() => {
+    const designation = (user?.designation || "").toUpperCase();
+    return designation === "SALES_EXECUTIVE" ? "MINE" : "ALL";
+  }, [user?.designation]);
+  const [viewScope, setViewScope] = useState<"MINE" | "ALL">(defaultViewScope);
+  // Keep viewScope in sync with the role-derived default when the user
+  // session changes (e.g. login as different role). Subsequent user
+  // overrides via the toggle are respected until the user changes.
+  useEffect(() => {
+    setViewScope(defaultViewScope);
+  }, [defaultViewScope]);
   const [followUpByInquiry, setFollowUpByInquiry] = useState<Record<number, FollowUpPreview>>({});
   const [isFiltersOpen, setIsFiltersOpen] = useState(false);
   const [quickFollowUpForm, setQuickFollowUpForm] = useState<QuickFollowUpForm | null>(null);
@@ -682,7 +700,14 @@ export default function InquiriesPage() {
       const toDateRaw = nextFilters?.toDate ?? filters.toDate;
 
       const appliedConverted = convertedRaw === "true" ? true : convertedRaw === "false" ? false : undefined;
-      const appliedClientRepStaffId = parseNumeric(clientRepRaw);
+      // viewScope=MINE wins over the explicit clientRep filter: if the
+      // operator narrows to "Mine" via the header toggle we force the
+      // clientRepStaffId to their own. They can switch the toggle to
+      // ALL to see the full branch pool.
+      const explicitClientRepStaffId = parseNumeric(clientRepRaw);
+      const appliedClientRepStaffId = viewScope === "MINE" && initialStaffId
+        ? initialStaffId
+        : explicitClientRepStaffId;
       const fromRange = queryDateTimeRange(fromDateRaw).from;
       const toRange = queryDateTimeRange(toDateRaw).to;
       const pageToLoad = Math.max(0, nextPage - 1);
@@ -781,6 +806,11 @@ export default function InquiriesPage() {
       currentPage,
       effectiveBranchCode,
       effectiveBranchId,
+      // viewScope toggle (Mine/All) is a top-level filter — when it
+      // flips we must reload because clientRepStaffId in the query
+      // is derived from it.
+      viewScope,
+      initialStaffId,
     ],
   );
 
@@ -1819,13 +1849,50 @@ export default function InquiriesPage() {
             </p>
           </div>
         </div>
-        <button
-          type="button"
-          onClick={openCreateModal}
-          className="rounded-xl bg-red-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-700"
-        >
-          Add Enquiry
-        </button>
+        <div className="flex items-center gap-2">
+          {/*
+            Mine / All branch toggle (DEC-XX visibility model). Sales
+            Executives land on "Mine" by default — fewer rows to scan,
+            focus on their own pipeline. Front desk / Sales Manager /
+            Gym Manager / Super Admin land on "All". Clicking the
+            inactive side flips the viewScope and reloads.
+          */}
+          {initialStaffId ? (
+            <div className="inline-flex rounded-lg border border-white/10 bg-white/[0.04] p-0.5 text-xs font-semibold">
+              <button
+                type="button"
+                onClick={() => setViewScope("MINE")}
+                className={`rounded-md px-3 py-1.5 transition ${
+                  viewScope === "MINE"
+                    ? "bg-[#c42924] text-white"
+                    : "text-slate-300 hover:bg-white/[0.06]"
+                }`}
+                title="Show only enquiries assigned to me"
+              >
+                Mine
+              </button>
+              <button
+                type="button"
+                onClick={() => setViewScope("ALL")}
+                className={`rounded-md px-3 py-1.5 transition ${
+                  viewScope === "ALL"
+                    ? "bg-[#c42924] text-white"
+                    : "text-slate-300 hover:bg-white/[0.06]"
+                }`}
+                title="Show all enquiries in the branch"
+              >
+                All branch
+              </button>
+            </div>
+          ) : null}
+          <button
+            type="button"
+            onClick={openCreateModal}
+            className="rounded-xl bg-red-600 px-4 py-2.5 text-sm font-semibold text-white hover:bg-red-700"
+          >
+            Add Enquiry
+          </button>
+        </div>
       </div>
 
       <SectionCard

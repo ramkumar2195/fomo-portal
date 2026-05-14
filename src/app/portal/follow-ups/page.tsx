@@ -294,6 +294,22 @@ export default function FollowUpsPage() {
   const focusInquiryId = Number(searchParams.get("inquiryId") || 0) || null;
   const focusFollowUpType = searchParams.get("followUpType");
 
+  /*
+    Visibility scope (DEC-XX). Sales Executives land on "Mine" by
+    default — table filtered to follow-ups assigned to them. Other
+    roles (Front Desk, Sales Manager, Gym Manager, Super Admin)
+    land on "All". The operator can toggle in the page header.
+  */
+  const currentStaffId = useMemo(() => resolveStaffId(user), [user]);
+  const defaultViewScope: "MINE" | "ALL" = useMemo(() => {
+    const designation = (user?.designation || "").toUpperCase();
+    return designation === "SALES_EXECUTIVE" ? "MINE" : "ALL";
+  }, [user?.designation]);
+  const [viewScope, setViewScope] = useState<"MINE" | "ALL">(defaultViewScope);
+  useEffect(() => {
+    setViewScope(defaultViewScope);
+  }, [defaultViewScope]);
+
   const [dashboardView, setDashboardView] = useState<DashboardView>("EXPECTED");
   const [followUps, setFollowUps] = useState<FollowUpRecord[]>([]);
   const [inquiriesById, setInquiriesById] = useState<Record<number, InquiryRecord>>({});
@@ -356,6 +372,12 @@ export default function FollowUpsPage() {
               // Omitted when focusing a specific inquiry so Add Follow-up's
               // history view still sees every row tied to that inquiry.
               segment: activeSegment,
+              // DEC-XX — Mine/All scope. When the operator's viewScope is
+              // MINE (Sales Exec default), narrow to their own assigned
+              // follow-ups. When ALL, no per-staff filter.
+              ...(viewScope === "MINE" && currentStaffId
+                ? { assignedToStaffId: currentStaffId }
+                : {}),
             };
 
       const [branchUsers, admins] = await Promise.all([
@@ -483,7 +505,7 @@ export default function FollowUpsPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, user, effectiveBranchId, selectedBranchCode, focusInquiryId, activeSegment]);
+  }, [token, user, effectiveBranchId, selectedBranchCode, focusInquiryId, activeSegment, viewScope, currentStaffId]);
 
   useEffect(() => {
     void loadQueue();
@@ -846,9 +868,44 @@ export default function FollowUpsPage() {
   return (
     <div className="space-y-8">
       {toast ? <ToastBanner kind={toast.kind} message={toast.message} onClose={() => setToast(null)} /> : null}
-      <div>
-        <h1 className="text-2xl font-bold text-white">Follow-up Dashboard</h1>
-        <p className="text-slate-400">Access-scoped follow-up queue with quick actions, history, and filtering.</p>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-white">Follow-up Dashboard</h1>
+          <p className="text-slate-400">Access-scoped follow-up queue with quick actions, history, and filtering.</p>
+        </div>
+        {/*
+          Mine / All branch toggle (DEC-XX). Sales Exec defaults to Mine;
+          Front Desk / Sales Manager / Gym Manager / Super Admin default
+          to All. Operator can override per session.
+        */}
+        {currentStaffId ? (
+          <div className="inline-flex rounded-lg border border-white/10 bg-white/[0.04] p-0.5 text-xs font-semibold self-start">
+            <button
+              type="button"
+              onClick={() => setViewScope("MINE")}
+              className={`rounded-md px-3 py-1.5 transition ${
+                viewScope === "MINE"
+                  ? "bg-[#c42924] text-white"
+                  : "text-slate-300 hover:bg-white/[0.06]"
+              }`}
+              title="Show only follow-ups assigned to me"
+            >
+              Mine
+            </button>
+            <button
+              type="button"
+              onClick={() => setViewScope("ALL")}
+              className={`rounded-md px-3 py-1.5 transition ${
+                viewScope === "ALL"
+                  ? "bg-[#c42924] text-white"
+                  : "text-slate-300 hover:bg-white/[0.06]"
+              }`}
+              title="Show all follow-ups in the branch"
+            >
+              All branch
+            </button>
+          </div>
+        ) : null}
       </div>
 
       {error ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
