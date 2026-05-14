@@ -325,25 +325,36 @@ function getConvertibilityTag(value?: InquiryConvertibility): { label: string; c
   return { label: "-", className: "bg-slate-50 text-slate-500 border-slate-200" };
 }
 
+/**
+ * Status pill styling — dark-theme palette. The previous version used
+ * `bg-blue-100 text-blue-700` etc. which is a LIGHT-theme idiom; on the
+ * dark portal the pill rendered with very low contrast (operator
+ * reported white-on-pink unreadable text in the FOLLOW UP filtered
+ * view, 14 May 2026). Each variant now uses `bg-{tone}-500/15` (~10%
+ * tinted dark surface) with `text-{tone}-200` (light tinted text) so
+ * the pills read as coloured chips against the dark page.
+ */
 function getStatusBadgeClass(status?: string): string {
   const normalized = (status || "").toUpperCase();
   if (normalized === "CONVERTED") {
-    return "border-emerald-200 bg-emerald-100 text-emerald-700";
+    return "border-emerald-400/40 bg-emerald-500/15 text-emerald-200";
   }
   if (normalized === "NOT_INTERESTED" || normalized === "LOST") {
-    return "border-slate-300 bg-slate-100 text-slate-700";
+    return "border-slate-400/40 bg-slate-500/20 text-slate-200";
   }
   if (normalized === "TRIAL_BOOKED") {
-    return "border-indigo-200 bg-indigo-100 text-indigo-700";
+    return "border-indigo-400/40 bg-indigo-500/15 text-indigo-200";
   }
-  if (normalized === "FOLLOW_UP") {
-    return "border-blue-200 bg-blue-100 text-blue-700";
+  if (normalized === "FOLLOW_UP" || normalized === "FOLLOW_UP_AGAIN") {
+    return "border-blue-400/40 bg-blue-500/15 text-blue-200";
   }
   if (normalized === "CONTACTED") {
-    return "border-violet-200 bg-violet-100 text-violet-700";
+    return "border-violet-400/40 bg-violet-500/15 text-violet-200";
   }
-
-  return "border-amber-200 bg-amber-100 text-amber-800";
+  if (normalized === "NEW") {
+    return "border-sky-400/40 bg-sky-500/15 text-sky-200";
+  }
+  return "border-amber-400/40 bg-amber-500/15 text-amber-200";
 }
 
 function formatStatusLabel(status?: string): string {
