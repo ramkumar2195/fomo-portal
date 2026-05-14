@@ -2550,6 +2550,7 @@ export default function InquiriesPage() {
           createdAt: viewingInquiry.createdAt || viewingInquiry.inquiryAt,
         })}` : "Enquiry Profile"}
         size="xl"
+        maxHeight="half"
       >
         {!viewingInquiry ? null : (() => {
           // ─── Step 2 redesigned popup ────────────────────────────────

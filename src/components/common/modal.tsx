@@ -5,6 +5,15 @@ interface ModalProps {
   onClose: () => void;
   title: string;
   size?: "sm" | "md" | "lg" | "xl" | "xxl";
+  /**
+   * Cap on the modal's maximum height. Defaults to "tall"
+   * (calc(100vh-2rem)) so existing call sites are unchanged. Pass
+   * "half" to cap at 50vh — useful for popups whose content is
+   * predominantly a quick read + the operator scrolls inside.
+   * The body always scrolls; this prop only controls the OUTER
+   * envelope so the modal sits centred on the page.
+   */
+  maxHeight?: "tall" | "half";
   children: ReactNode;
   footer?: ReactNode;
   closeOnOverlayClick?: boolean;
@@ -23,10 +32,14 @@ export function Modal({
   onClose,
   title,
   size = "md",
+  maxHeight = "tall",
   children,
   footer,
   closeOnOverlayClick = true,
 }: ModalProps) {
+  const heightClass = maxHeight === "half"
+    ? "max-h-[50vh]"
+    : "max-h-[calc(100vh-2rem)]";
   const overlayRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -53,7 +66,7 @@ export function Modal({
         if (closeOnOverlayClick && e.target === overlayRef.current) onClose();
       }}
     >
-      <div className={`flex max-h-[calc(100vh-2rem)] w-full flex-col overflow-hidden ${sizeMap[size]} rounded-2xl bg-white shadow-xl`}>
+      <div className={`flex ${heightClass} w-full flex-col overflow-hidden ${sizeMap[size]} rounded-2xl bg-white shadow-xl`}>
         {/* Header */}
         <div className="flex shrink-0 items-center justify-between border-b border-gray-100 px-6 py-4">
           <h2 className="text-lg font-bold text-gray-900">{title}</h2>
