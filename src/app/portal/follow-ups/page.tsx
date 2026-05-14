@@ -187,6 +187,34 @@ function getRequirement(item: Pick<FollowUpRecord, "notes" | "outcomeNotes">, in
   return fromNotes || fromInquiryComment || fromInquiryRemarks || "No requirement added.";
 }
 
+/**
+ * F1 — relative-day label for the Next Follow-up cell so the
+ * operator scans urgency at a glance ("today", "in 3 days",
+ * "5 days overdue"). Mirrors the helper on the Enquiries page.
+ * Full datetime stays in the cell's title tooltip.
+ */
+function formatRelativeDay(iso?: string | null): string {
+  if (!iso) return "—";
+  const target = new Date(iso);
+  if (Number.isNaN(target.getTime())) return "—";
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const targetMid = new Date(target);
+  targetMid.setHours(0, 0, 0, 0);
+  const days = Math.round((targetMid.getTime() - today.getTime()) / 86400000);
+  if (days === 0) return "today";
+  if (days === 1) return "tomorrow";
+  if (days === -1) return "yesterday";
+  if (days > 1) return `in ${days} days`;
+  return `${Math.abs(days)} days overdue`;
+}
+
+/** F1 — avatar initials for the Client cell. */
+function initialsOf(name: string | null | undefined): string {
+  if (!name) return "?";
+  return name.trim().split(/\s+/).map((p) => p.slice(0, 1).toUpperCase()).slice(0, 2).join("") || "?";
+}
+
 function extractExpectedAmount(item: Pick<FollowUpRecord, "notes" | "outcomeNotes">, inquiry?: InquiryRecord): string {
   const source = `${item.notes || ""} ${item.outcomeNotes || ""} ${inquiry?.followUpComment || ""}`;
   const match = source.match(/(?:₹|rs\.?\s*)(\d[\d,]*(?:\.\d{1,2})?)/i);
@@ -814,8 +842,8 @@ export default function FollowUpsPage() {
         <div className="inline-flex rounded-xl border border-white/10 bg-white/[0.03] p-1">
           {[
             { value: "ALL", label: "All Follow-ups" },
-            { value: "EXPECTED", label: "Expected Follow-ups" },
-            { value: "DONE", label: "Done Follow-ups" },
+            { value: "EXPECTED", label: "Upcoming" },
+            { value: "DONE", label: "Done" },
           ].map((option) => {
             const active = dashboardView === option.value;
             return (
@@ -832,19 +860,45 @@ export default function FollowUpsPage() {
         </div>
       </div>
 
-      <div className="grid grid-cols-1 gap-4 md:grid-cols-5">
+      {/*
+        F2 — KPI strip compressed from 5 chunky cards (each ~80 px tall)
+        into a single chip row (~36 px). Same numbers, fraction of the
+        vertical real estate, matches the dashboard Quick Actions chip
+        idiom so the two CRM pages feel cohesive.
+        F4 — "Expected" relabelled to "Upcoming" since the field means
+        "scheduled in the future, not yet overdue, not done" — operators
+        kept confusing the old word with "expected revenue / amount".
+      */}
+      <div className="flex flex-wrap gap-2">
         {[
-          { label: "Total Follow-ups", value: counts.total },
-          { label: "Expected", value: counts.expected },
-          { label: "Done", value: counts.completed },
-          { label: "Overdue", value: counts.overdue },
-          { label: "Due Today", value: counts.dueToday },
-        ].map((item) => (
-          <article key={item.label} className="rounded-2xl border border-white/10 bg-[#111821] p-5">
-            <p className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-400">{item.label}</p>
-            <p className="mt-2 text-3xl font-bold text-white">{item.value}</p>
-          </article>
-        ))}
+          { label: "Total", value: counts.total, tone: "neutral" },
+          { label: "Upcoming", value: counts.expected, tone: "sky" },
+          { label: "Due today", value: counts.dueToday, tone: "amber" },
+          { label: "Overdue", value: counts.overdue, tone: "rose" },
+          { label: "Done", value: counts.completed, tone: "emerald" },
+        ].map((item) => {
+          const isZero = !item.value;
+          const accent = isZero
+            ? "border-white/10 bg-white/[0.03] text-slate-400"
+            : item.tone === "rose"
+              ? "border-rose-400/30 bg-rose-500/10 text-rose-100"
+              : item.tone === "amber"
+                ? "border-amber-400/30 bg-amber-500/10 text-amber-100"
+                : item.tone === "emerald"
+                  ? "border-emerald-400/30 bg-emerald-500/10 text-emerald-100"
+                  : item.tone === "sky"
+                    ? "border-sky-400/30 bg-sky-500/10 text-sky-100"
+                    : "border-white/15 bg-white/[0.06] text-slate-200";
+          return (
+            <span
+              key={item.label}
+              className={`inline-flex items-center gap-2 rounded-full border px-3 py-1.5 text-xs ${accent}`}
+            >
+              <span className="text-sm font-bold tabular-nums">{item.value}</span>
+              <span className="font-semibold uppercase tracking-wider text-[10px]">{item.label}</span>
+            </span>
+          );
+        })}
       </div>
 
       <div className="flex flex-wrap items-center gap-2 rounded-2xl border border-white/8 bg-[#131925] p-2">
@@ -1029,81 +1083,142 @@ export default function FollowUpsPage() {
                       item.followUpType === "MEMBERSHIP_RENEWAL" ||
                       item.followUpType === "PT_RENEWAL";
                     const expectedAmount = isRenewal ? extractExpectedAmount(item, item.inquiry) : "";
+                    /*
+                      F1 — row compression. Each cell now renders ONE
+                      primary value plus an optional caption, instead of
+                      3-4 stacked items as before. Row height drops from
+                      ~120 px to ~75 px so 8+ rows fit per viewport.
+                      Detail that used to live in dedicated lines moved
+                      into row-level title tooltips so it's still reachable.
+                    */
+                    const rowInitials = initialsOf(item.clientName);
+                    const inquiryCode = formatInquiryCode(item.inquiryId, {
+                      branchCode: item.inquiry?.branchCode || selectedBranchCode || undefined,
+                      createdAt: item.createdAt,
+                    });
+                    const dueRelative = formatRelativeDay(item.dueAt);
+                    const dueIsOverdue = dueRelative.endsWith("overdue");
+                    const dueIsToday = dueRelative === "today";
+                    const dueTone = dueIsOverdue
+                      ? "text-rose-300 font-semibold"
+                      : dueIsToday
+                        ? "text-amber-300 font-semibold"
+                        : "text-slate-300";
+                    const repCaption = [item.leadStatus, item.convertibility]
+                      .map(formatLeadStatus)
+                      .filter((p) => p && p !== "-")
+                      .join(" · ");
                     return (
-                      <tr key={item.followUpId} className="align-top hover:bg-white/[0.02]">
-                        <td className="px-4 py-4">
-                          <div className="space-y-1">
-                            <div className="flex flex-wrap items-center gap-2">
-                              <p className="font-medium text-white">{item.clientName}</p>
-                              <span className={`rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${typeClass(item.clientType)}`}>{item.clientType}</span>
-                              <span className={`rounded px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide ${priorityClass(item.priority)}`}>{item.priority}</span>
-                              {item.overdue ? <span className="rounded bg-rose-500/15 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-rose-200">Overdue</span> : null}
+                      <tr
+                        key={item.followUpId}
+                        title={inquiryCode}
+                        className="align-top hover:bg-white/[0.02]"
+                      >
+                        {/* Client — avatar + name + status chips + click-to-call mobile */}
+                        <td className="px-4 py-3">
+                          <div className="flex items-start gap-2.5">
+                            <div className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full border border-white/10 bg-white/[0.05] text-xs font-semibold text-slate-200">
+                              {rowInitials}
                             </div>
-                            <p className="text-xs text-slate-400">{item.mobileNumber}</p>
-                            <p className="text-[11px] text-slate-500">
-                              {formatInquiryCode(item.inquiryId, {
-                                branchCode: item.inquiry?.branchCode || selectedBranchCode || undefined,
-                                createdAt: item.createdAt,
-                              })}
+                            <div className="min-w-0">
+                              <div className="flex flex-wrap items-center gap-1.5">
+                                <p className="font-semibold text-white">{item.clientName}</p>
+                                {item.priority === "HIGH" ? (
+                                  <span className={`rounded px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider ${priorityClass(item.priority)}`}>
+                                    {item.priority}
+                                  </span>
+                                ) : null}
+                                {item.overdue ? (
+                                  <span className="rounded bg-rose-500/15 px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-rose-200">
+                                    Overdue
+                                  </span>
+                                ) : null}
+                              </div>
+                              {item.mobileNumber ? (
+                                <a
+                                  href={`tel:${item.mobileNumber}`}
+                                  onClick={(e) => e.stopPropagation()}
+                                  className="text-xs text-slate-400 hover:text-sky-300"
+                                >
+                                  {item.mobileNumber}
+                                </a>
+                              ) : null}
+                            </div>
+                          </div>
+                        </td>
+                        {/* Rep — name + small status caption */}
+                        <td className="px-4 py-3 text-slate-300">
+                          <p className="text-sm">{item.clientRepName}</p>
+                          {repCaption ? (
+                            <p className="mt-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-500">
+                              {repCaption}
                             </p>
-                          </div>
+                          ) : null}
                         </td>
-                        <td className="px-4 py-4 text-slate-300">
-                          <div className="space-y-1">
-                            <p>{item.clientRepName}</p>
-                            <p className="text-xs text-slate-400">{formatLeadStatus(item.leadStatus)} • {formatLeadStatus(item.convertibility)}</p>
-                            <p className="text-xs text-slate-500">{formatLeadStatus(item.gender)}</p>
-                          </div>
+                        {/* Type — primary type, response type as caption only if meaningful */}
+                        <td className="px-4 py-3 text-slate-300">
+                          <p className="text-sm">{formatFollowUpType(item.followUpType)}</p>
+                          {item.responseType && item.responseType !== "OTHER" ? (
+                            <p className="mt-0.5 text-[10px] font-medium uppercase tracking-wider text-slate-500">
+                              {formatLeadStatus(item.responseType)}
+                            </p>
+                          ) : null}
                         </td>
-                        <td className="px-4 py-4 text-slate-300">
-                          <div className="space-y-1">
-                            <p>{formatFollowUpType(item.followUpType)}</p>
-                            <p className="text-xs text-slate-500">{formatLeadStatus(item.responseType)}</p>
-                          </div>
+                        {/* Assigned / Scheduled — assignee primary, scheduler in tooltip */}
+                        <td
+                          className="px-4 py-3 text-slate-300"
+                          title={`Scheduled by: ${item.scheduledByName || "-"}`}
+                        >
+                          <p className="text-sm">{item.assignedToName || "-"}</p>
+                          {item.scheduledByName && item.scheduledByName !== item.assignedToName ? (
+                            <p className="mt-0.5 text-[10px] text-slate-500">
+                              by {item.scheduledByName}
+                            </p>
+                          ) : null}
                         </td>
-                        <td className="px-4 py-4 text-slate-300">
-                          <div className="space-y-1">
-                            <p>Assigned: {item.assignedToName}</p>
-                            <p className="text-xs text-slate-500">Scheduled by: {item.scheduledByName}</p>
-                          </div>
+                        {/* Comment — line-clamp-2 with full text on hover */}
+                        <td className="px-4 py-3 text-slate-300">
+                          <p
+                            className="line-clamp-2 max-w-[22rem] text-xs leading-snug"
+                            title={[item.requirement, isRenewal && expectedAmount ? `Expected amount: ${expectedAmount}` : null].filter(Boolean).join(" — ") || undefined}
+                          >
+                            {item.requirement || <span className="text-slate-500">-</span>}
+                          </p>
                         </td>
-                        <td className="px-4 py-4 text-slate-300">
-                          <div className="max-w-sm space-y-1 text-sm leading-6">
-                            <p>{item.requirement}</p>
-                            {isRenewal ? (
-                              <p className="text-xs text-slate-500">
-                                Expected date: {formatDateTime(item.dueAt)}
-                                {expectedAmount ? ` • Expected amount: ${expectedAmount}` : ""}
-                              </p>
-                            ) : null}
-                          </div>
+                        {/* Next Follow-up — relative format, rose if overdue, amber if today */}
+                        <td className="px-4 py-3 text-sm">
+                          <span
+                            className={dueTone}
+                            title={`Due ${formatDateTime(item.dueAt)} · Commented ${formatDateTime(item.createdAt)}`}
+                          >
+                            {dueRelative}
+                          </span>
                         </td>
-                        <td className="px-4 py-4 text-slate-300">
-                          <div className="space-y-1">
-                            <p>Next: {formatDateTime(item.dueAt)}</p>
-                            <p className="text-xs text-slate-500">Commented: {formatDateTime(item.createdAt)}</p>
-                          </div>
+                        {/* Status — pill, optional completed-at tooltip */}
+                        <td className="px-4 py-3">
+                          <span
+                            className={`inline-flex rounded-full border px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider ${statusClass(item.overdue ? "OVERDUE" : item.status)}`}
+                            title={item.completedAt ? `Completed ${formatDateTime(item.completedAt)}` : undefined}
+                          >
+                            {humanizeText(item.overdue ? "OVERDUE" : item.status)}
+                          </span>
                         </td>
-                        <td className="px-4 py-4 text-slate-300">
-                          <div className="space-y-1">
-                            <span className={`inline-flex rounded-full border px-2.5 py-1 text-[11px] font-semibold uppercase tracking-[0.18em] ${statusClass(item.overdue ? "OVERDUE" : item.status)}`}>
-                              {humanizeText(item.overdue ? "OVERDUE" : item.status)}
-                            </span>
-                            {item.completedAt ? <p className="text-xs text-slate-500">Completed {formatDateTime(item.completedAt)}</p> : null}
-                          </div>
-                        </td>
-                        <td className="px-4 py-4">
-                          <div className="flex justify-end gap-2">
+                        {/* Actions — icon-only, mirrors the Enquiries page convention */}
+                        <td className="px-4 py-3">
+                          <div className="flex justify-end gap-1">
                             <button
                               type="button"
+                              title="Follow-up history"
+                              aria-label="Follow-up history"
                               onClick={() => void openHistory({ inquiryId: item.inquiryId, clientName: item.clientName })}
-                              className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-xs font-semibold text-slate-200 hover:bg-white/[0.08]"
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md border border-white/10 bg-white/[0.04] text-slate-200 hover:bg-white/[0.08]"
                             >
-                              <History className="h-4 w-4" />
-                              History
+                              <History className="h-3.5 w-3.5" />
                             </button>
                             <button
                               type="button"
+                              title="Add follow-up response"
+                              aria-label="Add follow-up response"
                               onClick={() => {
                                 setAddFollowUpFor({
                                   inquiryId: item.inquiryId,
@@ -1118,10 +1233,9 @@ export default function FollowUpsPage() {
                                   notes: "",
                                 }));
                               }}
-                              className="inline-flex items-center gap-2 rounded-xl border border-[#c42924]/30 bg-[#c42924]/12 px-3 py-2 text-xs font-semibold text-white hover:bg-[#c42924]/20"
+                              className="inline-flex h-7 w-7 items-center justify-center rounded-md bg-[#c42924] text-white hover:bg-[#a52420]"
                             >
-                              <PlusCircle className="h-4 w-4" />
-                              Follow-up Response
+                              <PlusCircle className="h-3.5 w-3.5" />
                             </button>
                           </div>
                         </td>
