@@ -37,8 +37,13 @@ export function Modal({
   footer,
   closeOnOverlayClick = true,
 }: ModalProps) {
+  // "half" was originally 50vh but that turned out too cramped for
+  // popups with 4 info cards + status history + follow-up history.
+  // Bumped to 80vh — still leaves a comfortable 10vh on top and
+  // bottom so the modal floats clearly inside the page, but with
+  // enough room for ~6-7 cards / row before scrolling kicks in.
   const heightClass = maxHeight === "half"
-    ? "max-h-[50vh]"
+    ? "max-h-[80vh]"
     : "max-h-[calc(100vh-2rem)]";
   const overlayRef = useRef<HTMLDivElement>(null);
 
