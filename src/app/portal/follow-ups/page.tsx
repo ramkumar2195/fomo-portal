@@ -56,7 +56,29 @@ const FOLLOW_UP_TYPE_LABELS: Record<FollowUpType, string> = {
   GYM_STUDIO_TRIAL: "Gym/Studio Trial",
 };
 
-const FOLLOW_UP_TYPE_OPTIONS = Object.values(FOLLOW_UP_TYPE_LABELS);
+/*
+  DEC-033 — canonical follow-up types. The backend enum still has 30
+  values for back-compat with imported / legacy data; the FOLLOW_UP_
+  TYPE_LABELS map above keeps friendly names for ALL of them so old
+  rows render correctly. But the new dropdown only surfaces these 10
+  canonical types — covers every real workflow without scrolling
+  through duplicate / unused entries.
+*/
+const CANONICAL_FOLLOW_UP_TYPES: FollowUpType[] = [
+  "MEMBERSHIP_ENQUIRY",
+  "MEMBERSHIP_RENEWAL",
+  "PT_RENEWAL",
+  "BALANCE_DUE",
+  "FREEZE",
+  "IRREGULAR_MEMBER",
+  "BIRTHDAY",
+  "ANNIVERSARY",
+  "FEEDBACK",
+  "OTHER",
+];
+const FOLLOW_UP_TYPE_OPTIONS = CANONICAL_FOLLOW_UP_TYPES.map(
+  (t) => FOLLOW_UP_TYPE_LABELS[t],
+);
 const LEAD_STATUS_MASTER_OPTIONS: InquiryStatus[] = [
   "NEW",
   "CONTACTED",
