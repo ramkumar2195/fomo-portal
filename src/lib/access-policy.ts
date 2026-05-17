@@ -51,6 +51,10 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     "/portal/inquiries",
     "/portal/follow-ups",
     "/portal/members",
+    // Member profile lives under /admin/members — front desk needs it to
+    // open a profile after onboarding and to run billing (invoice +
+    // payment) on a member. Backend already allows role STAFF.
+    "/admin/members",
     "/portal/renewals",
     "/portal/billing",
     // Front desk uses gym-entry attendance for walk-in verification + spot
