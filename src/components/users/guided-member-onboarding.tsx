@@ -15,6 +15,7 @@ import {
   Wallet,
 } from "lucide-react";
 import { BillingWorkflowTemplate } from "@/components/billing/billing-workflow-template";
+import { DiscountApprovalModal } from "@/components/billing/discount-approval-modal";
 import { SectionCard } from "@/components/common/section-card";
 import { ToastBanner } from "@/components/common/toast-banner";
 import { useAuth } from "@/contexts/auth-context";
@@ -751,6 +752,17 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   const [membershipPolicySettings, setMembershipPolicySettings] = useState<MembershipPolicySettings>(defaultMembershipPolicySettings);
   const [currentStep, setCurrentStep] = useState<OnboardingStep>(1);
   const [completedOnboarding, setCompletedOnboarding] = useState<CompletedOnboardingState | null>(null);
+  // DEC-035 — discount above the gate (>10%) needs SUPER_ADMIN approval.
+  // discountApproval drives the submit-for-approval modal; pendingApproval
+  // is the post-submit "sent for approval" banner state.
+  const [discountApproval, setDiscountApproval] = useState<{
+    memberId: number;
+    request: Record<string, unknown>;
+    branchCode?: string;
+    percent: number;
+    approverRole: string;
+  } | null>(null);
+  const [pendingApproval, setPendingApproval] = useState<{ requestId: number; percent: number } | null>(null);
   const [documentBusyKey, setDocumentBusyKey] = useState<string | null>(null);
   const [membershipLineItems, setMembershipLineItems] = useState<MembershipLineItem[]>([]);
   const membershipTableRef = useRef<HTMLDivElement | null>(null);
@@ -2401,7 +2413,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       // the member's prior subscription if both are missing. Sending this here
       // prevents INV/GEN/... invoice numbers when no enquiry is attached.
       const resolvedBranchCode = selectedBranchCode || inquiry?.branchCode || undefined;
-      const subscriptionResponse = await subscriptionService.createMemberSubscription(token, String(memberId), {
+      const subscriptionRequest = {
         productVariantId: Number(selectedPrimaryVariant.variantId),
         startDate: subscriptionForm.startDate,
         inquiryId: sourceInquiryId,
@@ -2411,7 +2423,30 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         discountedByStaffId: billedByStaffId ?? undefined,
         billedByStaffId: billedByStaffId ?? undefined,
         customEntitlements: customEntitlements.length > 0 ? customEntitlements : undefined,
-      });
+      };
+      let subscriptionResponse: Awaited<ReturnType<typeof subscriptionService.createMemberSubscription>>;
+      try {
+        subscriptionResponse = await subscriptionService.createMemberSubscription(
+          token, String(memberId), subscriptionRequest);
+      } catch (subscriptionError) {
+        // DEC-035 — discount above the gate (>10%) is rejected with a
+        // DISCOUNT_APPROVAL_REQUIRED signal. The member row is already
+        // created; open the submit-for-approval modal so a SUPER_ADMIN
+        // can approve. On approval the backend re-runs this exact
+        // createMemberSubscription payload with the gate bypassed.
+        if (subscriptionError instanceof ApiError && subscriptionError.discountApproval) {
+          setDiscountApproval({
+            memberId,
+            request: subscriptionRequest,
+            branchCode: resolvedBranchCode,
+            percent: subscriptionError.discountApproval.percent,
+            approverRole: subscriptionError.discountApproval.approverRole,
+          });
+          moveToStep(3);
+          return;  // finally{} clears submitting; onboarding pauses pending approval
+        }
+        throw subscriptionError;
+      }
 
       const invoiceId = Number(subscriptionResponse.invoiceId);
       const memberSubscriptionId = Number(subscriptionResponse.memberSubscriptionId);
@@ -2753,6 +2788,32 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   return (
     <div className="space-y-5">
       {toast ? <ToastBanner kind={toast.kind} message={toast.message} onClose={() => setToast(null)} /> : null}
+      {pendingApproval ? (
+        <div className="rounded-2xl border border-amber-500/25 bg-amber-500/10 px-5 py-4 text-sm text-amber-100">
+          <div className="font-semibold">
+            Discount of {pendingApproval.percent}% sent for approval — request #{pendingApproval.requestId}.
+          </div>
+          <div className="mt-1 text-amber-100/80">
+            The member record has been created. A Super Admin must approve the discount; once approved,
+            the subscription and invoice are generated automatically — no further action is needed here.
+            You can safely leave this page.
+          </div>
+          <button
+            type="button"
+            onClick={() => {
+              try {
+                window.sessionStorage.removeItem(completionStorageKey);
+              } catch {
+                // ignore
+              }
+              router.replace("/portal/members");
+            }}
+            className="mt-3 rounded-xl border border-white/10 bg-white/[0.06] px-4 py-2 text-xs font-semibold text-slate-100 hover:bg-white/[0.12]"
+          >
+            Back to Members
+          </button>
+        </div>
+      ) : null}
 
       <SectionCard
         title="Member Onboarding"
@@ -3748,6 +3809,27 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
             </div>
           </div>
         </div>
+      ) : null}
+      {discountApproval ? (
+        <DiscountApprovalModal
+          open
+          onClose={() => setDiscountApproval(null)}
+          flow="CREATE"
+          memberId={discountApproval.memberId}
+          request={discountApproval.request}
+          branchCode={discountApproval.branchCode}
+          discountPercent={discountApproval.percent}
+          approverRole={discountApproval.approverRole}
+          onSubmitted={({ requestId }) => {
+            setPendingApproval({ requestId, percent: discountApproval.percent });
+            setDiscountApproval(null);
+            setError(null);
+            setToast({
+              kind: "success",
+              message: `Discount sent for approval (request #${requestId}). Once a Super Admin approves, the subscription and invoice generate automatically.`,
+            });
+          }}
+        />
       ) : null}
     </div>
   );
