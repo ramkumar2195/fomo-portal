@@ -18,7 +18,7 @@ import { usersService } from "@/lib/api/services/users-service";
 import { FollowUpRecord, FollowUpType } from "@/types/follow-up";
 import { InquiryConvertibility, InquiryRecord, InquiryResponseType, InquiryStatus } from "@/types/inquiry";
 
-type DashboardView = "ALL" | "EXPECTED" | "DONE";
+type DashboardView = "ALL" | "EXPECTED" | "DUE_TODAY" | "OVERDUE" | "DONE";
 type ClientTypeFilter = "ALL" | "INQUIRY" | "MEMBER";
 
 const PAGE_SIZE = 15;
@@ -615,29 +615,17 @@ export default function FollowUpsPage() {
 
   const clientRepOptions = useMemo(() => staffDirectoryOptions, [staffDirectoryOptions]);
 
-  const filteredFollowUps = useMemo(() => {
-    return enrichedFollowUps
-      .filter((item) => {
-        const dueTime = new Date(item.dueAt).getTime();
-        const now = Date.now();
-        const todayStart = new Date();
-        todayStart.setHours(0, 0, 0, 0);
-        const todayStartMs = todayStart.getTime();
-
-        if (dashboardView === "EXPECTED") {
-          if (item.status !== "SCHEDULED") {
-            return false;
-          }
-          if (Number.isNaN(dueTime) || dueTime < todayStartMs) {
-            return false;
-          }
-        }
-        if (dashboardView === "DONE" && item.status !== "COMPLETED") {
-          return false;
-        }
-        if (focusInquiryId && item.inquiryId !== focusInquiryId) {
-          return false;
-        }
+  // Stage 1 (baselineFollowUps) — all non-view filters. Used by both `counts`
+  // (so the chip totals don't shuffle when you switch views) and by
+  // `filteredFollowUps` as the starting set for the view filter.
+  // Stage 2 (filteredFollowUps) — applies the chip-state filter as a final
+  // pass. Five distinct states now: ALL / EXPECTED / DUE_TODAY / OVERDUE / DONE.
+  const baselineFollowUps = useMemo(() => {
+    return enrichedFollowUps.filter((item) => {
+      const dueTime = new Date(item.dueAt).getTime();
+      if (focusInquiryId && item.inquiryId !== focusInquiryId) {
+        return false;
+      }
         if (focusFollowUpType && String(deriveFollowUpType(item, item.inquiry)).toUpperCase() !== focusFollowUpType.toUpperCase()) {
           return false;
         }
@@ -708,19 +696,10 @@ export default function FollowUpsPage() {
           }
         }
 
-        return dashboardView !== "EXPECTED" || dueTime >= now || item.status === "SCHEDULED";
-      })
-      .sort((left, right) => {
-        if (dashboardView === "DONE") {
-          const leftCompleted = new Date(left.completedAt || left.updatedAt || left.dueAt).getTime();
-          const rightCompleted = new Date(right.completedAt || right.updatedAt || right.dueAt).getTime();
-          return (Number.isNaN(rightCompleted) ? 0 : rightCompleted) - (Number.isNaN(leftCompleted) ? 0 : leftCompleted);
-        }
-        return new Date(left.dueAt).getTime() - new Date(right.dueAt).getTime();
+        return true;
       });
   }, [
     enrichedFollowUps,
-    dashboardView,
     clientTypeFilter,
     followUpTypeFilter,
     assignedToFilter,
@@ -738,24 +717,63 @@ export default function FollowUpsPage() {
     focusFollowUpType,
   ]);
 
-  const counts = useMemo(() => {
-    const now = new Date();
-    const todayStart = new Date(now);
+  // Stage 2 — apply the chip-state filter on top of the baseline list, then
+  // sort. Each of the five chips now has a distinct filter; clicking any one
+  // narrows the table to just that bucket. The chip counts are independent
+  // (derived from `baselineFollowUps` below) so they stay stable across views.
+  const filteredFollowUps = useMemo(() => {
+    const todayStart = new Date();
     todayStart.setHours(0, 0, 0, 0);
-    const tomorrowStart = new Date(todayStart);
-    tomorrowStart.setDate(todayStart.getDate() + 1);
+    const todayStartMs = todayStart.getTime();
+    const tomorrowStartMs = todayStartMs + 86400000;
+
+    return baselineFollowUps
+      .filter((item) => {
+        const dueTime = new Date(item.dueAt).getTime();
+        if (dashboardView === "EXPECTED") {
+          return item.status === "SCHEDULED" && !Number.isNaN(dueTime) && dueTime >= todayStartMs;
+        }
+        if (dashboardView === "DUE_TODAY") {
+          return !Number.isNaN(dueTime) && dueTime >= todayStartMs && dueTime < tomorrowStartMs;
+        }
+        if (dashboardView === "OVERDUE") {
+          return Boolean(item.overdue);
+        }
+        if (dashboardView === "DONE") {
+          return item.status === "COMPLETED";
+        }
+        return true; // ALL
+      })
+      .sort((left, right) => {
+        if (dashboardView === "DONE") {
+          const leftCompleted = new Date(left.completedAt || left.updatedAt || left.dueAt).getTime();
+          const rightCompleted = new Date(right.completedAt || right.updatedAt || right.dueAt).getTime();
+          return (Number.isNaN(rightCompleted) ? 0 : rightCompleted) - (Number.isNaN(leftCompleted) ? 0 : leftCompleted);
+        }
+        return new Date(left.dueAt).getTime() - new Date(right.dueAt).getTime();
+      });
+  }, [baselineFollowUps, dashboardView]);
+
+  const counts = useMemo(() => {
+    const todayStart = new Date();
+    todayStart.setHours(0, 0, 0, 0);
+    const todayStartMs = todayStart.getTime();
+    const tomorrowStartMs = todayStartMs + 86400000;
 
     return {
-      total: filteredFollowUps.length,
-      expected: filteredFollowUps.filter((item) => item.status === "SCHEDULED").length,
-      completed: filteredFollowUps.filter((item) => item.status === "COMPLETED").length,
-      overdue: filteredFollowUps.filter((item) => item.overdue).length,
-      dueToday: filteredFollowUps.filter((item) => {
+      total: baselineFollowUps.length,
+      expected: baselineFollowUps.filter((item) => {
         const dueAt = new Date(item.dueAt).getTime();
-        return dueAt >= todayStart.getTime() && dueAt < tomorrowStart.getTime();
+        return item.status === "SCHEDULED" && !Number.isNaN(dueAt) && dueAt >= todayStartMs;
+      }).length,
+      completed: baselineFollowUps.filter((item) => item.status === "COMPLETED").length,
+      overdue: baselineFollowUps.filter((item) => item.overdue).length,
+      dueToday: baselineFollowUps.filter((item) => {
+        const dueAt = new Date(item.dueAt).getTime();
+        return dueAt >= todayStartMs && dueAt < tomorrowStartMs;
       }).length,
     };
-  }, [filteredFollowUps]);
+  }, [baselineFollowUps]);
 
   const totalPages = Math.max(1, Math.ceil(filteredFollowUps.length / PAGE_SIZE));
   const paginatedRows = useMemo(() => {
@@ -933,19 +951,19 @@ export default function FollowUpsPage() {
       {error ? <p className="rounded-lg bg-rose-50 px-3 py-2 text-sm text-rose-700">{error}</p> : null}
 
       {/*
-        F6 — combined navigation. The 3-tab row (All / Upcoming / Done)
-        and the 5-card KPI strip are merged into ONE clickable chip
-        strip. Each chip both DISPLAYS the count AND acts as a filter
-        for the dashboardView state. The "Total" chip maps to ALL, the
-        "Done" chip to DONE, etc. This collapses two separate UI
-        controls into one and saves another ~40 px of vertical space.
+        F6 — combined navigation. Five clickable chips, each both displays
+        the count AND acts as a distinct filter on the table. Each chip
+        maps to its own dashboardView (ALL / EXPECTED / DUE_TODAY /
+        OVERDUE / DONE), so clicking any one narrows the list to just
+        that bucket. Counts come from `baselineFollowUps` (everything
+        except the view filter) so they stay stable when you change view.
       */}
       <div className="flex flex-wrap gap-2" role="tablist" aria-label="Follow-up state">
         {([
           { label: "Total", view: "ALL", value: counts.total, tone: "neutral" },
           { label: "Upcoming", view: "EXPECTED", value: counts.expected, tone: "sky" },
-          { label: "Due today", view: "ALL", value: counts.dueToday, tone: "amber" },
-          { label: "Overdue", view: "ALL", value: counts.overdue, tone: "rose" },
+          { label: "Due today", view: "DUE_TODAY", value: counts.dueToday, tone: "amber" },
+          { label: "Overdue", view: "OVERDUE", value: counts.overdue, tone: "rose" },
           { label: "Done", view: "DONE", value: counts.completed, tone: "emerald" },
         ] as const).map((item) => {
           const isZero = !item.value;
