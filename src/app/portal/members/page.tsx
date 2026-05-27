@@ -667,6 +667,20 @@ export default function MembersPage() {
           }
         }
         return true;
+      })
+      // Sort by most recent joined first (newest at top). Uses the inquiry
+      // creation date as the "joined" signal (same field powering the date
+      // range filter above), falling back to numeric member id desc for
+      // stability when timestamps are missing or equal.
+      .sort((leftMember, rightMember) => {
+        const leftDate = detailsByMemberId[leftMember.id]?.inquiryCreatedAt;
+        const rightDate = detailsByMemberId[rightMember.id]?.inquiryCreatedAt;
+        const leftTs = leftDate ? new Date(leftDate).getTime() : 0;
+        const rightTs = rightDate ? new Date(rightDate).getTime() : 0;
+        if (leftTs !== rightTs) return rightTs - leftTs;
+        const leftId = Number(leftMember.id) || 0;
+        const rightId = Number(rightMember.id) || 0;
+        return rightId - leftId;
       }),
     [dateRangeError, detailsByMemberId, fromDate, genderFilter, memberFilter, membershipFilter, members, searchTerm, serviceFilter, toDate, trainerFilter],
   );

@@ -1969,6 +1969,11 @@ export default function MemberProfilePage() {
   const [hasPtAssignment, setHasPtAssignment] = useState(false);
   const [actionModal, setActionModal] = useState<ActionModalKey>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  // Downgrade picker — target variant the staff has selected in the modal.
+  // Cleared when the modal closes. Backend defaults the start date to the
+  // current subscription's end date (scheduled for next cycle), so we only
+  // collect the target variant here.
+  const [downgradeTargetVariantId, setDowngradeTargetVariantId] = useState<string>("");
   // Separate state for the Grant-Pause-Benefit modal — it's a self-contained
   // component with its own submit pipeline (direct-vs-approval) so it sits
   // outside the shared `actionModal` dispatcher.
@@ -2654,6 +2659,16 @@ export default function MemberProfilePage() {
     } finally {
       setLoadingTabs((current) => ({ ...current, billing: false }));
     }
+  }, [memberId, token]);
+
+  // Prefetch billing on mount so the Overview tab's "Recent Bills" panel has
+  // data without the user having to click into Billing first. Runs once per
+  // member view (guarded by `tabData.billing` being undefined).
+  useEffect(() => {
+    if (!tabData.billing && token && memberId) {
+      void reloadBillingTab();
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [memberId, token]);
 
   const reloadPtTab = useCallback(async () => {
@@ -3799,6 +3814,33 @@ export default function MemberProfilePage() {
     eligibleUpgradeVariants.length > 0 &&
     !upgradeWindowBlocksAction;
   const canUpgradeMembership = canShowUpgradeMembershipAction && !upgradeWindowBlocksAction;
+  // Downgrade eligibility: same category, lower tier (or shorter duration of
+  // same product). Spec (MEMBERSHIP-ACTIONS.md §0.3) allows it for FLAGSHIP
+  // (Core/Plus/Rhythm/Black -> lower variant) and TRANSFORMATION (L2 -> L1).
+  const eligibleDowngradeVariants = useMemo(
+    () => catalogVariants.filter((variant) => {
+      if (!(isFlagshipPlan || isTransformationPlan)) return false;
+      if (isFlagshipPlan && variant.categoryCode !== "FLAGSHIP") return false;
+      if (isTransformationPlan && variant.categoryCode !== "TRANSFORMATION") return false;
+      if (String(variant.variantId) === String(selectedProductVariantId)) return false;
+      const currentVariant = catalogVariants.find((item) => String(item.variantId) === String(selectedProductVariantId));
+      const currentDuration = currentVariant?.durationMonths || selectedDurationMonths;
+      const currentRank = currentProductRank;
+      const candidateRank = productTierRank(membershipFamily, variant.productCode);
+      const sameProduct = variant.productCode === selectedProductCode;
+      // Lower-tier product within the same category, OR same product with
+      // shorter duration. Either case is a real downgrade.
+      if (candidateRank < currentRank) return true;
+      if (sameProduct && currentDuration > 0 && variant.durationMonths > 0 && variant.durationMonths < currentDuration) return true;
+      return false;
+    }),
+    [catalogVariants, currentProductRank, isFlagshipPlan, isTransformationPlan, membershipFamily, selectedDurationMonths, selectedProductCode, selectedProductVariantId],
+  );
+  const canShowDowngradeMembershipAction =
+    hasPrimaryMembership &&
+    (isFlagshipPlan || isTransformationPlan) &&
+    canOperateMemberships &&
+    eligibleDowngradeVariants.length > 0;
   const canShowPtActions = Boolean(activePtAssignment) || isFlagshipPlan || isTransformationPlan || isPtPlan;
   const canTransferMembership =
     hasPrimaryMembership &&
@@ -3855,6 +3897,9 @@ export default function MemberProfilePage() {
     }
     if (canShowUpgradeMembershipAction) {
       actions.push({ key: "upgrade", label: "Upgrade", enabled: true });
+    }
+    if (canShowDowngradeMembershipAction) {
+      actions.push({ key: "downgrade", label: "Downgrade", enabled: true });
     }
     if (canShowManualUnfreezeAction) {
       actions.push({ key: "unfreeze", label: "Unfreeze", enabled: true });
@@ -3914,6 +3959,7 @@ export default function MemberProfilePage() {
     canShowManualUnfreezeAction,
     canTransferMembership,
     canShowUpgradeMembershipAction,
+    canShowDowngradeMembershipAction,
     isSelectedMembershipOperationalFreeze,
     isAdminOperator,
     user,
@@ -5113,6 +5159,41 @@ export default function MemberProfilePage() {
         }
       }
       setActionError(error instanceof Error ? error.message : "Unable to backdate subscription.");
+    } finally {
+      setActionBusy(false);
+    }
+  };
+
+  // Downgrade — schedules a switch to a lower-tier variant. Backend
+  // (`downgradeSubscription`) defaults the new sub's start date to the
+  // current end date when `startDate` is omitted, so this flow only needs
+  // the target variant. No billing modal: downgrades don't carry a
+  // proration charge per current product rules.
+  const handleDowngrade = async () => {
+    if (!token || !selectedSubscriptionId) {
+      setActionError("No active subscription selected to downgrade.");
+      return;
+    }
+    if (!downgradeTargetVariantId) {
+      setActionError("Pick the target plan to downgrade to.");
+      return;
+    }
+    setActionBusy(true);
+    setActionError(null);
+    try {
+      await subscriptionService.downgradeSubscription(token, memberId, {
+        subscriptionId: Number(selectedSubscriptionId),
+        productVariantId: Number(downgradeTargetVariantId),
+        branchCode: branchCode || undefined,
+      });
+      setActionSuccess("Downgrade scheduled. The new plan starts at the end of the current cycle.");
+      setActionModal(null);
+      setDowngradeTargetVariantId("");
+      await reloadShell();
+    } catch (err) {
+      setActionError(
+        err instanceof ApiError ? err.message : err instanceof Error ? err.message : "Unable to schedule downgrade.",
+      );
     } finally {
       setActionBusy(false);
     }
@@ -6358,8 +6439,54 @@ export default function MemberProfilePage() {
     }
   };
 
-  const renderOverview = () => (
+  const renderOverview = () => {
+    // Recent bills strip — last 5 invoices by issuedAt desc, shown at the
+    // very top of the Overview so staff can see the latest billing activity
+    // without clicking into the Billing tab.
+    const recentBills = [...overviewBilling]
+      .sort((leftBill, rightBill) => {
+        const leftTs = leftBill.issuedAt ? new Date(leftBill.issuedAt).getTime() : 0;
+        const rightTs = rightBill.issuedAt ? new Date(rightBill.issuedAt).getTime() : 0;
+        return rightTs - leftTs;
+      })
+      .slice(0, 5);
+
+    return (
     <div className="space-y-6">
+      <ProfilePanel title="Recent Bills" subtitle="Most recent invoices for this member" accent="cyan">
+        {recentBills.length === 0 ? (
+          <p className="rounded-lg border border-white/8 bg-white/[0.03] px-4 py-3 text-sm text-slate-400">
+            No invoices on file yet.
+          </p>
+        ) : (
+          <div className="overflow-hidden rounded-[24px] border border-white/8 bg-white/[0.03]">
+            <table className="min-w-full divide-y divide-white/8 text-sm">
+              <thead className="bg-white/[0.04]">
+                <tr>
+                  <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Invoice</th>
+                  <th className="px-4 py-3 text-left text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Date</th>
+                  <th className="px-4 py-3 text-right text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Total</th>
+                  <th className="px-4 py-3 text-right text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Status</th>
+                </tr>
+              </thead>
+              <tbody className="divide-y divide-white/8">
+                {recentBills.map((bill) => (
+                  <tr key={bill.id} className="hover:bg-white/[0.04]">
+                    <td className="px-4 py-3 font-medium text-white">{bill.invoiceNumber}</td>
+                    <td className="px-4 py-3 text-slate-300">{formatDateOnly(bill.issuedAt)}</td>
+                    <td className="px-4 py-3 text-right font-semibold tabular-nums text-white">{formatInr(bill.amount)}</td>
+                    <td className="px-4 py-3 text-right">
+                      <span className="inline-flex rounded-full border border-white/10 bg-white/[0.05] px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wider text-slate-200">
+                        {bill.status}
+                      </span>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+      </ProfilePanel>
       <div className="grid items-start gap-6 xl:grid-cols-2">
         <div className="space-y-6">
           <ProfilePanel title="Personal Details" subtitle="Core member identity and contact information" accent="slate">
@@ -6455,7 +6582,8 @@ export default function MemberProfilePage() {
         </div>
       </div>
     </div>
-  );
+    );
+  };
 
   const renderBilling = () => {
     const billingData = tabData.billing as LifecycleBillingTabState | undefined;
@@ -9881,6 +10009,78 @@ export default function MemberProfilePage() {
                   { label: "Balance Due", value: formatRoundedInr(lifecycleBillingBalanceAmount), fullWidth: true },
                 ]}
               />
+            </div>
+          </Modal>
+
+          <Modal
+            open={actionModal === "downgrade"}
+            onClose={() => {
+              setActionModal(null);
+              setDowngradeTargetVariantId("");
+            }}
+            title="Schedule Downgrade"
+            size="md"
+            footer={
+              <>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setActionModal(null);
+                    setDowngradeTargetVariantId("");
+                  }}
+                  className="rounded-xl border border-slate-700 px-4 py-2 text-sm font-semibold text-slate-300"
+                >
+                  Cancel
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleDowngrade()}
+                  disabled={actionBusy || !downgradeTargetVariantId}
+                  className="rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60"
+                >
+                  {actionBusy ? "Scheduling..." : "Schedule Downgrade"}
+                </button>
+              </>
+            }
+          >
+            <div className="space-y-4">
+              <p className="rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+                Downgrades take effect at the end of the current billing cycle. No proration charge is applied.
+              </p>
+              {eligibleDowngradeVariants.length === 0 ? (
+                <p className="rounded-lg border border-white/10 bg-white/[0.04] px-3 py-2 text-sm text-slate-300">
+                  No lower-tier variant is available for this plan.
+                </p>
+              ) : (
+                <div className="space-y-2">
+                  <label className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Target Plan</label>
+                  <div className="grid gap-2">
+                    {eligibleDowngradeVariants.map((variant) => {
+                      const isSelected = String(variant.variantId) === downgradeTargetVariantId;
+                      return (
+                        <button
+                          key={variant.variantId}
+                          type="button"
+                          onClick={() => setDowngradeTargetVariantId(String(variant.variantId))}
+                          className={`flex items-center justify-between rounded-xl border px-4 py-3 text-left text-sm transition ${
+                            isSelected
+                              ? "border-[#c42924] bg-[#c42924]/15 text-white"
+                              : "border-white/10 bg-white/[0.03] text-slate-200 hover:border-white/20 hover:bg-white/[0.06]"
+                          }`}
+                        >
+                          <div className="flex flex-col">
+                            <span className="font-semibold">{variant.variantName || variant.productCode}</span>
+                            <span className="text-xs text-slate-400">
+                              {variant.durationMonths > 0 ? `${variant.durationMonths}M` : `${variant.validityDays}d`} · {variant.categoryCode}
+                            </span>
+                          </div>
+                          <span className="text-sm font-bold tabular-nums text-white">{formatInr(Number(variant.basePrice || 0))}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
           </Modal>
 
