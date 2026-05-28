@@ -52,6 +52,20 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     // member from the list 403s and redirects to the dashboard.
     "/admin/members",
     "/portal/renewals",
+    "/portal/billing",
+    "/portal/trainers",
+    "/admin/coaches",
+    "/portal/trainer-attendance",
+    "/portal/gym-attendance",
+    "/portal/shifts",
+    "/portal/staff",
+    "/admin/programs",
+    "/admin/classes",
+    "/portal/class-schedule",
+    "/portal/community",
+    // Reports page is allowed, but the page itself hides confidential revenue
+    // analytics for SALES_EXECUTIVE (revenueRestricted) — member-centric only.
+    "/portal/reports",
     // Personal settings page — required for the Change Password UI.
     "/portal/settings",
     "/portal/my-profile",
@@ -99,6 +113,16 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
 
 const STAFF_DESIGNATION_DENY_PREFIXES: Partial<Record<UserDesignation, string[]>> = {
   GYM_MANAGER: [
+    "/portal/trainers/add",
+    "/portal/staff/add",
+    "/admin/catalog",
+    "/admin/credits",
+    "/admin/settings",
+  ],
+  // SALES_EXECUTIVE has view access to staff/trainers/programs/classes but
+  // must not create staff or trainer accounts (even GYM_MANAGER can't), and
+  // never reaches admin catalog/credits/settings.
+  SALES_EXECUTIVE: [
     "/portal/trainers/add",
     "/portal/staff/add",
     "/admin/catalog",

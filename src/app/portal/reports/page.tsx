@@ -162,6 +162,11 @@ export default function ReportsPage() {
   const { token, user } = useAuth();
   const { effectiveBranchId, selectedBranchCode } = useBranch();
   const canDownloadReports = user?.role === "ADMIN";
+  // Revenue-restricted view: SALES_EXECUTIVE may see the Reports page but NOT
+  // confidential revenue analytics (monthly revenue, revenue growth, sales
+  // leaderboard, collection analysis, PT revenue, finance registers). They get
+  // member-centric basics only. No other role's report view changes.
+  const revenueRestricted = user?.designation === "SALES_EXECUTIVE";
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [state, setState] = useState<ReportsState>(EMPTY_STATE);
@@ -489,6 +494,26 @@ export default function ReportsPage() {
     }
   };
 
+  // Member-centric registers a revenue-restricted user (SALES_EXECUTIVE) may
+  // download. Everything else (sales/collection/subscription/balance-due) is
+  // confidential and stays admin-only.
+  const BASIC_REPORT_KEYS = new Set([
+    "member-client-database",
+    "pt-client-database",
+    "recorded-session-register",
+    "transfer-register",
+    "freeze-register",
+  ]);
+  const visibleReportCards = canDownloadReports
+    ? reportCards
+    : revenueRestricted
+      ? reportCards.filter((card) => BASIC_REPORT_KEYS.has(card.key))
+      : [];
+  const showDownloadSection = visibleReportCards.length > 0;
+  const visibleAnalysisCards = revenueRestricted
+    ? analysisCards.filter((card) => card.title !== "Collection Analysis")
+    : analysisCards;
+
   if (loading) return <PageLoader label="Loading reports..." />;
 
   return (
@@ -511,7 +536,7 @@ export default function ReportsPage() {
 
       <SectionCard title="Analysis" subtitle="View-only operating analysis for the selected branch scope">
         <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          {analysisCards.map((card) => {
+          {visibleAnalysisCards.map((card) => {
             const maxValue = Math.max(...card.series.map((item) => item.value), 1);
             return (
             <article key={card.title} className="rounded-2xl border border-white/10 bg-[#171d29] p-5">
@@ -547,10 +572,10 @@ export default function ReportsPage() {
         </div>
       </SectionCard>
 
-      {canDownloadReports ? (
+      {showDownloadSection ? (
         <SectionCard title="Download Registers" subtitle="Operational exports for migration validation and daily branch reporting">
           <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {reportCards.map((card) => (
+            {visibleReportCards.map((card) => (
               <article key={card.key} className="rounded-2xl border border-white/10 bg-[#171d29] p-4">
                 <p className="text-sm font-semibold text-white">{card.title}</p>
                 <p className="mt-2 min-h-10 text-sm leading-5 text-slate-400">{card.description}</p>
@@ -571,10 +596,10 @@ export default function ReportsPage() {
 
       <div className="grid grid-cols-1 gap-6 md:grid-cols-2 lg:grid-cols-4">
         {[
-          {
+          ...(revenueRestricted ? [] : [{
             label: "Monthly Revenue",
             value: formatCurrency(Math.round(state.adminOverview.monthRevenue || state.metrics.revenueThisMonth)),
-          },
+          }]),
           { label: "Total Memberships", value: String(state.adminOverview.totalMembers) },
           { label: "Lead Conversion", value: formatPercent(state.metrics.conversionRate) },
           { label: "Follow-ups Due", value: String(state.metrics.followUpsDue) },
@@ -586,6 +611,8 @@ export default function ReportsPage() {
         ))}
       </div>
 
+      {!revenueRestricted ? (
+      <>
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
         <SectionCard title="Revenue Growth">
           <div className="flex h-64 items-end gap-4 rounded-2xl bg-[#171d29] p-4">
@@ -650,6 +677,8 @@ export default function ReportsPage() {
           emptyMessage="No trainer utilization data available."
         />
       </SectionCard>
+      </>
+      ) : null}
     </div>
   );
 }
