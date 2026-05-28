@@ -32,10 +32,15 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     "/portal/inquiries",
     "/portal/follow-ups",
     "/portal/members",
+    // Member profile lives under /admin/members — needed to open a profile
+    // from the members list. Sensitive actions stay gated inside the page.
+    "/admin/members",
     "/portal/renewals",
     "/portal/billing",
     "/portal/notifications",
     "/portal/reports",
+    // Personal settings page (account summary + own details + change password).
+    "/portal/settings",
     "/portal/my-profile",
   ],
   SALES_EXECUTIVE: [
@@ -43,7 +48,12 @@ const STAFF_DESIGNATION_ROUTE_PREFIXES: Record<UserDesignation, string[]> = {
     "/portal/inquiries",
     "/portal/follow-ups",
     "/portal/members",
+    // Member profile lives under /admin/members — without this, clicking a
+    // member from the list 403s and redirects to the dashboard.
+    "/admin/members",
     "/portal/renewals",
+    // Personal settings page — required for the Change Password UI.
+    "/portal/settings",
     "/portal/my-profile",
   ],
   FRONT_DESK_EXECUTIVE: [
