@@ -1137,6 +1137,7 @@ export default function MembersPage() {
                         <div className="flex flex-col gap-1">
                           <span
                             className={`inline-flex w-fit rounded-full border px-2 py-0.5 text-xs font-semibold ${subscriptionStateClasses(subscriptionState)}`}
+                            title={subscriptionState === "PAUSED" ? "Membership frozen — open profile to see resume date" : undefined}
                           >
                             {formatDisplayLabel(subscriptionState)}
                           </span>

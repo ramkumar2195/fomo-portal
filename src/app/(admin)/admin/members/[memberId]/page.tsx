@@ -3515,6 +3515,11 @@ export default function MemberProfilePage() {
   const visibleCurrentMembershipStatus = isVisibleCurrentMembershipPaymentPending
     ? "Paused"
     : humanizeLabel(portfolioPrimaryMembership?.status || membershipStatus);
+  const visibleFreezeEndDate =
+    (visibleCurrentMembershipStatus === "Paused" || visibleCurrentMembershipStatus === "Frozen")
+      ? (pickString(activeFreezeRecord, ["endAt"]) || "").slice(0, 10)
+      : "";
+  const visibleFreezeEndDateLabel = visibleFreezeEndDate ? formatDateOnly(visibleFreezeEndDate) : "";
   const selectedEntitlementRecords = normalizedEntitlementRecords.filter((entry) => {
     const linkedSubscriptionId = extractSubscriptionIdFromEntitlementSource(entry.source);
     if (!linkedSubscriptionId) {
@@ -8958,11 +8963,19 @@ export default function MemberProfilePage() {
                           <div className="mt-1 flex flex-wrap items-center gap-2">
                             <p className="text-sm text-slate-400">{visibleCurrentMembershipDuration}</p>
                             {visibleCurrentMembershipStatus === "Paused" || visibleCurrentMembershipStatus === "Frozen" ? (
-                              <span className="rounded-full border border-sky-400/30 bg-sky-500/15 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.18em] text-sky-100">
+                              <span
+                                className="rounded-full border border-sky-400/30 bg-sky-500/15 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.18em] text-sky-100"
+                                title={visibleFreezeEndDateLabel ? `Frozen until ${visibleFreezeEndDateLabel}` : undefined}
+                              >
                                 {visibleCurrentMembershipStatus}
                               </span>
                             ) : null}
                           </div>
+                          {(visibleCurrentMembershipStatus === "Paused" || visibleCurrentMembershipStatus === "Frozen") && visibleFreezeEndDateLabel ? (
+                            <p className="mt-1 text-[11px] font-medium uppercase tracking-[0.18em] text-sky-200/80">
+                              Frozen until {visibleFreezeEndDateLabel}
+                            </p>
+                          ) : null}
                         </div>
                       </div>
                     </div>
