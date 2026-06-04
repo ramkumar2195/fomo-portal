@@ -11,8 +11,9 @@ import {
   RenewalQueueItem,
   subscriptionService,
 } from "@/lib/api/services/subscription-service";
+import { subscriptionFollowUpService } from "@/lib/api/services/subscription-followup-service";
 import { usersService } from "@/lib/api/services/users-service";
-import { formatDateTime } from "@/lib/formatters";
+import { formatDateOnly, formatDateTime } from "@/lib/formatters";
 
 interface RenewalRow extends RenewalQueueItem {
   memberName: string;
@@ -82,44 +83,34 @@ export default function RenewalsPage() {
       setUpcomingPage(0);
       setExpiredPage(0);
 
-      // Best-effort fetch of latest follow-up per renewal member so the
-      // "Last Contacted" column has data. Capped at 100 dashboards per page
-      // load with 20-concurrency batching to stay friendly to the API.
-      const uniqueMemberIds = Array.from(
-        new Set(filteredRows.map((row) => row.memberId).filter(Boolean)),
-      ).slice(0, 100);
-      const contacted: Record<string, string> = {};
-      const BATCH = 20;
-      for (let i = 0; i < uniqueMemberIds.length; i += BATCH) {
-        const slice = uniqueMemberIds.slice(i, i + BATCH);
-        const results = await Promise.all(
-          slice.map(async (id) => {
-            try {
-              const dash = await subscriptionService.getMemberDashboard(token, id);
-              const record = (dash && typeof dash === "object") ? (dash as Record<string, unknown>) : {};
-              const inquiry = (record.sourceInquiry && typeof record.sourceInquiry === "object")
-                ? (record.sourceInquiry as Record<string, unknown>)
-                : {};
-              const latestFu = (inquiry.latestFollowUp && typeof inquiry.latestFollowUp === "object")
-                ? (inquiry.latestFollowUp as Record<string, unknown>)
-                : (record.latestFollowUp && typeof record.latestFollowUp === "object"
-                  ? (record.latestFollowUp as Record<string, unknown>)
-                  : {});
-              const date = (typeof latestFu.completedAt === "string" && latestFu.completedAt)
-                || (typeof latestFu.dueAt === "string" && latestFu.dueAt)
-                || (typeof latestFu.createdAt === "string" && latestFu.createdAt)
-                || null;
-              return { id, date };
-            } catch {
-              return { id, date: null };
-            }
-          }),
-        );
-        results.forEach(({ id, date }) => {
-          if (date) contacted[id] = date;
+      // B-12 fix: previous approach did N concurrent getMemberDashboard calls
+      // and extracted dashboard.sourceInquiry.latestFollowUp.dueAt — but
+      // the backend dashboard payload doesn't carry that field for migrated
+      // members so every row showed "Never". Replaced with a single
+      // searchFollowUpQueue call across the member-renewals segment, then
+      // group by memberId locally and keep the most recent timestamp per
+      // member. One round-trip, accurate data, also faster than the N-call
+      // version.
+      try {
+        const queue = await subscriptionFollowUpService.searchFollowUpQueue(token, {
+          segment: "MEMBER_RENEWALS",
+          size: 5000,
         });
+        const contacted: Record<string, string> = {};
+        for (const fu of queue) {
+          if (!fu.memberId) continue;
+          const key = String(fu.memberId);
+          const stamp = fu.completedAt || fu.dueAt || fu.createdAt;
+          if (!stamp) continue;
+          const prev = contacted[key];
+          if (!prev || new Date(stamp).getTime() > new Date(prev).getTime()) {
+            contacted[key] = stamp;
+          }
+        }
+        setLastContactedByMemberId(contacted);
+      } catch {
+        setLastContactedByMemberId({});
       }
-      setLastContactedByMemberId(contacted);
     } catch (loadError) {
       const message = loadError instanceof Error ? loadError.message : "Unable to load renewal data";
       setError(message);
@@ -230,7 +221,7 @@ export default function RenewalsPage() {
                   <tr key={`upcoming-${item.memberSubscriptionId}`} className="hover:bg-white/[0.03]">
                     <td className="px-6 py-4 text-sm font-semibold text-white">{item.memberName}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">{item.variantName}</td>
-                    <td className="px-6 py-4 text-sm text-slate-300">{formatDateTime(item.endDate)}</td>
+                    <td className="px-6 py-4 text-sm text-slate-300">{formatDateOnly(item.endDate)}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">{item.daysRemaining}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">
                       {lastContactedByMemberId[item.memberId] ? formatDateTime(lastContactedByMemberId[item.memberId]) : <span className="text-slate-500">Never</span>}
@@ -312,7 +303,7 @@ export default function RenewalsPage() {
                   <tr key={`expired-${item.memberSubscriptionId}`} className="hover:bg-white/[0.03]">
                     <td className="px-6 py-4 text-sm font-semibold text-white">{item.memberName}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">{item.variantName}</td>
-                    <td className="px-6 py-4 text-sm text-slate-300">{formatDateTime(item.endDate)}</td>
+                    <td className="px-6 py-4 text-sm text-slate-300">{formatDateOnly(item.endDate)}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">{Math.abs(item.daysRemaining)}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">
                       {lastContactedByMemberId[item.memberId] ? formatDateTime(lastContactedByMemberId[item.memberId]) : <span className="text-slate-500">Never</span>}

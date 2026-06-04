@@ -10,7 +10,7 @@ import { ToastBanner } from "@/components/common/toast-banner";
 import { useAuth } from "@/contexts/auth-context";
 import { useBranch } from "@/contexts/branch-context";
 import { subscriptionFollowUpService } from "@/lib/api/services/subscription-followup-service";
-import { formatDateTime } from "@/lib/formatters";
+import { formatDateOnly, formatDateTime } from "@/lib/formatters";
 import { formatInquiryCode } from "@/lib/inquiry-code";
 import { resolveStaffId } from "@/lib/staff-id";
 import { subscriptionService } from "@/lib/api/services/subscription-service";
@@ -1386,7 +1386,7 @@ export default function FollowUpsPage() {
                             }
                             return (
                               <div className="flex flex-col gap-0.5">
-                                <span className="text-xs text-slate-300">{formatDateTime(ctx.endDate)}</span>
+                                <span className="text-xs text-slate-300">{formatDateOnly(ctx.endDate)}</span>
                                 <span className={`inline-flex w-fit rounded-full border px-2 py-0.5 text-[10px] font-semibold ${pillCls}`}>
                                   {label}
                                 </span>

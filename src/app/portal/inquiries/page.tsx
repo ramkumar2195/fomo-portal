@@ -1240,7 +1240,12 @@ export default function InquiriesPage() {
     setQuickFollowUpForm({
       inquiryId: inquiry.inquiryId,
       dueAt: toDateTimeLocalInput(new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString()),
-      responseType: "NEEDS_DETAILS",
+      // B-7 fix: previous default was NEEDS_DETAILS which renders as
+      // "New Follow-up". Staff who didn't change the dropdown were
+      // submitting that as the actual response, polluting analytics with
+      // ambiguous data. Start empty so the operator must pick a real
+      // response before submitting.
+      responseType: "" as InquiryResponseType,
       channel: "CALL",
       assignedToStaffId: inquiry.clientRepStaffId ? String(inquiry.clientRepStaffId) : initialStaffId ? String(initialStaffId) : "",
       trialGiven: false,
@@ -1272,6 +1277,14 @@ export default function InquiriesPage() {
   const submitQuickFollowUp = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!token || !quickFollowUpForm) {
+      return;
+    }
+
+    // B-7 validation: response is the primary data this form collects, so
+    // submitting without one is a UX failure. Surface a toast instead of
+    // letting blank data slip through.
+    if (!quickFollowUpForm.responseType) {
+      setToast({ kind: "error", message: "Pick a follow-up response before saving." });
       return;
     }
 
@@ -1781,8 +1794,19 @@ export default function InquiriesPage() {
       .sort((a, b) => b.count - a.count)
       .slice(0, 6);
 
-    const convertedCount = Math.max(analysisMemberCount, convertedInquiryCount);
-    statusCounts.set("CONVERTED", convertedCount);
+    // B-1 fix: the previous math used Math.max(analysisMemberCount, convertedInquiryCount)
+    // which conflated "total members in the system" with "converted leads from this
+    // pipeline". On a YDL-migrated DB the member roster (~758) is much larger than
+    // the inquiries-that-converted (~133) because many members were imported without
+    // a tracked source inquiry. That inflated the converted count + skewed the
+    // conversion rate. Standard funnel math is: converted = inquiries with
+    // converted=true; total = inquiries we have on record; rate = converted/total.
+    const convertedCount = convertedInquiryCount;
+    // B-2 fix: don't overwrite the CONVERTED chip's natural lead_status count.
+    // ~8 inquiries have lead_status=CONTACTED AND converted=true; overwriting
+    // CONVERTED with convertedInquiryCount double-counts them (already in
+    // CONTACTED chip via the natural status pass). Use the lead_status count
+    // for the chip and keep convertedInquiryCount for the conversion-rate tile.
 
     const statusSeries = INQUIRY_STATUS_OPTIONS.map((option) => ({
       key: option.value,
@@ -1790,7 +1814,7 @@ export default function InquiriesPage() {
       count: statusCounts.get(option.value) || 0,
     }));
 
-    const total = analysisInquiries.length + Math.max(analysisMemberCount - convertedInquiryCount, 0);
+    const total = analysisInquiries.length;
     const conversionRate = total > 0 ? Math.round((convertedCount / total) * 100) : 0;
 
     return {
@@ -3208,9 +3232,24 @@ export default function InquiriesPage() {
               <div>
                 <h2 className="text-lg font-semibold text-slate-900">Add Follow-up</h2>
                 <p className="text-sm text-slate-500">
+                  {/* B-6 fix: previous lookup only checked selectedInquiry,
+                      but the Add Follow-up modal is also opened from the
+                      view popup (viewingInquiry) where selectedInquiry is
+                      null. That made the inner code fall back to 'GEN'
+                      while the outer header showed the real branch
+                      (CARM/HSR/...). Fall through both state slices and
+                      finally the inquiry id pulled from the form. */}
                   {formatInquiryCode(quickFollowUpForm.inquiryId, {
-                    branchCode: selectedInquiry?.branchCode,
-                    createdAt: selectedInquiry?.createdAt || selectedInquiry?.inquiryAt,
+                    branchCode:
+                      selectedInquiry?.branchCode
+                      || viewingInquiry?.branchCode
+                      || inquiries.find((i) => i.inquiryId === quickFollowUpForm.inquiryId)?.branchCode,
+                    createdAt:
+                      selectedInquiry?.createdAt
+                      || selectedInquiry?.inquiryAt
+                      || viewingInquiry?.createdAt
+                      || viewingInquiry?.inquiryAt
+                      || inquiries.find((i) => i.inquiryId === quickFollowUpForm.inquiryId)?.createdAt,
                   })}
                 </p>
               </div>
@@ -3288,6 +3327,9 @@ export default function InquiriesPage() {
                       )
                     }
                   >
+                    <option value="" disabled>
+                      — Pick a response —
+                    </option>
                     {RESPONSE_TYPE_OPTIONS.map((option) => (
                       <option key={`quick-response-${option.value}`} value={option.value}>
                         {option.label}

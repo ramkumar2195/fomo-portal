@@ -592,7 +592,17 @@ export const engagementService = {
         upcomingRenewals7Days: num(alerts.membershipsExpiringSoon),
         upcomingRenewals15Days: 0,
         upcomingRenewals30Days: 0,
-        totalMembers: num((summary.members || {}).totalMembers),
+        // B-4 fix: backend's summary.members payload doesn't carry a dedicated
+        // totalMembers field — only activeMembers/expiredMembers/irregularMembers.
+        // Derive total as their sum so the "Total Members" KPI tile shows a
+        // useful number instead of 0. If the backend later adds totalMembers,
+        // that explicit value wins.
+        totalMembers: (() => {
+          const explicit = num((summary.members || {}).totalMembers);
+          if (explicit > 0) return explicit;
+          const m = summary.members || {};
+          return num(m.activeMembers) + num(m.expiredMembers) + num(m.irregularMembers);
+        })(),
         totalStaff: num((summary.staff || {}).totalStaff),
         // bonus exposed for #7 follow-up
         totalCoaches: num((summary.coaches || {}).totalCoaches),
