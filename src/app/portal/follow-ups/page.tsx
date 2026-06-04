@@ -335,6 +335,11 @@ export default function FollowUpsPage() {
   const [dashboardView, setDashboardView] = useState<DashboardView>("EXPECTED");
   const [followUps, setFollowUps] = useState<FollowUpRecord[]>([]);
   const [inquiriesById, setInquiriesById] = useState<Record<number, InquiryRecord>>({});
+  // Member-side expiry context for the new "Member Status" column. Keyed by
+  // member_id, holds the latest active/paused sub's end date. We batch-fetch
+  // dashboards for each unique member_id referenced by the follow-ups so the
+  // sales rep can see "expires in 3 days" right next to the call note.
+  const [memberExpiryById, setMemberExpiryById] = useState<Record<number, { endDate: string | null; status: string | null }>>({});
   const [staffById, setStaffById] = useState<Record<string, string>>({});
   const [staffDirectoryOptions, setStaffDirectoryOptions] = useState<string[]>([]);
   const [loading, setLoading] = useState(true);
@@ -521,6 +526,38 @@ export default function FollowUpsPage() {
       setStaffDirectoryOptions(Array.from(nextStaffOptionMap.values()).sort((left, right) => left.localeCompare(right)));
       setFollowUps(aggregatedFollowUps);
       setInquiriesById(inquiryIndex);
+
+      // Fetch each member's active subscription expiry so the table can show
+      // "Member Status" alongside each follow-up row. Batch with the same
+      // 25-concurrency pattern used above for inquiries.
+      const referencedMemberIds = Array.from(
+        new Set(
+          aggregatedFollowUps
+            .map((fu) => Number(fu.memberId || inquiryIndex[fu.inquiryId || 0]?.memberId || 0))
+            .filter((id) => Number.isFinite(id) && id > 0),
+        ),
+      );
+      const memberExpiryNext: Record<number, { endDate: string | null; status: string | null }> = {};
+      const MEMBER_FETCH_CONCURRENCY = 25;
+      for (let i = 0; i < referencedMemberIds.length; i += MEMBER_FETCH_CONCURRENCY) {
+        const slice = referencedMemberIds.slice(i, i + MEMBER_FETCH_CONCURRENCY);
+        const results = await Promise.all(
+          slice.map(async (id) => {
+            try {
+              return { id, dashboard: await subscriptionService.getMemberDashboard(token, String(id)) };
+            } catch {
+              return { id, dashboard: null };
+            }
+          }),
+        );
+        results.forEach(({ id, dashboard }) => {
+          const record = (dashboard && typeof dashboard === "object" ? (dashboard as Record<string, unknown>) : {});
+          const endDate = typeof record.expiryDate === "string" ? record.expiryDate : null;
+          const status = typeof record.subscriptionStatus === "string" ? record.subscriptionStatus : null;
+          memberExpiryNext[id] = { endDate, status };
+        });
+      }
+      setMemberExpiryById(memberExpiryNext);
     } catch (loadError) {
       const message = loadError instanceof Error ? loadError.message : "Unable to load follow-up dashboard";
       setError(message);
@@ -1196,6 +1233,7 @@ export default function FollowUpsPage() {
                   <th className="px-4 py-3">Assigned / Scheduled</th>
                   <th className="px-4 py-3">Comment</th>
                   <th className="px-4 py-3">Next Follow-up</th>
+                  <th className="px-4 py-3">Member Status</th>
                   <th className="px-4 py-3">Status</th>
                   <th className="px-4 py-3 text-right">Actions</th>
                 </tr>
@@ -1203,7 +1241,7 @@ export default function FollowUpsPage() {
               <tbody className="divide-y divide-white/8">
                 {paginatedRows.length === 0 ? (
                   <tr>
-                    <td className="px-4 py-6 text-slate-400" colSpan={8}>No follow-ups found.</td>
+                    <td className="px-4 py-6 text-slate-400" colSpan={9}>No follow-ups found.</td>
                   </tr>
                 ) : (
                   paginatedRows.map((item) => {
@@ -1321,6 +1359,40 @@ export default function FollowUpsPage() {
                           >
                             {dueRelative}
                           </span>
+                        </td>
+                        {/* Member Status — expiry date + days-left for converted members */}
+                        <td className="px-4 py-3">
+                          {(() => {
+                            const memberId = Number(item.memberId || item.inquiry?.memberId || 0);
+                            const ctx = memberId > 0 ? memberExpiryById[memberId] : null;
+                            if (!ctx || !ctx.endDate) {
+                              return <span className="text-xs text-slate-500">—</span>;
+                            }
+                            const endMs = new Date(ctx.endDate).getTime();
+                            const todayMs = new Date(new Date().toDateString()).getTime();
+                            const daysLeft = Math.round((endMs - todayMs) / 86400000);
+                            const isFrozen = (ctx.status || "").toUpperCase() === "PAUSED";
+                            let pillCls = "border-emerald-500/30 bg-emerald-500/15 text-emerald-200";
+                            let label = `in ${daysLeft}d`;
+                            if (daysLeft < 0) {
+                              pillCls = "border-rose-500/30 bg-rose-500/15 text-rose-200";
+                              label = `expired ${Math.abs(daysLeft)}d ago`;
+                            } else if (daysLeft <= 7) {
+                              pillCls = "border-amber-500/30 bg-amber-500/15 text-amber-200";
+                            }
+                            if (isFrozen) {
+                              pillCls = "border-sky-500/30 bg-sky-500/15 text-sky-200";
+                              label = "frozen";
+                            }
+                            return (
+                              <div className="flex flex-col gap-0.5">
+                                <span className="text-xs text-slate-300">{formatDateTime(ctx.endDate)}</span>
+                                <span className={`inline-flex w-fit rounded-full border px-2 py-0.5 text-[10px] font-semibold ${pillCls}`}>
+                                  {label}
+                                </span>
+                              </div>
+                            );
+                          })()}
                         </td>
                         {/* Status — pill, optional completed-at tooltip */}
                         <td className="px-4 py-3">

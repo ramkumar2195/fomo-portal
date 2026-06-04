@@ -34,6 +34,10 @@ export default function RenewalsPage() {
   const [expiredMembers, setExpiredMembers] = useState(0);
   const [upcomingPage, setUpcomingPage] = useState(0);
   const [expiredPage, setExpiredPage] = useState(0);
+  // Latest follow-up timestamp per member, keyed by member_id (string).
+  // Surfaced in the new "Last Contacted" column so the staff can prioritize
+  // who hasn't been called recently.
+  const [lastContactedByMemberId, setLastContactedByMemberId] = useState<Record<string, string>>({});
 
   const loadPage = useCallback(async () => {
     if (!token || !user) {
@@ -77,6 +81,45 @@ export default function RenewalsPage() {
       setExpiredMembers(dashboard.summary.members.expiredMembers);
       setUpcomingPage(0);
       setExpiredPage(0);
+
+      // Best-effort fetch of latest follow-up per renewal member so the
+      // "Last Contacted" column has data. Capped at 100 dashboards per page
+      // load with 20-concurrency batching to stay friendly to the API.
+      const uniqueMemberIds = Array.from(
+        new Set(filteredRows.map((row) => row.memberId).filter(Boolean)),
+      ).slice(0, 100);
+      const contacted: Record<string, string> = {};
+      const BATCH = 20;
+      for (let i = 0; i < uniqueMemberIds.length; i += BATCH) {
+        const slice = uniqueMemberIds.slice(i, i + BATCH);
+        const results = await Promise.all(
+          slice.map(async (id) => {
+            try {
+              const dash = await subscriptionService.getMemberDashboard(token, id);
+              const record = (dash && typeof dash === "object") ? (dash as Record<string, unknown>) : {};
+              const inquiry = (record.sourceInquiry && typeof record.sourceInquiry === "object")
+                ? (record.sourceInquiry as Record<string, unknown>)
+                : {};
+              const latestFu = (inquiry.latestFollowUp && typeof inquiry.latestFollowUp === "object")
+                ? (inquiry.latestFollowUp as Record<string, unknown>)
+                : (record.latestFollowUp && typeof record.latestFollowUp === "object"
+                  ? (record.latestFollowUp as Record<string, unknown>)
+                  : {});
+              const date = (typeof latestFu.completedAt === "string" && latestFu.completedAt)
+                || (typeof latestFu.dueAt === "string" && latestFu.dueAt)
+                || (typeof latestFu.createdAt === "string" && latestFu.createdAt)
+                || null;
+              return { id, date };
+            } catch {
+              return { id, date: null };
+            }
+          }),
+        );
+        results.forEach(({ id, date }) => {
+          if (date) contacted[id] = date;
+        });
+      }
+      setLastContactedByMemberId(contacted);
     } catch (loadError) {
       const message = loadError instanceof Error ? loadError.message : "Unable to load renewal data";
       setError(message);
@@ -170,6 +213,7 @@ export default function RenewalsPage() {
                 <th className="px-6 py-4">Plan</th>
                 <th className="px-6 py-4">Expiry Date</th>
                 <th className="px-6 py-4">Days Left</th>
+                <th className="px-6 py-4">Last Contacted</th>
                 <th className="px-6 py-4">Status</th>
                 <th className="px-6 py-4">Action</th>
               </tr>
@@ -177,7 +221,7 @@ export default function RenewalsPage() {
             <tbody className="divide-y divide-white/8">
               {upcomingRows.length === 0 ? (
                 <tr>
-                  <td className="px-6 py-4 text-sm text-slate-400" colSpan={6}>
+                  <td className="px-6 py-4 text-sm text-slate-400" colSpan={7}>
                     No upcoming renewals available.
                   </td>
                 </tr>
@@ -188,6 +232,9 @@ export default function RenewalsPage() {
                     <td className="px-6 py-4 text-sm text-slate-300">{item.variantName}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">{formatDateTime(item.endDate)}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">{item.daysRemaining}</td>
+                    <td className="px-6 py-4 text-sm text-slate-300">
+                      {lastContactedByMemberId[item.memberId] ? formatDateTime(lastContactedByMemberId[item.memberId]) : <span className="text-slate-500">Never</span>}
+                    </td>
                     <td className="px-6 py-4 text-sm text-slate-300">
                       {item.subscriptionStatus?.toUpperCase() === "PAUSED" ? "Frozen" : item.subscriptionStatus}
                       {item.paymentConfirmed ? " · Paid" : " · Pending"}
@@ -248,6 +295,7 @@ export default function RenewalsPage() {
                 <th className="px-6 py-4">Plan</th>
                 <th className="px-6 py-4">Expired On</th>
                 <th className="px-6 py-4">Days Overdue</th>
+                <th className="px-6 py-4">Last Contacted</th>
                 <th className="px-6 py-4">Payment</th>
                 <th className="px-6 py-4">Action</th>
               </tr>
@@ -255,7 +303,7 @@ export default function RenewalsPage() {
             <tbody className="divide-y divide-white/8">
               {expiredRows.length === 0 ? (
                 <tr>
-                  <td className="px-6 py-4 text-sm text-slate-400" colSpan={6}>
+                  <td className="px-6 py-4 text-sm text-slate-400" colSpan={7}>
                     No expired members available.
                   </td>
                 </tr>
@@ -266,6 +314,9 @@ export default function RenewalsPage() {
                     <td className="px-6 py-4 text-sm text-slate-300">{item.variantName}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">{formatDateTime(item.endDate)}</td>
                     <td className="px-6 py-4 text-sm text-slate-300">{Math.abs(item.daysRemaining)}</td>
+                    <td className="px-6 py-4 text-sm text-slate-300">
+                      {lastContactedByMemberId[item.memberId] ? formatDateTime(lastContactedByMemberId[item.memberId]) : <span className="text-slate-500">Never</span>}
+                    </td>
                     <td className="px-6 py-4 text-sm text-slate-300">
                       {item.paymentConfirmed ? "Settled" : "Pending"}
                       {item.migrationOnly ? " · Historical only" : ""}
