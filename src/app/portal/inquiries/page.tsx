@@ -8,6 +8,7 @@ import {
   MessageSquareText,
   PencilLine,
   Plus,
+  RotateCcw,
   XCircle,
 } from "lucide-react";
 import { SectionCard } from "@/components/common/section-card";
@@ -1552,6 +1553,53 @@ export default function InquiriesPage() {
     router.push(`/portal/members/add?${params.toString()}`);
   };
 
+  /**
+   * Reopen a closed (NOT_INTERESTED / LOST) inquiry by flipping its
+   * lead_status back to CONTACTED. The backend serializes `lead_status` as
+   * the `status` field on the JSON response, so updating status here is what
+   * actually moves the lead out of "closed" and re-exposes the Convert and
+   * Add-Follow-up buttons. Used for YDL-imported leads that were marked
+   * NOT_INTERESTED during the May 2026 backfill and now walk back in.
+   */
+  const reopenInquiry = async (inquiry: InquiryRecord) => {
+    if (!canUpdateInquiry) {
+      setToast({ kind: "error", message: "You do not have capability to update enquiries" });
+      return;
+    }
+    if (isConvertedInquiry(inquiry)) {
+      setToast({ kind: "error", message: "Converted enquiry cannot be reopened." });
+      return;
+    }
+    if (!token) {
+      return;
+    }
+    try {
+      setRowActionLoadingId(inquiry.inquiryId);
+      const updated = await subscriptionService.updateInquiry(token, inquiry.inquiryId, {
+        status: "CONTACTED",
+        closeReason: "",
+      });
+      setInquiries((prev) =>
+        prev.map((item) =>
+          item.inquiryId === inquiry.inquiryId
+            ? { ...item, status: updated.status || "CONTACTED", closeReason: undefined }
+            : item,
+        ),
+      );
+      setViewingInquiry((prev) =>
+        prev && prev.inquiryId === inquiry.inquiryId
+          ? { ...prev, status: updated.status || "CONTACTED", closeReason: undefined }
+          : prev,
+      );
+      setToast({ kind: "success", message: "Lead reopened — Convert and Add Follow-up are now available." });
+    } catch (reopenError) {
+      const message = reopenError instanceof Error ? reopenError.message : "Unable to reopen lead";
+      setToast({ kind: "error", message });
+    } finally {
+      setRowActionLoadingId(null);
+    }
+  };
+
   const selectedInquiry = useMemo(
     () => inquiries.find((item) => item.inquiryId === editingInquiryId) || null,
     [inquiries, editingInquiryId],
@@ -2874,6 +2922,26 @@ export default function InquiriesPage() {
                     >
                       <CheckCircle2 className="h-3.5 w-3.5" />
                       Convert
+                    </button>
+                  ) : null}
+                  {/*
+                   * Reopen Lead — surfaces only on closed (NOT_INTERESTED /
+                   * LOST) inquiries. Flips lead_status back to CONTACTED and
+                   * clears close_reason so the Convert + Add-Follow-up buttons
+                   * reappear. The use case is YDL-imported "not interested"
+                   * leads who walk back in months later. Without this the
+                   * staff had to dig through the Edit modal and toggle two
+                   * dropdowns.
+                   */}
+                  {canUpdateInquiry && profileIsClosed ? (
+                    <button
+                      type="button"
+                      disabled={profileIsConverting}
+                      onClick={() => void reopenInquiry(inq)}
+                      className="inline-flex h-8 items-center gap-1.5 rounded-lg bg-amber-500 px-3 text-xs font-semibold text-white hover:bg-amber-400 disabled:bg-amber-300"
+                    >
+                      <RotateCcw className="h-3.5 w-3.5" />
+                      Reopen Lead
                     </button>
                   ) : null}
                   {canUpdateInquiry && !profileIsClosed ? (
