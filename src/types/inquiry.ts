@@ -167,6 +167,8 @@ export interface InquirySearchQuery {
   branchId?: number;
   branchCode?: string;
   converted?: boolean;
+  /** ISS-038e — show only inquiries with no assigned rep (clientRepStaffId IS NULL). */
+  unassignedOnly?: boolean;
   from?: string;
   to?: string;
   page?: number;

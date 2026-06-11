@@ -84,6 +84,8 @@ interface InquiryFilterState {
   fromDate: string;
   toDate: string;
   clientRepStaffId: string;
+  /** ISS-038e — true when the dashboard "Unassigned" tile deep-links here. */
+  unassignedOnly: boolean;
 }
 
 interface FollowUpPreview {
@@ -625,6 +627,7 @@ export default function InquiriesPage() {
     fromDate: "",
     toDate: "",
     clientRepStaffId: "",
+    unassignedOnly: false,
   });
   const [staffOptions, setStaffOptions] = useState<StaffOption[]>([]);
   // Step 3 — assignment workflow. Map of staffId → open enquiry count
@@ -683,6 +686,9 @@ export default function InquiriesPage() {
   // typed mobile prefilled. When this param is present we auto-open the
   // create modal and hand the mobile through as initialMobile.
   const deepLinkedCreateMobile = searchParams.get("createWithMobile") || "";
+  // ISS-038e — dashboard "Unassigned" tile deep-links with assigned=none.
+  // Read on mount and apply as a filter so the page matches the tile count.
+  const deepLinkedUnassignedOnly = searchParams.get("assigned") === "none";
 
   const loadInquiries = useCallback(
     async (nextFilters?: InquiryFilterState, nextPage = currentPage) => {
@@ -699,6 +705,7 @@ export default function InquiriesPage() {
       const clientRepRaw = nextFilters?.clientRepStaffId ?? filters.clientRepStaffId;
       const fromDateRaw = nextFilters?.fromDate ?? filters.fromDate;
       const toDateRaw = nextFilters?.toDate ?? filters.toDate;
+      const appliedUnassignedOnly = nextFilters?.unassignedOnly ?? filters.unassignedOnly;
 
       const appliedConverted = convertedRaw === "true" ? true : convertedRaw === "false" ? false : undefined;
       // viewScope=MINE wins over the explicit clientRep filter: if the
@@ -723,7 +730,11 @@ export default function InquiriesPage() {
           convertibility: appliedConvertibility,
           closeReason: appliedCloseReason,
           converted: appliedConverted,
-          clientRepStaffId: appliedClientRepStaffId,
+          // ISS-038e — when unassigned filter is active, clear the staff id
+          // filter (backend treats unassignedOnly=true as overriding staff).
+          // Also drop the converted=false default so the count matches.
+          clientRepStaffId: appliedUnassignedOnly ? undefined : appliedClientRepStaffId,
+          unassignedOnly: appliedUnassignedOnly || undefined,
           from: fromRange,
           to: toRange,
           branchId: effectiveBranchId,
@@ -804,6 +815,7 @@ export default function InquiriesPage() {
       filters.clientRepStaffId,
       filters.fromDate,
       filters.toDate,
+      filters.unassignedOnly,
       currentPage,
       effectiveBranchCode,
       effectiveBranchId,
@@ -832,6 +844,23 @@ export default function InquiriesPage() {
       return { ...prev, query: deepLinkedQuery };
     });
   }, [deepLinkedQuery]);
+
+  // ISS-038e — pick up ?assigned=none deep link from dashboard tile
+  // and apply unassignedOnly filter. Also clears the converted=false
+  // default since the dashboard already pre-filters to open leads via
+  // the count query.
+  useEffect(() => {
+    if (!deepLinkedUnassignedOnly) {
+      return;
+    }
+    setCurrentPage(1);
+    setFilters((prev) => {
+      if (prev.unassignedOnly) {
+        return prev;
+      }
+      return { ...prev, unassignedOnly: true, clientRepStaffId: "" };
+    });
+  }, [deepLinkedUnassignedOnly]);
 
   const loadInquiryAnalysis = useCallback(async () => {
     if (!token || !canViewInquiries) {
@@ -2162,6 +2191,7 @@ export default function InquiriesPage() {
                         fromDate: "",
                         toDate: "",
                         clientRepStaffId: "",
+                        unassignedOnly: false,
                       };
                       setFilters(resetFilters);
                       setCurrentPage(1);
@@ -2176,6 +2206,29 @@ export default function InquiriesPage() {
             </div>
           ) : null}
         </form>
+
+        {/*
+          ISS-038e — when the dashboard "Unassigned" tile deep-links here,
+          surface a high-visibility banner so the operator knows the list
+          is filtered down to unassigned leads, with a one-click clear.
+        */}
+        {filters.unassignedOnly ? (
+          <div className="mt-3 flex items-center justify-between rounded-md border border-amber-300/40 bg-amber-500/10 px-3 py-2 text-xs text-amber-100">
+            <span>
+              Showing <strong>unassigned leads only</strong> (no client rep). {totalRows} match{totalRows === 1 ? "" : "es"}.
+            </span>
+            <button
+              type="button"
+              className="rounded border border-amber-300/40 px-2 py-0.5 text-[11px] font-semibold uppercase tracking-wide text-amber-100 hover:bg-amber-500/20"
+              onClick={() => {
+                setCurrentPage(1);
+                setFilters((prev) => ({ ...prev, unassignedOnly: false }));
+              }}
+            >
+              Clear
+            </button>
+          </div>
+        ) : null}
 
         {/*
           Status filter chip strip — replaces the deleted Status Overview

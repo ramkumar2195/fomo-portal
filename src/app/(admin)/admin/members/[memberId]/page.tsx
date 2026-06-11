@@ -1969,6 +1969,10 @@ export default function MemberProfilePage() {
   const [hasPtAssignment, setHasPtAssignment] = useState(false);
   const [actionModal, setActionModal] = useState<ActionModalKey>(null);
   const [actionBusy, setActionBusy] = useState(false);
+  // ISS-038g — which biometric device tile is currently waiting on a
+  // server response. Lets the device tile show "Working..." only on the
+  // clicked tile, leaving the other devices clickable.
+  const [busyBiometricSerial, setBusyBiometricSerial] = useState<string | null>(null);
   // Downgrade picker — target variant the staff has selected in the modal.
   // Cleared when the modal closes. Backend defaults the start date to the
   // current subscription's end date (scheduled for next cycle), so we only
@@ -6388,6 +6392,9 @@ export default function MemberProfilePage() {
     }
 
     setActionBusy(true);
+    // ISS-038g — mark this specific device serial as busy so per-tile
+    // disable state can target it without freezing the other tiles.
+    setBusyBiometricSerial(targetSerial);
     setActionError(null);
     try {
       const biometricPayload = {
@@ -6441,6 +6448,7 @@ export default function MemberProfilePage() {
       setActionError(error instanceof ApiError ? error.message : "Unable to sync member access with the biometric device.");
     } finally {
       setActionBusy(false);
+      setBusyBiometricSerial(null);
     }
   };
 
@@ -7764,7 +7772,16 @@ export default function MemberProfilePage() {
                     const showAddAction = normalizedEnrollmentStatus === "NOT_ADDED" || normalizedEnrollmentStatus === "DELETED" || normalizedEnrollmentStatus === "FAILED";
                     const showBlockAction = normalizedEnrollmentStatus === "ENROLLED";
                     const showUnblockAction = normalizedEnrollmentStatus === "BLOCKED";
-                    const showReAddAction = normalizedEnrollmentStatus !== "PENDING";
+                    // ISS-038g — Re-add only makes sense AFTER a successful
+                    // initial enrollment. Showing it on NOT_ADDED/DELETED/FAILED
+                    // confused operators (e.g. clients onboarded 3-Jun showed
+                    // both "Add User" and "Re-add" side by side). Limit to
+                    // ENROLLED and BLOCKED so Add and Re-add are mutually exclusive.
+                    const showReAddAction = normalizedEnrollmentStatus === "ENROLLED" || normalizedEnrollmentStatus === "BLOCKED";
+                    // ISS-038g — per-device busy state so clicking Add on
+                    // one tile doesn't spin every tile. actionBusy is global;
+                    // busySerial gates only the current device's buttons.
+                    const tileBusy = actionBusy && busyBiometricSerial === serial;
                     return (
                       <div key={serial || deviceName} className="rounded-[28px] border border-white/8 bg-white/[0.03] p-5">
                         <div className="flex items-start justify-between gap-4">
@@ -7785,40 +7802,40 @@ export default function MemberProfilePage() {
                             <button
                               type="button"
                               onClick={() => void handleAccessAction("ADD_USER", serial)}
-                              disabled={actionBusy || !serial}
+                              disabled={tileBusy || !serial}
                               className="rounded-xl bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.08] disabled:opacity-50"
                             >
-                              {actionBusy ? "Working..." : "Add User"}
+                              {tileBusy ? "Working..." : "Add User"}
                             </button>
                           ) : null}
                           {showReAddAction ? (
                             <button
                               type="button"
                               onClick={() => void handleAccessAction("RE_ADD_USER", serial)}
-                              disabled={actionBusy || !serial}
+                              disabled={tileBusy || !serial}
                               className="rounded-xl bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.08] disabled:opacity-50"
                             >
-                              {actionBusy ? "Working..." : "Re-add"}
+                              {tileBusy ? "Working..." : "Re-add"}
                             </button>
                           ) : null}
                           {showBlockAction ? (
                             <button
                               type="button"
                               onClick={() => void handleAccessAction("BLOCK_USER", serial)}
-                              disabled={actionBusy || !serial}
+                              disabled={tileBusy || !serial}
                               className="rounded-xl bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.08] disabled:opacity-50"
                             >
-                              {actionBusy ? "Working..." : "Block"}
+                              {tileBusy ? "Working..." : "Block"}
                             </button>
                           ) : null}
                           {showUnblockAction ? (
                             <button
                               type="button"
                               onClick={() => void handleAccessAction("UNBLOCK_USER", serial)}
-                              disabled={actionBusy || !serial}
+                              disabled={tileBusy || !serial}
                               className="rounded-xl bg-white/[0.04] px-4 py-2 text-sm font-semibold text-white hover:bg-white/[0.08] disabled:opacity-50"
                             >
-                              {actionBusy ? "Working..." : "Unblock"}
+                              {tileBusy ? "Working..." : "Unblock"}
                             </button>
                           ) : null}
                           <button
