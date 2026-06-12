@@ -849,6 +849,56 @@ export const subscriptionService = {
     return mapInquiry(unwrapData<unknown>(response));
   },
 
+  /**
+   * ISS-038f — batch inquiry fetch. Replaces ~120 individual getInquiryById
+   * calls in the Follow-ups page with one round-trip. Unknown ids are
+   * silently omitted by the backend.
+   */
+  async getInquiriesByIds(token: string, inquiryIds: number[]): Promise<InquiryRecord[]> {
+    const filtered = inquiryIds.filter((id) => Number.isFinite(id) && id > 0);
+    if (filtered.length === 0) return [];
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: "/api/subscriptions/v2/inquiries/by-ids",
+      token,
+      query: { ids: filtered.join(",") },
+    });
+    const data = unwrapData<unknown>(response);
+    if (!Array.isArray(data)) return [];
+    return data.map((entry) => mapInquiry(entry));
+  },
+
+  /**
+   * ISS-038f — lightweight per-member expiry+status summary in one round-trip.
+   * Returns [{memberId, endDate, status}] for each member id. Replaces ~120
+   * individual /dashboard calls fired by the Follow-ups page.
+   */
+  async getMembersExpirySummary(
+    token: string,
+    memberIds: number[],
+  ): Promise<Array<{ memberId: number; endDate: string | null; status: string | null }>> {
+    const filtered = memberIds.filter((id) => Number.isFinite(id) && id > 0);
+    if (filtered.length === 0) return [];
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "subscription",
+      path: "/api/subscriptions/v2/members/expiry-summary",
+      token,
+      query: { ids: filtered.join(",") },
+    });
+    const data = unwrapData<unknown>(response);
+    if (!Array.isArray(data)) return [];
+    return data
+      .map((entry) => {
+        const r = entry as Record<string, unknown>;
+        return {
+          memberId: typeof r.memberId === "number" ? r.memberId : Number(r.memberId ?? 0),
+          endDate: typeof r.endDate === "string" ? r.endDate : null,
+          status: typeof r.status === "string" ? r.status : null,
+        };
+      })
+      .filter((entry) => entry.memberId > 0);
+  },
+
   async getInquirySummary(token: string, inquiryId: number): Promise<InquirySummary> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "subscription",

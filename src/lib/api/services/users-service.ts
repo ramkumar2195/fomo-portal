@@ -1159,6 +1159,27 @@ export const usersService = {
     return typeof data === "object" && data !== null ? mapDirectoryUser(data as BackendUserPayload) : null;
   },
 
+  /**
+   * ISS-038f — batch wrapper around /api/users/internal/by-ids. Used by
+   * the Follow-ups page to resolve ~50 staff names in one round-trip
+   * instead of ~50 sequential getUserById calls.
+   */
+  async getUsersByIds(token: string, ids: Array<string | number>): Promise<UserDirectoryItem[]> {
+    const filtered = ids.map((id) => String(id)).filter((id) => id.length > 0);
+    if (filtered.length === 0) return [];
+    const response = await apiRequest<unknown | { data: unknown }>({
+      service: "users",
+      path: `${USERS_API_PREFIX}/internal/by-ids`,
+      token,
+      query: { ids: filtered.join(",") },
+    });
+    const data = unwrapData<unknown>(response);
+    if (!Array.isArray(data)) return [];
+    return data
+      .map((entry) => mapDirectoryUser(entry as BackendUserPayload))
+      .filter((entry): entry is UserDirectoryItem => entry !== null);
+  },
+
   async getMemberProfileShell(token: string, memberId: string | number): Promise<MemberProfileShellResponse> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "users",
