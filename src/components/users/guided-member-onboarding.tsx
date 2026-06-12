@@ -78,6 +78,10 @@ interface PtSetupFormState {
   scheduleTemplate: PtScheduleTemplate;
   scheduleDays: string[];
   slotStartTime: string;
+  // Task 46 — couple PT support during onboarding. When the operator
+  // picks a Couple PT variant, partnerMemberId must be set before they
+  // can proceed past step 2. Empty for solo PT.
+  partnerMemberId: string;
 }
 
 interface ComplementaryFieldState {
@@ -812,7 +816,27 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     scheduleTemplate: "ALTERNATE_DAYS",
     scheduleDays: ["MONDAY", "WEDNESDAY", "FRIDAY"],
     slotStartTime: "06:00",
+    partnerMemberId: "",
   });
+
+  // Task 46 — Couple PT during onboarding: "+ Add new partner" inline mode
+  // (mirrors the member-profile drawer flow). When the operator picks
+  // Couple PT in the add-on picker and the partner isn't already a member,
+  // they pick "+ Add new partner" from the dropdown and an inline form
+  // appears here to register the partner + create their base gym plan
+  // before continuing this primary member's onboarding.
+  const [newPartnerMode, setNewPartnerMode] = useState(false);
+  const [newPartnerForm, setNewPartnerForm] = useState({
+    fullName: "",
+    mobileNumber: "",
+    gender: "",
+    baseProductVariantId: "",
+    baseStartDate: "",
+  });
+  const [newPartnerBusy, setNewPartnerBusy] = useState(false);
+  const [newPartnerError, setNewPartnerError] = useState<string | null>(null);
+  // existing members for the partner dropdown — fetched on Couple PT pick
+  const [partnerMemberOptions, setPartnerMemberOptions] = useState<Array<{id: string; label: string}>>([]);
 
   const [complementaries, setComplementaries] = useState<ComplementaryState>(initialComplementaryState);
   const completionStorageKey = `${ONBOARDING_COMPLETION_STORAGE_PREFIX}:${sourceInquiryId}`;
@@ -972,7 +996,9 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
 
     setMemberForm(draft.memberForm);
     setSubscriptionForm(draft.subscriptionForm);
-    setPtSetupForm(draft.ptSetupForm);
+    // Task 46 — backfill partnerMemberId for older drafts saved before the
+    // field existed, so the type checker stays happy and the picker resets clean.
+    setPtSetupForm({ ...draft.ptSetupForm, partnerMemberId: draft.ptSetupForm.partnerMemberId ?? "" });
     setComplementaries(draft.complementaries);
     setMembershipLineItems(draft.membershipLineItems);
     setShowPtComposer(draft.showPtComposer);
@@ -1238,6 +1264,34 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     () => addOnVariants.find((variant) => variant.variantId === subscriptionForm.addOnVariantId),
     [addOnVariants, subscriptionForm.addOnVariantId],
   );
+
+  // Task 46 — true when the selected add-on is a Couple PT variant
+  // (COUPLE_PT_LEVEL_1, COUPLE_PT_LEVEL_2). Drives the partner picker UI.
+  const isOnboardingCouplePt = useMemo(() => {
+    const code = String(draftSelectedAddOnVariant?.productCode || "");
+    return /COUPLE_PT/i.test(code);
+  }, [draftSelectedAddOnVariant?.productCode]);
+
+  // Task 46 — when Couple PT is chosen, lazy-load the searchable list of
+  // existing members so the operator can pick one as the partner.
+  useEffect(() => {
+    if (!isOnboardingCouplePt || partnerMemberOptions.length > 0 || !token) return;
+    void (async () => {
+      try {
+        const list = await usersService.searchUsers(token, { role: "MEMBER", active: true });
+        setPartnerMemberOptions(
+          list
+            .filter((m) => Number.isFinite(Number(m.id)))
+            .map((m) => ({
+              id: String(m.id),
+              label: `${m.name || "Member"}${m.mobile ? ` · ${m.mobile}` : ""}`,
+            })),
+        );
+      } catch {
+        // best-effort — operator can still use "+ Add new partner"
+      }
+    })();
+  }, [isOnboardingCouplePt, partnerMemberOptions.length, token]);
 
   const selectedAddOnVariant = useMemo(
     () => addOnVariants.find((variant) => variant.variantId === (ptLineItem?.variantId || draftSelectedAddOnVariant?.variantId)),
@@ -1778,6 +1832,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         scheduleTemplate: "ALTERNATE_DAYS",
         scheduleDays: ["MONDAY", "WEDNESDAY", "FRIDAY"],
         slotStartTime: "06:00",
+        partnerMemberId: "",
       });
       setManualTrainerId("");
       setComplementaries(initialComplementaryState);
@@ -1801,6 +1856,7 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
       scheduleTemplate: "ALTERNATE_DAYS",
       scheduleDays: ["MONDAY", "WEDNESDAY", "FRIDAY"],
       slotStartTime: "06:00",
+      partnerMemberId: "",
     });
     setShowPtComposer(false);
   };
@@ -1982,6 +2038,160 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
               </p>
             </div>
           </div>
+          {/* Task 46 — Couple PT partner picker (only when a Couple PT
+              add-on variant is selected). Shows the standard partner
+              dropdown + "+ Add new partner" inline form. */}
+          {isOnboardingCouplePt ? (
+            <div className="mb-4 rounded-2xl border border-amber-400/30 bg-amber-500/[0.05] p-4 space-y-3">
+              <p className="text-[11px] font-semibold uppercase tracking-[0.18em] text-amber-200">
+                Couple PT — pick the partner
+              </p>
+              <select
+                value={newPartnerMode ? "__NEW__" : ptSetupForm.partnerMemberId}
+                onChange={(event) => {
+                  const v = event.target.value;
+                  if (v === "__NEW__") {
+                    setNewPartnerMode(true);
+                    setNewPartnerError(null);
+                    setNewPartnerForm((c) => ({
+                      ...c,
+                      baseStartDate: c.baseStartDate || new Date().toISOString().slice(0, 10),
+                    }));
+                    setPtSetupForm((c) => ({ ...c, partnerMemberId: "" }));
+                  } else {
+                    setNewPartnerMode(false);
+                    setPtSetupForm((c) => ({ ...c, partnerMemberId: v }));
+                  }
+                }}
+                className="w-full rounded-xl border border-white/10 bg-[#111925] px-3 py-2.5 text-sm text-white"
+              >
+                <option value="">Select partner</option>
+                <option value="__NEW__">+ Add new partner</option>
+                {partnerMemberOptions.map((opt) => (
+                  <option key={opt.id} value={opt.id}>{opt.label}</option>
+                ))}
+              </select>
+              {newPartnerMode ? (
+                <div className="space-y-3 rounded-xl border border-white/10 bg-[#0c1019] p-3">
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="space-y-1">
+                      <span className="text-[10px] uppercase tracking-wide text-slate-400">Full Name</span>
+                      <input
+                        value={newPartnerForm.fullName}
+                        onChange={(e) => setNewPartnerForm((c) => ({ ...c, fullName: e.target.value }))}
+                        className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-2 text-sm text-white"
+                        placeholder="Partner's full name"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[10px] uppercase tracking-wide text-slate-400">Mobile</span>
+                      <input
+                        value={newPartnerForm.mobileNumber}
+                        onChange={(e) => setNewPartnerForm((c) => ({ ...c, mobileNumber: e.target.value.replace(/\D/g, "").slice(0, 10) }))}
+                        className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-2 text-sm text-white"
+                        placeholder="10 digits"
+                        inputMode="numeric"
+                      />
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[10px] uppercase tracking-wide text-slate-400">Gender</span>
+                      <select
+                        value={newPartnerForm.gender}
+                        onChange={(e) => setNewPartnerForm((c) => ({ ...c, gender: e.target.value }))}
+                        className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-2 text-sm text-white"
+                      >
+                        <option value="">Select</option>
+                        <option value="MALE">Male</option>
+                        <option value="FEMALE">Female</option>
+                        <option value="OTHER">Other</option>
+                      </select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[10px] uppercase tracking-wide text-slate-400">Base Gym Plan</span>
+                      <select
+                        value={newPartnerForm.baseProductVariantId}
+                        onChange={(e) => setNewPartnerForm((c) => ({ ...c, baseProductVariantId: e.target.value }))}
+                        className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-2 text-sm text-white"
+                      >
+                        <option value="">Select plan</option>
+                        {primaryVariants
+                          .filter((v) => v.categoryCode === "FLAGSHIP" && /CORE/i.test(String(v.productCode || "")))
+                          .map((v) => (
+                            <option key={v.variantId} value={v.variantId}>{v.variantName} · ₹{v.basePrice}</option>
+                          ))}
+                      </select>
+                    </label>
+                    <label className="space-y-1">
+                      <span className="text-[10px] uppercase tracking-wide text-slate-400">Start Date</span>
+                      <input
+                        type="date"
+                        value={newPartnerForm.baseStartDate}
+                        onChange={(e) => setNewPartnerForm((c) => ({ ...c, baseStartDate: e.target.value }))}
+                        className="w-full rounded-lg border border-white/10 bg-white/[0.04] px-2.5 py-2 text-sm text-white"
+                      />
+                    </label>
+                  </div>
+                  {newPartnerError ? <p className="text-xs text-rose-300">{newPartnerError}</p> : null}
+                  <div className="flex gap-2">
+                    <button
+                      type="button"
+                      disabled={newPartnerBusy || !token}
+                      onClick={async () => {
+                        setNewPartnerError(null);
+                        if (!newPartnerForm.fullName.trim() || newPartnerForm.mobileNumber.length !== 10) {
+                          setNewPartnerError("Enter full name and a 10-digit mobile.");
+                          return;
+                        }
+                        if (!newPartnerForm.gender) { setNewPartnerError("Pick a gender."); return; }
+                        if (!newPartnerForm.baseProductVariantId || !newPartnerForm.baseStartDate) {
+                          setNewPartnerError("Pick the base gym plan and start date.");
+                          return;
+                        }
+                        if (!token) return;
+                        setNewPartnerBusy(true);
+                        try {
+                          const reg = await usersService.registerUser(token, {
+                            fullName: newPartnerForm.fullName.trim(),
+                            password: "Fomo@1234",
+                            role: "MEMBER",
+                            mobileNumber: newPartnerForm.mobileNumber,
+                            gender: newPartnerForm.gender,
+                          } as RegisterUserRequest);
+                          const newId = Number((reg as unknown as { id?: number | string }).id || 0);
+                          if (!newId || !Number.isFinite(newId)) throw new Error("Member registration didn't return an id");
+                          await subscriptionService.createMemberSubscription(token, String(newId), {
+                            productVariantId: Number(newPartnerForm.baseProductVariantId),
+                            startDate: newPartnerForm.baseStartDate,
+                          } as Record<string, unknown>);
+                          setPtSetupForm((c) => ({ ...c, partnerMemberId: String(newId) }));
+                          setPartnerMemberOptions((opts) => [
+                            { id: String(newId), label: `${newPartnerForm.fullName.trim()} · ${newPartnerForm.mobileNumber}` },
+                            ...opts,
+                          ]);
+                          setNewPartnerMode(false);
+                          setToast({ kind: "success", message: `Partner ${newPartnerForm.fullName} created with base plan; their base invoice is on their profile awaiting payment.` });
+                        } catch (err) {
+                          setNewPartnerError(err instanceof Error ? err.message : "Failed to create new partner");
+                        } finally {
+                          setNewPartnerBusy(false);
+                        }
+                      }}
+                      className="rounded-lg bg-emerald-500/20 px-3 py-1.5 text-xs font-semibold text-emerald-200 hover:bg-emerald-500/30 disabled:opacity-50"
+                    >
+                      {newPartnerBusy ? "Creating..." : "Create partner + base plan"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => { setNewPartnerMode(false); setNewPartnerError(null); }}
+                      className="rounded-lg border border-white/10 px-3 py-1.5 text-xs font-semibold text-slate-300 hover:bg-white/[0.04]"
+                    >
+                      Cancel
+                    </button>
+                  </div>
+                </div>
+              ) : null}
+            </div>
+          ) : null}
           <div className="grid gap-4 lg:grid-cols-3">
             <label className="space-y-2">
               <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Coach</span>
