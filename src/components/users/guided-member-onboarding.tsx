@@ -1331,23 +1331,28 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
     [draftSelectedAddOnVariant?.basePrice, subscriptionForm.addOnDiscountPercent, subscriptionForm.addOnSellingPrice],
   );
 
+  // Task 42 (12-Jun-2026) — backend rounds CGST and SGST to integer rupees
+  // half-up at scale 0 BEFORE summing. The previous .toFixed(2) here kept
+  // the half-paise, so step 2 showed ₹3,674 while step 3 (which calls the
+  // backend's invoice preview) showed ₹3,673 for a Core 1M (3499 × 0.025
+  // = 87.475 → backend 87, frontend was 87.48). Match backend exactly.
   const primaryDraftCgst = useMemo(
-    () => Number(((primaryDraftCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
+    () => Math.round((primaryDraftCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200),
     [billingSettings.gstPercentage, primaryDraftCommercial.sellingPrice],
   );
 
   const primaryDraftSgst = useMemo(
-    () => Number(((primaryDraftCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
+    () => Math.round((primaryDraftCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200),
     [billingSettings.gstPercentage, primaryDraftCommercial.sellingPrice],
   );
 
   const addOnDraftCgst = useMemo(
-    () => Number(((addOnDraftCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
+    () => Math.round((addOnDraftCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200),
     [addOnDraftCommercial.sellingPrice, billingSettings.gstPercentage],
   );
 
   const addOnDraftSgst = useMemo(
-    () => Number(((addOnDraftCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
+    () => Math.round((addOnDraftCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200),
     [addOnDraftCommercial.sellingPrice, billingSettings.gstPercentage],
   );
 
@@ -1662,9 +1667,12 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
           basePrice: draftPrimaryVariant.basePrice || 0,
           sellingPrice: primaryCommercial.sellingPrice,
           discountPercent: primaryCommercial.discountPercent,
-          cgstAmount: Number(((primaryCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
-          sgstAmount: Number(((primaryCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
-          totalAmount: Number((primaryCommercial.sellingPrice + ((primaryCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 100)).toFixed(2)),
+          // Task 42 — integer half-up on each tax line to match backend.
+          cgstAmount: Math.round((primaryCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200),
+          sgstAmount: Math.round((primaryCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200),
+          totalAmount: primaryCommercial.sellingPrice
+            + Math.round((primaryCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200)
+            + Math.round((primaryCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200),
         },
       ]);
       setPrimaryCategoryFilter("");
@@ -1725,9 +1733,12 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
         basePrice: draftSelectedAddOnVariant.basePrice || 0,
         sellingPrice: addOnCommercial.sellingPrice,
         discountPercent: addOnCommercial.discountPercent,
-        cgstAmount: Number(((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
-        sgstAmount: Number(((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200).toFixed(2)),
-        totalAmount: Number((addOnCommercial.sellingPrice + ((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 100)).toFixed(2)),
+        // Task 42 — integer half-up on each tax line to match backend.
+        cgstAmount: Math.round((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200),
+        sgstAmount: Math.round((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200),
+        totalAmount: addOnCommercial.sellingPrice
+          + Math.round((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200)
+          + Math.round((addOnCommercial.sellingPrice * (billingSettings.gstPercentage || 0)) / 200),
       },
     ]);
     setAddOnCategoryFilter("");
