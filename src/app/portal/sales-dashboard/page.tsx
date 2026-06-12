@@ -1632,19 +1632,39 @@ function QuickActionTiles({
     }
 
     if (want("UNASSIGNED_INQUIRIES")) {
-      // Step 3 — surfaces the count of enquiries with no client rep.
-      // We don't fetch the rows list here (the modal would need a
-      // paginated query) — the chip is a count + a "View all" deep
-      // link to the inquiries page with the assignedToStaffId filter
-      // pre-applied. Keeps the dashboard fetch tight.
+      // ISS-038e (follow-up) — previously this tile only fetched the
+      // count and used rows: []. Clicking the chip opened the inline
+      // panel which then showed the "Every lead has been picked up"
+      // empty state even when the count was 109. Now fetch the top 5
+      // unassigned leads alongside the count so the panel actually
+      // surfaces them. The "View all" link still deep-links to
+      // /portal/inquiries?assigned=none for the full list.
       tasks.push(
         subscriptionService
-          .getUnassignedInquiryCount(token, { branchId: effectiveBranchId, branchCode: selectedBranchCode })
-          .then((count) => {
+          .searchInquiriesPaged(token, {
+            unassignedOnly: true,
+            converted: false,
+            branchId: effectiveBranchId,
+            branchCode: selectedBranchCode || undefined,
+          }, 0, 5)
+          .then((res) => {
             setTile("UNASSIGNED_INQUIRIES", {
               loading: false,
-              rows: [],
-              totalCount: count,
+              rows: res.content.slice(0, 5).map((row) => ({
+                key: `unassigned-${row.inquiryId}`,
+                primary: row.fullName || row.mobileNumber || `Lead #${row.inquiryId}`,
+                secondary: row.mobileNumber
+                  ? `${row.mobileNumber}${row.inquiryAt ? ` · ${new Date(row.inquiryAt).toLocaleDateString()}` : ""}`
+                  : row.inquiryAt
+                    ? new Date(row.inquiryAt).toLocaleDateString()
+                    : "Awaiting assignment",
+                href: `/portal/inquiries?focusInquiryId=${row.inquiryId}`,
+                details: {
+                  mobile: row.mobileNumber || undefined,
+                  inquiryAt: row.inquiryAt,
+                },
+              })),
+              totalCount: res.totalElements,
             });
           })
           .catch((e: unknown) => setTile("UNASSIGNED_INQUIRIES", { loading: false, error: e instanceof Error ? e.message : "Failed" })),
