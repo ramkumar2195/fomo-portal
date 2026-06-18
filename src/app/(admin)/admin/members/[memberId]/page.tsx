@@ -3473,7 +3473,47 @@ export default function MemberProfilePage() {
       : []),
   ].filter((entry, index, array) => array.findIndex((item) => item.subscriptionId === entry.subscriptionId) === index);
   const overviewMembershipCards = overviewDisplayedMemberships.length ? overviewDisplayedMemberships : fallbackOverviewMemberships;
-  const selectedMembershipRecord = currentPortfolioMembershipItems.find((entry) => entry.subscriptionId === selectedMembershipId)
+  // ISS-044 — when the user clicked Renew on a Subscription History row for
+  // an EXPIRED sub, `selectedMembershipId` is that history sub's id, but
+  // currentPortfolioMembershipItems only contains ACTIVE/PAUSED so the find
+  // returned undefined and the modal fell back to portfolioPrimaryMembership
+  // (e.g. KICKBOXING for Akrati 4107 when she'd actually clicked Renew on
+  // her FLAGSHIP CORE_3M history row). renewFromHistory carries the clicked
+  // row's plan details verbatim — synthesize a portfolio-shaped record from
+  // it so the modal labels match what the user clicked.
+  const renewFromHistorySelection: MembershipPortfolioItem | null = renewFromHistory
+    ? {
+        subscriptionId: renewFromHistory.subscriptionId,
+        productVariantId: renewFromHistory.productVariantId,
+        productCode: renewFromHistory.productCode,
+        categoryCode: renewFromHistory.categoryCode,
+        family: (
+          ["FLAGSHIP", "FLEX", "PT", "TRANSFORMATION", "GROUP_CLASS", "CREDIT_PACK"]
+            .includes(renewFromHistory.categoryCode || "")
+            ? renewFromHistory.categoryCode
+            : "UNKNOWN"
+        ) as MembershipFamily,
+        variantName: renewFromHistory.planName,
+        productName: renewFromHistory.planName,
+        status: "EXPIRED",
+        startDate: "",
+        expiryDate: renewFromHistory.endDate,
+        durationMonths: 0,
+        validityDays: 0,
+        branchCode: "",
+        invoiceNumber: "",
+        receiptNumber: "",
+        paymentConfirmed: true,
+        includedCheckIns: 0,
+        usedCheckIns: 0,
+        checkInsRemaining: 0,
+        extraVisitPrice: 0,
+        includedPtSessions: 0,
+        entitlements: [],
+      }
+    : null;
+  const selectedMembershipRecord = renewFromHistorySelection
+    || currentPortfolioMembershipItems.find((entry) => entry.subscriptionId === selectedMembershipId)
     || portfolioPrimaryMembership
     || null;
   const selectedProductCategoryCode = selectedMembershipRecord?.categoryCode || productCategoryCode;
