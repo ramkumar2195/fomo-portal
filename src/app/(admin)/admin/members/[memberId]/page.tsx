@@ -3572,11 +3572,19 @@ export default function MemberProfilePage() {
     normalizedVisibleCurrentMembershipStatus === "PAUSED" &&
     hasOutstandingBalance &&
     normalizedPaymentStatus !== "PAID";
+  // M-5 — same distinction as the per-card badge: PAUSED-due-to-partial-payment
+  // surfaces as "Awaiting Payment"; PAUSED-due-to-freeze keeps the
+  // backend-flipped label ("Paused" -> humanized -> "Paused" elsewhere, but
+  // when the user is actually frozen via the freeze API the backend status
+  // string itself is "PAUSED" which humanizes to "Paused"; we map that to
+  // "Frozen" via the membership card path. Keep this string focused on the
+  // payment-state vs frozen-state distinction; UIs that care about freeze
+  // vs paused use the activeFreezeRecord check.)
   const visibleCurrentMembershipStatus = isVisibleCurrentMembershipPaymentPending
-    ? "Paused"
+    ? "Awaiting Payment"
     : humanizeLabel(portfolioPrimaryMembership?.status || membershipStatus);
   const visibleFreezeEndDate =
-    (visibleCurrentMembershipStatus === "Paused" || visibleCurrentMembershipStatus === "Frozen")
+    (visibleCurrentMembershipStatus === "Awaiting Payment" || visibleCurrentMembershipStatus === "Paused" || visibleCurrentMembershipStatus === "Frozen" || visibleCurrentMembershipStatus === "Awaiting Payment")
       ? (pickString(activeFreezeRecord, ["endAt"]) || "").slice(0, 10)
       : "";
   const visibleFreezeEndDateLabel = visibleFreezeEndDate ? formatDateOnly(visibleFreezeEndDate) : "";
@@ -4155,12 +4163,13 @@ export default function MemberProfilePage() {
         }
 
         if (actionModal === "renew") {
-          if (currentDuration > 0 && variant.durationMonths > 0) {
-            return sameProduct && variant.durationMonths === currentDuration;
-          }
-          if (currentValidity > 0 && variant.validityDays > 0) {
-            return sameProduct && variant.validityDays === currentValidity;
-          }
+          // M-4 — allow renewing at any duration within the same product
+          // (e.g. CORE_3M -> CORE_1M or CORE_6M). The original rule locked
+          // the renew picker to the exact prior duration which forced
+          // operators to use Upgrade/Downgrade for what they intuitively
+          // think of as "renew at a different length." Product code stays
+          // the same — switching FOMO_CORE -> FOMO_BLACK is still an
+          // Upgrade, not a Renew.
           return sameProduct;
         }
 
@@ -4325,8 +4334,14 @@ export default function MemberProfilePage() {
     [lifecycleForm.discountPercent, lifecycleForm.sellingPrice, targetLifecycleBasePrice],
   );
   const renewTaxableAmount = roundAmount(renewCommercial.sellingPrice);
-  const renewHalfTaxAmount = roundAmount((renewTaxableAmount * commercialTaxRate) / 200);
-  const renewTaxAmount = renewHalfTaxAmount * 2;
+  // M-1 — round total GST once, then split CGST/SGST so cgst + sgst = totalGst
+  // exactly. Matches the backend invoice math after the round-once fix; without
+  // it the modal showed e.g. ₹7,507 for taxable ₹7,149 (CGST 179 + SGST 179)
+  // when the backend would render ₹7,506. Botham / Ivana / Akrati each hit it
+  // 17-18 Jun 2026 and needed manual overrides.
+  const renewTaxAmount = roundAmount((renewTaxableAmount * commercialTaxRate) / 100);
+  const renewHalfTaxAmount = Math.floor(renewTaxAmount / 2);
+  const renewSgstAmount = renewTaxAmount - renewHalfTaxAmount;
   const renewInvoiceTotal = renewTaxableAmount + renewTaxAmount;
   const renewReceivedAmount = Number(lifecycleBillingForm.receivedAmount || 0);
   const renewBalanceAmount = Math.max(renewInvoiceTotal - renewReceivedAmount, 0);
@@ -4356,8 +4371,10 @@ export default function MemberProfilePage() {
     [lifecycleForm.discountPercent, lifecycleForm.sellingPrice, upgradeBaseDifference],
   );
   const upgradeTaxableAmount = roundAmount(upgradeCommercial.sellingPrice);
-  const upgradeHalfTaxAmount = roundAmount((upgradeTaxableAmount * commercialTaxRate) / 200);
-  const upgradeTaxAmount = upgradeHalfTaxAmount * 2;
+  // M-1 — round once, split (see renew block above)
+  const upgradeTaxAmount = roundAmount((upgradeTaxableAmount * commercialTaxRate) / 100);
+  const upgradeHalfTaxAmount = Math.floor(upgradeTaxAmount / 2);
+  const upgradeSgstAmount = upgradeTaxAmount - upgradeHalfTaxAmount;
   const upgradeInvoiceTotal = upgradeTaxableAmount + upgradeTaxAmount;
   const upgradeReceivedAmount = Number(lifecycleBillingForm.receivedAmount || 0);
   const upgradeBalanceAmount = Math.max(upgradeInvoiceTotal - upgradeReceivedAmount, 0);
@@ -4366,6 +4383,7 @@ export default function MemberProfilePage() {
   const lifecycleBillingSellingPrice = isUpgradeBillingModal ? upgradeCommercial.sellingPrice : renewCommercial.sellingPrice;
   const lifecycleBillingDiscountAmount = isUpgradeBillingModal ? upgradeCommercial.discountAmount : renewCommercial.discountAmount;
   const lifecycleBillingHalfTaxAmount = isUpgradeBillingModal ? upgradeHalfTaxAmount : renewHalfTaxAmount;
+  const lifecycleBillingSgstAmount = isUpgradeBillingModal ? upgradeSgstAmount : renewSgstAmount;
   const lifecycleBillingInvoiceTotal = isUpgradeBillingModal ? upgradeInvoiceTotal : renewInvoiceTotal;
   const lifecycleBillingReceivedAmount = isUpgradeBillingModal ? upgradeReceivedAmount : renewReceivedAmount;
   const lifecycleBillingBalanceAmount = isUpgradeBillingModal ? upgradeBalanceAmount : renewBalanceAmount;
@@ -4483,8 +4501,11 @@ export default function MemberProfilePage() {
     [ptForm.discountPercent, ptForm.sellingPrice, selectedPtVariant?.basePrice],
   );
   const ptTaxableAmount = roundAmount(ptCommercial.sellingPrice);
-  const ptHalfTaxAmount = roundAmount((ptTaxableAmount * commercialTaxRate) / 200);
-  const ptTaxAmount = ptHalfTaxAmount * 2;
+  // M-1 — round once, split (mirrors backend round-once after the
+  // SubscriptionMonetizationService.createMemberAddOnSubscription fix).
+  const ptTaxAmount = roundAmount((ptTaxableAmount * commercialTaxRate) / 100);
+  const ptHalfTaxAmount = Math.floor(ptTaxAmount / 2);
+  const ptSgstAmount = ptTaxAmount - ptHalfTaxAmount;
   const ptInvoiceTotal = ptTaxableAmount + ptTaxAmount;
   const ptReceivedAmount = Number(ptBillingForm.receivedAmount || 0);
   const ptBalanceAmount = Math.max(ptInvoiceTotal - ptReceivedAmount, 0);
@@ -4838,19 +4859,27 @@ export default function MemberProfilePage() {
 
       let paymentReceipt: Awaited<ReturnType<typeof subscriptionService.recordPayment>> | null = null;
       let membershipActivated = false;
-      const payFullInvoice = !lifecycleBillingForm.balanceDueDate && receivedAmount > 0;
-      const paymentAmount = payFullInvoice ? invoiceTotal : receivedAmount;
+      // M-2 — record exactly what the operator entered. The earlier
+      // payFullInvoice override silently upgraded receivedAmount to
+      // invoiceTotal when no balance-due-date was set, which combined with
+      // the ₹1 GST drift (M-1) had collected ₹X,507 from the till when the
+      // operator typed ₹X,506. handleRenewPayment already requires a balance
+      // due date when receivedAmount < invoiceTotal (line 4800 — checked
+      // BEFORE this block), so by the time we get here either:
+      //   (a) receivedAmount === invoiceTotal -> full payment, no balance due
+      //   (b) receivedAmount  <  invoiceTotal -> balance due date is set
+      // Either way, paying receivedAmount is the right move.
       if (receivedAmount > 0) {
         paymentReceipt = await subscriptionService.recordPayment(token, invoiceId, {
           memberId: Number(memberId),
-          amount: paymentAmount,
+          amount: receivedAmount,
           paymentMode: lifecycleBillingForm.paymentMode,
           inquiryId: sourceInquiryId || undefined,
         });
 
         const activationThresholdMet = meetsActivationThreshold(
           invoiceTotal,
-          paymentReceipt?.totalPaidAmount || paymentAmount,
+          paymentReceipt?.totalPaidAmount || receivedAmount,
           membershipPolicySettings.minPartialPaymentPercent,
         );
         if (activationThresholdMet) {
@@ -4861,7 +4890,7 @@ export default function MemberProfilePage() {
 
       const balanceAmount = Math.max(
         0,
-        roundAmount(Number((paymentReceipt?.balanceAmount ?? invoiceTotal - paymentAmount) || 0)),
+        roundAmount(Number((paymentReceipt?.balanceAmount ?? invoiceTotal - receivedAmount) || 0)),
       );
 
       if (balanceAmount > 0 && lifecycleBillingForm.balanceDueDate && sourceInquiryId) {
@@ -4975,20 +5004,19 @@ export default function MemberProfilePage() {
 
       let paymentReceipt: Awaited<ReturnType<typeof subscriptionService.recordPayment>> | null = null;
       let membershipActivated = false;
-      const payFullInvoice = !lifecycleBillingForm.balanceDueDate && receivedAmount > 0;
-      const paymentAmount = payFullInvoice ? invoiceTotal : receivedAmount;
-
+      // M-2 — record exactly what the operator entered (see handleRenewPayment
+      // for the rationale). receivedAmount is already validated upstream.
       if (receivedAmount > 0) {
         paymentReceipt = await subscriptionService.recordPayment(token, invoiceId, {
           memberId: Number(memberId),
-          amount: paymentAmount,
+          amount: receivedAmount,
           paymentMode: lifecycleBillingForm.paymentMode,
           inquiryId: sourceInquiryId || undefined,
         });
 
         const activationThresholdMet = meetsActivationThreshold(
           invoiceTotal,
-          paymentReceipt?.totalPaidAmount || paymentAmount,
+          paymentReceipt?.totalPaidAmount || receivedAmount,
           membershipPolicySettings.minPartialPaymentPercent,
         );
         if (activationThresholdMet) {
@@ -4999,7 +5027,7 @@ export default function MemberProfilePage() {
 
       const balanceAmount = Math.max(
         0,
-        roundAmount(Number((paymentReceipt?.balanceAmount ?? invoiceTotal - paymentAmount) || 0)),
+        roundAmount(Number((paymentReceipt?.balanceAmount ?? invoiceTotal - receivedAmount) || 0)),
       );
 
       if (balanceAmount > 0 && lifecycleBillingForm.balanceDueDate && sourceInquiryId) {
@@ -5722,20 +5750,18 @@ export default function MemberProfilePage() {
         let paymentReceipt: Awaited<ReturnType<typeof subscriptionService.recordPayment>> | null = null;
         let membershipActivated = false;
         let ptSetupPendingReason: string | null = null;
-        const payFullInvoice = !ptBillingForm.balanceDueDate && receivedAmount > 0;
-        const paymentAmount = payFullInvoice ? ptInvoiceTotal : receivedAmount;
-
+        // M-2 — record exactly what the operator entered, same as renew/upgrade.
         if (receivedAmount > 0) {
           paymentReceipt = await subscriptionService.recordPayment(token, addOn.invoiceId, {
             memberId: Number(targetMemberId),
-            amount: paymentAmount,
+            amount: receivedAmount,
             paymentMode: ptBillingForm.paymentMode,
             inquiryId,
           });
 
           const activationThresholdMet = meetsActivationThreshold(
             ptInvoiceTotal,
-            paymentReceipt?.totalPaidAmount || paymentAmount,
+            paymentReceipt?.totalPaidAmount || receivedAmount,
             membershipPolicySettings.minPartialPaymentPercent,
           );
           if (activationThresholdMet) {
@@ -5762,7 +5788,7 @@ export default function MemberProfilePage() {
 
         const balanceAmount = Math.max(
           0,
-          roundAmount(Number((paymentReceipt?.balanceAmount ?? ptInvoiceTotal - paymentAmount) || 0)),
+          roundAmount(Number((paymentReceipt?.balanceAmount ?? ptInvoiceTotal - receivedAmount) || 0)),
         );
 
         if (balanceAmount > 0 && ptBillingForm.balanceDueDate && inquiryId) {
@@ -7289,9 +7315,14 @@ export default function MemberProfilePage() {
                             Primary
                           </span>
                         ) : null}
+                        {/* M-5 — backend status PAUSED has two distinct meanings:
+                            payment never completed (membership awaits balance)
+                            vs operator-applied freeze. Labeling both as
+                            "Paused" was confusing. Now: amber "Awaiting Payment"
+                            for the unpaid case, sky "Frozen" for actual freezes. */}
                         {isPausedCard ? (
                           <span className="rounded-full border border-amber-300/30 bg-amber-500/15 px-3 py-1 text-xs font-bold uppercase tracking-[0.18em] text-amber-100">
-                            Paused
+                            Awaiting Payment
                           </span>
                         ) : null}
                         {isFrozenCard ? (
@@ -7630,7 +7661,14 @@ export default function MemberProfilePage() {
                           <td className="px-3 py-2.5 text-slate-300">{row.receiptNumber || (row.receiptId ? `#${row.receiptId}` : row.paymentConfirmed ? "Paid" : "-")}</td>
                           <td className="px-3 py-2.5">
                             <div className="flex flex-wrap gap-2">
-                              {String(row.status).toUpperCase() !== "ACTIVE" ? (
+                              {/* M-3 — suppress the per-row Renew button when the same
+                                  sub is already showing as a primary/upcoming card
+                                  (the 3-dot menu on that card is the canonical entry).
+                                  Still show Renew for historical rows that don't
+                                  appear in displayedMemberships (e.g. an older
+                                  expired PT add-on). */}
+                              {String(row.status).toUpperCase() !== "ACTIVE"
+                                && !displayedMemberships.some((m) => m.subscriptionId === row.id) ? (
                                 <button
                                   type="button"
                                   onClick={() => {
@@ -9035,7 +9073,7 @@ export default function MemberProfilePage() {
                           <p className="mt-1 text-base font-semibold text-white">{visibleCurrentMembershipLabel}</p>
                           <div className="mt-1 flex flex-wrap items-center gap-2">
                             <p className="text-sm text-slate-400">{visibleCurrentMembershipDuration}</p>
-                            {visibleCurrentMembershipStatus === "Paused" || visibleCurrentMembershipStatus === "Frozen" ? (
+                            {visibleCurrentMembershipStatus === "Paused" || visibleCurrentMembershipStatus === "Frozen" || visibleCurrentMembershipStatus === "Awaiting Payment" ? (
                               <span
                                 className="rounded-full border border-sky-400/30 bg-sky-500/15 px-2.5 py-0.5 text-[10px] font-bold uppercase tracking-[0.18em] text-sky-100"
                                 title={visibleFreezeEndDateLabel ? `Frozen until ${visibleFreezeEndDateLabel}` : undefined}
@@ -9044,7 +9082,7 @@ export default function MemberProfilePage() {
                               </span>
                             ) : null}
                           </div>
-                          {(visibleCurrentMembershipStatus === "Paused" || visibleCurrentMembershipStatus === "Frozen") && visibleFreezeEndDateLabel ? (
+                          {(visibleCurrentMembershipStatus === "Paused" || visibleCurrentMembershipStatus === "Frozen" || visibleCurrentMembershipStatus === "Awaiting Payment") && visibleFreezeEndDateLabel ? (
                             <p className="mt-1 text-[11px] font-medium uppercase tracking-[0.18em] text-sky-200/80">
                               Frozen until {visibleFreezeEndDateLabel}
                             </p>
@@ -9678,7 +9716,7 @@ export default function MemberProfilePage() {
                           </div>
                           <div className="flex items-center justify-between gap-4">
                             <span className="text-[#ffd7d6]">SGST (Included)</span>
-                            <span className="text-base font-medium text-white">{formatRoundedInr(renewHalfTaxAmount)}</span>
+                            <span className="text-base font-medium text-white">{formatRoundedInr(renewSgstAmount)}</span>
                           </div>
                           <div className="h-px bg-white/10" />
                           <div className="flex items-end justify-between gap-4">
@@ -10056,7 +10094,7 @@ export default function MemberProfilePage() {
                 finalPayable={formatRoundedInr(lifecycleBillingInvoiceTotal)}
                 taxRows={[
                   { label: `CGST @ ${commercialTaxRate / 2}%`, value: formatRoundedInr(lifecycleBillingHalfTaxAmount) },
-                  { label: `SGST @ ${commercialTaxRate / 2}%`, value: formatRoundedInr(lifecycleBillingHalfTaxAmount) },
+                  { label: `SGST @ ${commercialTaxRate / 2}%`, value: formatRoundedInr(lifecycleBillingSgstAmount) },
                 ]}
                 receivedAmount={lifecycleBillingForm.receivedAmount}
                 onReceivedAmountChange={(value) => setLifecycleBillingForm((current) => ({ ...current, receivedAmount: sanitizeIntegerString(value) }))}
@@ -10696,7 +10734,7 @@ export default function MemberProfilePage() {
                     </div>
                     <div className="flex items-center justify-between gap-4">
                       <span className="text-slate-400">SGST</span>
-                      <span className="font-semibold text-white">{formatRoundedInr(ptHalfTaxAmount)}</span>
+                      <span className="font-semibold text-white">{formatRoundedInr(ptSgstAmount)}</span>
                     </div>
                     <div className="border-t border-white/10 pt-3">
                       <div className="flex items-end justify-between gap-4">
@@ -11323,7 +11361,7 @@ export default function MemberProfilePage() {
                 finalPayable={formatRoundedInr(ptInvoiceTotal)}
                 taxRows={[
                   { label: "CGST", value: formatRoundedInr(ptHalfTaxAmount) },
-                  { label: "SGST", value: formatRoundedInr(ptHalfTaxAmount) },
+                  { label: "SGST", value: formatRoundedInr(ptSgstAmount) },
                 ]}
                 receivedAmount={ptBillingForm.receivedAmount}
                 onReceivedAmountChange={(value) => setPtBillingForm((current) => ({ ...current, receivedAmount: sanitizeIntegerString(value) }))}
