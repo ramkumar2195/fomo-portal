@@ -9626,6 +9626,42 @@ export default function MemberProfilePage() {
                           </p>
                         )}
                       </div>
+                      {/* M-4 — duration picker. Only renders when the same
+                          product has more than one duration variant available
+                          (e.g. FOMO_CORE has 1M/3M/6M/12M). Operator can pick
+                          a different length without leaving the renew flow. */}
+                      {filteredLifecycleVariants.length > 1 ? (
+                        <div className="mt-4 rounded-[24px] border border-white/10 bg-black/15 px-4 py-4">
+                          <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-[#ffc3c0]/75">Duration</p>
+                          <div className="mt-3 grid gap-2">
+                            {filteredLifecycleVariants.map((variant) => {
+                              const selected = String(variant.variantId) === String(lifecycleForm.productVariantId);
+                              return (
+                                <button
+                                  key={variant.variantId}
+                                  type="button"
+                                  onClick={() =>
+                                    setLifecycleForm((current) => ({
+                                      ...current,
+                                      productVariantId: String(variant.variantId),
+                                      sellingPrice: String(roundAmount(Number(variant.basePrice || 0))),
+                                      discountPercent: "",
+                                    }))
+                                  }
+                                  className={`flex items-center justify-between gap-3 rounded-2xl border px-3 py-2 text-sm transition ${
+                                    selected
+                                      ? "border-[#c42924]/70 bg-[#c42924]/15 text-white"
+                                      : "border-white/8 bg-white/[0.03] text-slate-200 hover:border-white/15"
+                                  }`}
+                                >
+                                  <span className="font-semibold">{formatPlanDuration(variant.durationMonths, variant.validityDays)}</span>
+                                  <span className="text-xs text-[#ffd7d6]">{formatRoundedInr(Number(variant.basePrice || 0))}</span>
+                                </button>
+                              );
+                            })}
+                          </div>
+                        </div>
+                      ) : null}
                     </div>
                     <div className="px-6 py-6">
                       <div className="grid gap-5 sm:grid-cols-2">
