@@ -3555,7 +3555,12 @@ export default function MemberProfilePage() {
       }
       return portfolioPrimaryMembership.subscriptionId;
     });
-  }, [currentPortfolioMembershipItems, portfolioPrimaryMembership]);
+    // M-6 — when the modal closes after a history-row renew flow, force a
+    // resync. selectedMembershipId still points at the history sub id
+    // (which isn't in currentPortfolioMembershipItems) so the next 3-dot
+    // menu would otherwise highlight nothing. Tying actionModal === null
+    // into the deps reruns this when the modal flow ends.
+  }, [currentPortfolioMembershipItems, portfolioPrimaryMembership, actionModal]);
   const visibleCurrentMembershipLabel = normalizeDisplayPlanName(
     portfolioPrimaryMembership?.variantName || portfolioPrimaryMembership?.productName || planName,
   );
@@ -3794,6 +3799,26 @@ export default function MemberProfilePage() {
   // the approval-submit modal anyway, so the buttons are clutter for them.
   const showRiskyOpActions = canSeeRiskyOpActions(user);
   const canManageTransfers = isAdminOperator || (user?.role === "STAFF" && user?.designation === "GYM_MANAGER");
+  // M-7 — per-designation discount gate hint. Mirrors DISCOUNT_GATE_BY_DESIGNATION
+  // in SubscriptionMonetizationService (DEC-041). Anything above this fires the
+  // backend's DISCOUNT_APPROVAL_REQUIRED path and the action queues for
+  // SUPER_ADMIN. SUPER_ADMIN / GYM_MANAGER are unbounded so no hint shown.
+  const operatorDiscountGatePercent = useMemo(() => {
+    if (user?.role === "ADMIN" || user?.designation === "SUPER_ADMIN" || user?.designation === "GYM_MANAGER") {
+      return null;
+    }
+    switch (user?.designation) {
+      case "SALES_MANAGER":
+      case "SALES_EXECUTIVE":
+        return 15;
+      case "FRONT_DESK_EXECUTIVE":
+        return 5;
+      case "FITNESS_MANAGER":
+        return 10;
+      default:
+        return 10; // unmapped role fallback (matches backend default)
+    }
+  }, [user?.role, user?.designation]);
   const pauseBenefitDays = Math.max(
     currentCatalogVariant?.passBenefitDays || 0,
     selectedEntitlementRecords
@@ -7294,6 +7319,12 @@ export default function MemberProfilePage() {
                     ? legacyUpgradeFallback.previousStartDate
                     : membership.startDate;
                 const shouldShowUpgradedState = Boolean(latestUpgradeEntry || legacyUpgradeFallback) && isPrimaryCard;
+                // M-11 — when the card represents an expired sub (the ISS-045
+                // family-priority fallback), the Status pill saying "EXPIRED"
+                // is easy to miss in a wall of stats. Show a banner that calls
+                // out the expired state with a direct Renew CTA inside the
+                // card so operators don't have to hunt the 3-dot menu.
+                const isCardExpired = /\b(EXPIRED|LAPSED|INACTIVE)\b/i.test(normalizedCardStatus);
                 return (
                   <ProfilePanel
                     key={membership.subscriptionId}
@@ -7438,6 +7469,26 @@ export default function MemberProfilePage() {
                           </div>
                         ) : null}
                       </div>
+                      {/* M-11 expired-card banner */}
+                      {isCardExpired ? (
+                        <div className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-rose-500/30 bg-rose-500/10 px-4 py-3">
+                          <div className="space-y-1">
+                            <p className="text-sm font-semibold text-rose-100">Membership expired on {formatDateOnly(membership.expiryDate || undefined)}</p>
+                            <p className="text-xs text-rose-200/80">Renew to reactivate access and biometric entry.</p>
+                          </div>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              setSelectedMembershipId(membership.subscriptionId);
+                              openActionModal("renew");
+                            }}
+                            className="inline-flex items-center gap-2 rounded-lg bg-[#c42924] px-3.5 py-2 text-xs font-semibold text-white hover:bg-[#a51f1b]"
+                          >
+                            <RotateCcw className="h-3.5 w-3.5" />
+                            Renew Now
+                          </button>
+                        </div>
+                      ) : null}
                       {membershipPackageFeatures.length > 0 ? (
                         <div className="flex flex-wrap gap-2">
                           {membershipPackageFeatures.map((feature) => (
@@ -9746,6 +9797,15 @@ export default function MemberProfilePage() {
                               />
                             </div>
                           </div>
+                          {/* M-7 — gate-aware hint. Only renders when operator
+                              has a finite gate AND they've entered something
+                              over it; SUPER_ADMIN / GYM_MANAGER stay silent. */}
+                          {operatorDiscountGatePercent !== null
+                            && Number(lifecycleForm.discountPercent || 0) > operatorDiscountGatePercent ? (
+                            <div className="rounded-lg border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100">
+                              Above {operatorDiscountGatePercent}% needs SUPER_ADMIN approval. Submitting will create an approval request, not the renewal directly.
+                            </div>
+                          ) : null}
                           <div className="flex items-center justify-between gap-4">
                             <span className="text-[#ffd7d6]">CGST (Included)</span>
                             <span className="text-base font-medium text-white">{formatRoundedInr(renewHalfTaxAmount)}</span>
