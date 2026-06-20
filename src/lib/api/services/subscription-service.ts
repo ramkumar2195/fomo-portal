@@ -1386,6 +1386,38 @@ export const subscriptionService = {
     return unwrapData<unknown>(response);
   },
 
+  // M-8 — Couple PT partner lookup. Given any couple-PT subscription id,
+  // returns the partner member + partner's matching couple-PT sub so the
+  // renewal flow can orchestrate both halves.
+  async getCouplePartner(token: string, subscriptionId: number): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: Record<string, unknown> }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/subscriptions/${subscriptionId}/couple-partner`,
+      token,
+      method: "GET",
+    });
+    return unwrapData<Record<string, unknown>>(response);
+  },
+
+  // M-8 — relink two NEW couple-PT subs after dual renewal. The backend
+  // updates training-service client_assignments to share a fresh
+  // couple_group_id + cross-reference each other's member id.
+  async linkCouplePt(token: string, body: {
+    memberAId: number;
+    memberASubscriptionId: number;
+    memberBId: number;
+    memberBSubscriptionId: number;
+  }): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: Record<string, unknown> }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/couple-pt/link`,
+      token,
+      method: "POST",
+      body,
+    });
+    return unwrapData<Record<string, unknown>>(response);
+  },
+
   async upgradeSubscription(token: string, memberId: string, payload: Record<string, unknown>): Promise<unknown> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "subscription",

@@ -4263,6 +4263,56 @@ export default function MemberProfilePage() {
     () => catalogVariants.find((variant) => String(variant.variantId) === String(lifecycleForm.productVariantId)),
     [catalogVariants, lifecycleForm.productVariantId],
   );
+  // M-8 — Couple PT renewal detection. The selected lifecycle variant is a
+  // couple PT when its productCode/variantCode starts with COUPLE_PT_*.
+  // When this is true and the modal is "renew", we fetch the partner sub
+  // via the new /subscriptions/{id}/couple-partner endpoint and render a
+  // banner so the operator knows the submit will create TWO renewals.
+  // (Inline the modal check rather than reading isRenewLifecycleModal —
+  // that const is declared further down in this function body.)
+  const isCouplePtRenew = useMemo(() => {
+    if (actionModal !== "renew") return false;
+    const productCode = String(selectedLifecycleVariant?.productCode || "").toUpperCase();
+    const variantCode = String(selectedLifecycleVariant?.variantCode || "").toUpperCase();
+    return /COUPLE_PT/.test(productCode) || /COUPLE_PT/.test(variantCode);
+  }, [actionModal, selectedLifecycleVariant]);
+  const [couplePtPartnerInfo, setCouplePtPartnerInfo] = useState<{
+    partnerMemberId: number;
+    partnerSubscriptionId: number;
+    partnerVariantId: number | null;
+    partnerName: string | null;
+  } | null>(null);
+  const [couplePtPartnerError, setCouplePtPartnerError] = useState<string | null>(null);
+  useEffect(() => {
+    if (!isCouplePtRenew) {
+      setCouplePtPartnerInfo(null);
+      setCouplePtPartnerError(null);
+      return;
+    }
+    const targetSubId = renewFromHistory?.subscriptionId || selectedSubscriptionId;
+    if (!targetSubId || !token) return;
+    let cancelled = false;
+    setCouplePtPartnerError(null);
+    (async () => {
+      try {
+        const data = await subscriptionService.getCouplePartner(token, Number(targetSubId));
+        if (cancelled) return;
+        setCouplePtPartnerInfo({
+          partnerMemberId: Number(data.partnerMemberId),
+          partnerSubscriptionId: Number(data.partnerSubscriptionId),
+          partnerVariantId: data.partnerVariantId ? Number(data.partnerVariantId) : null,
+          partnerName: data.partnerName ? String(data.partnerName) : null,
+        });
+      } catch (err) {
+        if (cancelled) return;
+        setCouplePtPartnerInfo(null);
+        setCouplePtPartnerError(
+          err instanceof ApiError ? err.message : err instanceof Error ? err.message : "Failed to resolve Couple PT partner.",
+        );
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [isCouplePtRenew, renewFromHistory, selectedSubscriptionId, token]);
   const legacyUpgradeFallbackBySubscription = useMemo(() => {
     const statusIsHistorical = (status: string) =>
       ["CANCELLED", "CANCELED", "INACTIVE", "EXPIRED", "LAPSED"].includes(status.toUpperCase());
@@ -4882,6 +4932,52 @@ export default function MemberProfilePage() {
         throw new Error("Renewal invoice was created without valid payment references.");
       }
 
+      // M-8 — Couple PT: also renew the partner's half with the same
+      // commercial terms, then re-link both new subs. Each member gets
+      // their OWN invoice (50/50 split via the operator-entered selling
+      // price). Payment collection happens on the current member's invoice
+      // here; the partner's invoice stays unpaid until collected from the
+      // Billing tab — surfaced in the success summary.
+      let partnerRenewInvoiceId: number | null = null;
+      let partnerRenewInvoiceNumber: string | null = null;
+      let partnerRenewSubscriptionId: number | null = null;
+      if (isCouplePtRenew && couplePtPartnerInfo) {
+        const partnerRenewBody = {
+          subscriptionId: Number(couplePtPartnerInfo.partnerSubscriptionId),
+          productVariantId: Number(couplePtPartnerInfo.partnerVariantId || lifecycleForm.productVariantId),
+          startDate: lifecycleForm.startDate || undefined,
+          branchCode: branchCode || undefined,
+          discountAmount: renewCommercial.discountAmount > 0 ? roundAmount(renewCommercial.discountAmount) : undefined,
+          discountedByStaffId: operatorId > 0 ? operatorId : undefined,
+        };
+        const partnerResponse = (await subscriptionService.renewSubscription(
+          token,
+          String(couplePtPartnerInfo.partnerMemberId),
+          partnerRenewBody,
+        )) as { invoiceId?: number; invoiceNumber?: string; newSubscriptionId?: number };
+        partnerRenewInvoiceId = Number(partnerResponse.invoiceId || 0) || null;
+        partnerRenewInvoiceNumber = String(partnerResponse.invoiceNumber || "").trim() || null;
+        partnerRenewSubscriptionId = Number(partnerResponse.newSubscriptionId || 0) || null;
+        if (!partnerRenewSubscriptionId || !partnerRenewInvoiceId) {
+          throw new Error("Couple PT partner renewal succeeded but missing identifiers; check Billing tab.");
+        }
+        // Re-link the NEW subs via training-service.
+        try {
+          await subscriptionService.linkCouplePt(token, {
+            memberAId: Number(memberId),
+            memberASubscriptionId: newSubscriptionId,
+            memberBId: Number(couplePtPartnerInfo.partnerMemberId),
+            memberBSubscriptionId: partnerRenewSubscriptionId,
+          });
+        } catch (linkErr) {
+          // Both renewals succeeded; only the linkage failed. Surface a soft
+          // warning but don't roll back — the operator can manually re-link
+          // via the catalog or training UI if needed.
+          // eslint-disable-next-line no-console
+          console.warn("[M-8] Couple PT link after renewal failed:", linkErr);
+        }
+      }
+
       let paymentReceipt: Awaited<ReturnType<typeof subscriptionService.recordPayment>> | null = null;
       let membershipActivated = false;
       // M-2 — record exactly what the operator entered. The earlier
@@ -4947,10 +5043,18 @@ export default function MemberProfilePage() {
           balanceAmount,
         });
       }
+      // M-8 — surface partner renewal in the success banner so operators
+      // know to collect payment on the partner's invoice separately.
+      const partnerSuffix = partnerRenewInvoiceNumber
+        ? ` Partner's renewal invoiced as ${partnerRenewInvoiceNumber} (unpaid — collect separately from the Billing tab).`
+        : partnerRenewInvoiceId
+          ? ` Partner's renewal invoice #${partnerRenewInvoiceId} created (unpaid — collect separately from the Billing tab).`
+          : "";
       setActionSuccess(
-        membershipActivated
+        (membershipActivated
           ? `Renewal invoiced${invoiceNumber ? ` as ${invoiceNumber}` : ""} and activated.`
-          : `Renewal invoiced${invoiceNumber ? ` as ${invoiceNumber}` : ""}. Activation will happen after ${membershipPolicySettings.minPartialPaymentPercent}% payment collection.`,
+          : `Renewal invoiced${invoiceNumber ? ` as ${invoiceNumber}` : ""}. Activation will happen after ${membershipPolicySettings.minPartialPaymentPercent}% payment collection.`)
+        + partnerSuffix,
       );
       setActionModal(null);
     } catch (error) {
@@ -9648,6 +9752,35 @@ export default function MemberProfilePage() {
               {!isRenewLifecycleModal ? (
                 <div className="rounded-2xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm text-slate-700">
                   Upgrade applies the selected higher package or duration. The invoice is generated only for the difference between the existing sold membership value and the selected target plan. This membership can be upgraded only within {currentUpgradeWindowDays} days of the current cycle start.
+                </div>
+              ) : null}
+              {/* M-8 — Couple PT renewal banner. Appears above the modal layout
+                  when the renew target is a COUPLE_PT_* variant. Shows the
+                  resolved partner + status, or a soft error if lookup failed
+                  (operator can still submit but the partner won't be renewed). */}
+              {isCouplePtRenew && isRenewLifecycleModal ? (
+                <div className={`rounded-2xl border px-4 py-3 text-sm ${
+                  couplePtPartnerError
+                    ? "border-rose-400/40 bg-rose-500/10 text-rose-100"
+                    : "border-pink-400/40 bg-pink-500/10 text-pink-100"
+                }`}>
+                  {couplePtPartnerError ? (
+                    <>
+                      <p className="font-semibold">Couple PT partner lookup failed.</p>
+                      <p className="mt-1 text-xs text-rose-200/80">{couplePtPartnerError}</p>
+                      <p className="mt-1 text-xs text-rose-200/80">Submitting now renews only this member; the partner will need a manual renewal.</p>
+                    </>
+                  ) : couplePtPartnerInfo ? (
+                    <>
+                      <p className="font-semibold">Couple PT — auto-renews both halves on submit.</p>
+                      <p className="mt-1 text-xs text-pink-100/80">
+                        Partner: <span className="font-semibold">{couplePtPartnerInfo.partnerName || `Member #${couplePtPartnerInfo.partnerMemberId}`}</span>
+                        {" "}· sub #{couplePtPartnerInfo.partnerSubscriptionId}. Each member gets their own invoice for the per-partner half. Payment is collected here only on this member's invoice — the partner's invoice waits in the Billing tab.
+                      </p>
+                    </>
+                  ) : (
+                    <p className="text-xs">Resolving Couple PT partner…</p>
+                  )}
                 </div>
               ) : null}
               {isRenewLifecycleModal ? (
