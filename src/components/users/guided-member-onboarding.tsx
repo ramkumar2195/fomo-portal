@@ -735,6 +735,26 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   const router = useRouter();
   const { token, user, accessMetadata } = useAuth();
   const { effectiveBranchId, selectedBranchId, selectedBranchName, selectedBranchCode } = useBranch();
+  // O-15 — per-designation discount gate hint mirror of M-7 in member profile.
+  // Mirrors the DISCOUNT_GATE_BY_DESIGNATION map in
+  // SubscriptionMonetizationService (DEC-041). Returns null for ADMIN /
+  // SUPER_ADMIN / GYM_MANAGER (unbounded) so they see no hint.
+  const operatorDiscountGatePercent = (() => {
+    if (user?.role === "ADMIN" || user?.designation === "SUPER_ADMIN" || user?.designation === "GYM_MANAGER") {
+      return null;
+    }
+    switch (user?.designation) {
+      case "SALES_MANAGER":
+      case "SALES_EXECUTIVE":
+        return 15;
+      case "FRONT_DESK_EXECUTIVE":
+        return 5;
+      case "FITNESS_MANAGER":
+        return 10;
+      default:
+        return 10;
+    }
+  })();
 
   const canCreateMember = hasCapability(user, accessMetadata, CREATE_MEMBER_CAPABILITIES, true);
   const canConvertInquiry = hasCapability(user, accessMetadata, INQUIRY_CONVERT_CAPABILITIES, true);
@@ -755,6 +775,8 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
   const [billingSettings, setBillingSettings] = useState<BillingSettings>(defaultBillingSettings);
   const [membershipPolicySettings, setMembershipPolicySettings] = useState<MembershipPolicySettings>(defaultMembershipPolicySettings);
   const [currentStep, setCurrentStep] = useState<OnboardingStep>(1);
+  // O-4 — show/hide toggle for the password input on Step 1.
+  const [showOnboardingPassword, setShowOnboardingPassword] = useState(false);
   const [completedOnboarding, setCompletedOnboarding] = useState<CompletedOnboardingState | null>(null);
   // DEC-035 — discount above the gate (>10%) needs SUPER_ADMIN approval.
   // discountApproval drives the submit-for-approval modal; pendingApproval
@@ -3065,50 +3087,56 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
           <p className="text-sm text-slate-300">Loading inquiry and catalog details...</p>
         ) : (
           <div className="space-y-6">
-            <div className="rounded-[30px] border border-white/10 bg-[linear-gradient(135deg,rgba(196,36,41,0.18),rgba(15,18,25,0.92))] p-6">
-              <div className="flex flex-col gap-6 xl:flex-row xl:items-start xl:justify-between">
-                <div className="space-y-4">
+            {/* O-1 — compact hero. Earlier layout stacked the 4 info tiles into
+                one column on narrow widths (~1500px tall) and pushed Step 1's
+                actual form well below the fold. Now: name + step indicators
+                ride on the top row; info chips run as a single horizontal
+                strip that wraps on small viewports. Saves ~600-800px. */}
+            <div className="rounded-[24px] border border-white/10 bg-[linear-gradient(135deg,rgba(196,36,41,0.16),rgba(15,18,25,0.92))] p-5">
+              <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:justify-between">
+                <div className="min-w-0 space-y-3">
                   <div>
-                    <h3 className="text-2xl font-semibold text-white">
+                    <h3 className="text-xl font-semibold text-white">
                       {inquiry ? inquiry.fullName || "Member onboarding" : "Member onboarding"}
                     </h3>
-                    <p className="mt-2 max-w-2xl text-sm text-slate-300">{onboardingContext}</p>
+                    <p className="mt-1.5 max-w-2xl text-xs text-slate-300">{onboardingContext}</p>
                   </div>
-                  <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+                  {/* Compact info strip — chips flow horizontally, wrap if needed. */}
+                  <div className="flex flex-wrap gap-2 pt-1">
                     {[
-                      { label: "Enquiry Code", value: enquiryCodeLabel, icon: <Layers3 className="h-4 w-4" /> },
-                      { label: "Branch", value: selectedBranchName || inquiry?.branchCode || "Current branch", icon: <ShieldCheck className="h-4 w-4" /> },
-                      { label: "Primary Contact", value: inquiry?.mobileNumber || memberForm.mobileNumber || "-", icon: <Phone className="h-4 w-4" /> },
-                      { label: "Client Rep", value: clientRepLabel, icon: <UserRound className="h-4 w-4" /> },
+                      { label: "Enquiry", value: enquiryCodeLabel, icon: <Layers3 className="h-3.5 w-3.5" /> },
+                      { label: "Branch", value: selectedBranchName || inquiry?.branchCode || "Current branch", icon: <ShieldCheck className="h-3.5 w-3.5" /> },
+                      { label: "Mobile", value: inquiry?.mobileNumber || memberForm.mobileNumber || "-", icon: <Phone className="h-3.5 w-3.5" /> },
+                      { label: "Rep", value: clientRepLabel, icon: <UserRound className="h-3.5 w-3.5" /> },
                     ].map((item) => (
-                      <div key={item.label} className="rounded-2xl border border-white/10 bg-black/15 p-4">
-                        <div className="flex items-center gap-2 text-[#ffd6d4]">{item.icon}</div>
-                        <p className="mt-3 text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">{item.label}</p>
-                        <p className="mt-1 text-sm font-semibold text-white">{item.value}</p>
+                      <div key={item.label} className="inline-flex items-center gap-2 rounded-xl border border-white/10 bg-black/20 px-3 py-1.5 text-xs">
+                        <span className="text-[#ffd6d4]">{item.icon}</span>
+                        <span className="font-semibold uppercase tracking-[0.18em] text-slate-400">{item.label}</span>
+                        <span className="font-semibold text-white">{item.value}</span>
                       </div>
                     ))}
                   </div>
                 </div>
 
-                <div className="grid gap-3 sm:grid-cols-3 xl:min-w-[480px]">
+                {/* Slimmer step indicators (3 tiles, smaller padding). */}
+                <div className="grid w-full gap-2 sm:grid-cols-3 xl:w-auto xl:min-w-[420px]">
                   {stepItems.map((item) => {
                     const active = currentStep === item.step;
                     const completed = currentStep > item.step;
                     return (
                       <div
                         key={item.step}
-                        className={`rounded-2xl border p-4 transition ${active ? "border-[#c42924]/50 bg-[#1c1114]" : completed ? "border-emerald-400/20 bg-emerald-400/10" : "border-white/10 bg-white/[0.04]"}`}
+                        className={`rounded-xl border px-3 py-2.5 transition ${active ? "border-[#c42924]/50 bg-[#1c1114]" : completed ? "border-emerald-400/20 bg-emerald-400/10" : "border-white/10 bg-white/[0.04]"}`}
                       >
-                        <div className="flex items-center justify-between gap-3">
-                          <span className={`inline-flex h-9 w-9 items-center justify-center rounded-full border text-sm font-semibold ${active ? "border-[#c42924]/50 bg-[#c42924]/15 text-[#ffd6d4]" : completed ? "border-emerald-400/30 bg-emerald-400/15 text-emerald-200" : "border-white/10 bg-white/[0.04] text-slate-300"}`}>
-                            {completed ? <CheckCircle2 className="h-4 w-4" /> : item.step}
+                        <div className="flex items-center justify-between gap-2">
+                          <span className={`inline-flex h-7 w-7 items-center justify-center rounded-full border text-xs font-semibold ${active ? "border-[#c42924]/50 bg-[#c42924]/15 text-[#ffd6d4]" : completed ? "border-emerald-400/30 bg-emerald-400/15 text-emerald-200" : "border-white/10 bg-white/[0.04] text-slate-300"}`}>
+                            {completed ? <CheckCircle2 className="h-3.5 w-3.5" /> : item.step}
                           </span>
-                          <span className={`rounded-full border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.2em] ${statusBadgeClass(active)}`}>
+                          <span className={`rounded-full border px-2 py-0.5 text-[9px] font-semibold uppercase tracking-[0.18em] ${statusBadgeClass(active)}`}>
                             {completed ? "Done" : active ? "Current" : "Pending"}
                           </span>
                         </div>
-                        <p className="mt-4 text-sm font-semibold text-white">{item.label}</p>
-	                        <p className="mt-1 text-xs text-slate-400">{item.description}</p>
+                        <p className="mt-2 text-xs font-semibold text-white">{item.label}</p>
                       </div>
                     );
                   })}
@@ -3149,12 +3177,28 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                             </label>
                             <label className="space-y-2">
                               <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Gender</span>
-                              <input
-                                className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition placeholder:text-slate-500 focus:border-[#c42924]/60"
-                                value={memberForm.gender}
-                                onChange={(event) => setMemberForm((current) => ({ ...current, gender: event.target.value }))}
-                                placeholder="Optional"
-                              />
+                              {/* O-5 — pill picker (Male / Female / Other) replaces free-text
+                                  that previously accepted "Male", "male", "F", "1" etc. and
+                                  left downstream filters unable to bucket cleanly. */}
+                              <div className="grid grid-cols-3 gap-2">
+                                {(["MALE", "FEMALE", "OTHER"] as const).map((opt) => {
+                                  const active = memberForm.gender.toUpperCase() === opt;
+                                  return (
+                                    <button
+                                      key={opt}
+                                      type="button"
+                                      onClick={() => setMemberForm((current) => ({ ...current, gender: opt }))}
+                                      className={`rounded-2xl border px-3 py-3 text-sm font-semibold transition ${
+                                        active
+                                          ? "border-[#c42924]/60 bg-[#c42924]/15 text-white"
+                                          : "border-white/10 bg-[#0f141d] text-slate-300 hover:border-white/20 hover:text-white"
+                                      }`}
+                                    >
+                                      {opt.charAt(0) + opt.slice(1).toLowerCase()}
+                                    </button>
+                                  );
+                                })}
+                              </div>
                             </label>
 	                          </div>
 	                        </div>
@@ -3186,9 +3230,29 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                               />
                             </label>
                             <label className="space-y-2">
-                              <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Password</span>
+                              <div className="flex items-center justify-between gap-2">
+                                <span className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Password</span>
+                                {/* O-4 — show/hide toggle + "Default: mobile number" badge
+                                    when the value still matches the mobile, so the operator
+                                    knows the field is auto-seeded and the member is expected
+                                    to change it at first login. */}
+                                <div className="flex items-center gap-2">
+                                  {memberForm.password === memberForm.mobileNumber && memberForm.password ? (
+                                    <span className="rounded-full border border-amber-300/30 bg-amber-500/10 px-2 py-0.5 text-[10px] font-semibold uppercase tracking-[0.18em] text-amber-200">
+                                      Default · mobile
+                                    </span>
+                                  ) : null}
+                                  <button
+                                    type="button"
+                                    onClick={() => setShowOnboardingPassword((v) => !v)}
+                                    className="text-[10px] font-semibold uppercase tracking-[0.18em] text-slate-400 hover:text-slate-200"
+                                  >
+                                    {showOnboardingPassword ? "Hide" : "Show"}
+                                  </button>
+                                </div>
+                              </div>
                               <input
-                                type="password"
+                                type={showOnboardingPassword ? "text" : "password"}
                                 className="w-full rounded-2xl border border-white/10 bg-[#0f141d] px-4 py-3 text-sm text-white outline-none transition focus:border-[#c42924]/60"
                                 value={memberForm.password}
                                 onChange={(event) => setMemberForm((current) => ({ ...current, password: event.target.value }))}
@@ -3396,7 +3460,14 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                             <div className="mt-5 grid gap-4 lg:grid-cols-4">
                               {filteredPrimaryVariants.length === 0 ? (
                                 <div className="rounded-[24px] border border-dashed border-white/12 bg-[#101722] p-5 text-sm text-slate-400 lg:col-span-4">
-                                  No variants are configured for this product yet.
+                                  {/* O-13 — friendlier empty state; the original copy
+                                      "No variants are configured…" read like a bug
+                                      when actually it just needed a product first. */}
+                                  {primaryProductFilter
+                                    ? "No variants are configured for this product yet."
+                                    : primaryCategoryFilter
+                                      ? "Select a product above to see available durations."
+                                      : "Choose a product category and product to see available memberships."}
                                 </div>
                               ) : null}
                               {filteredPrimaryVariants.map((variant) => {
@@ -3429,8 +3500,14 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                         <p className="mt-1 text-xs text-slate-400">{variantProduct?.productName || variant.productCode}</p>
                                       ) : null}
                                     </div>
+                                    {/* O-10 + O-14 — pluralize duration; keep duration visible
+                                        in the Selected state instead of replacing it. */}
                                     <span className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-[0.2em] ${statusBadgeClass(active)}`}>
-                                      {active ? "Selected" : `${variant.durationMonths} months`}
+                                      {(() => {
+                                        const m = variant.durationMonths;
+                                        const label = `${m} month${m === 1 ? "" : "s"}`;
+                                        return active ? `Selected · ${label}` : label;
+                                      })()}
                                     </span>
                                   </div>
                                     <div className="mt-5 flex items-end justify-between gap-3">
@@ -3444,7 +3521,12 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                           ? formatFlexUsageLabel(variant.checkInLimit, variant.validityDays)
                                           : `${variant.validityDays} days validity`}
                                       </p>
-	                                      <p>{variant.passBenefitDays} pause benefit days</p>
+                                      {/* O-12 — only render the pause-benefit line when the
+                                          variant actually grants any. "0 pause benefit days"
+                                          on plain Core / Group Class was visual noise. */}
+                                      {variant.passBenefitDays > 0 ? (
+                                        <p>{variant.passBenefitDays} pause benefit days</p>
+                                      ) : null}
                                       </div>
                                     </div>
                                   <div className="mt-4 flex flex-wrap gap-2">
@@ -3515,6 +3597,15 @@ export function GuidedMemberOnboarding({ sourceInquiryId }: GuidedMemberOnboardi
                                   />
                                 </label>
                               </div>
+                              {/* O-15 — same gate-aware hint as M-7 in renew/upgrade. Only
+                                  shows when operator has a finite gate AND their entered
+                                  discount exceeds it. SUPER_ADMIN/GYM_MANAGER stay silent. */}
+                              {operatorDiscountGatePercent !== null
+                                && Number(subscriptionForm.primaryDiscountPercent || 0) > operatorDiscountGatePercent ? (
+                                <div className="mt-3 rounded-xl border border-amber-400/30 bg-amber-500/10 px-3 py-2 text-[11px] text-amber-100">
+                                  Above {operatorDiscountGatePercent}% needs SUPER_ADMIN approval. Submitting will create an approval request, not the onboarding directly.
+                                </div>
+                              ) : null}
                               <div className="mt-4 grid gap-3 md:grid-cols-2 xl:grid-cols-4">
                                 <div className="rounded-2xl border border-white/10 bg-[#111925] px-4 py-3">
                                   <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Plan Price</p>
