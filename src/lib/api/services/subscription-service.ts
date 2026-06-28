@@ -65,6 +65,8 @@ export interface RenewalQueueItem {
   paymentConfirmed: boolean;
   legacyCatalog?: boolean;
   migrationOnly?: boolean;
+  categoryCode?: string;
+  couplePt?: boolean;
 }
 
 export interface CatalogProduct {
@@ -464,6 +466,8 @@ function mapRenewalQueue(payload: unknown): RenewalQueueItem[] {
       paymentConfirmed: toBoolean(record, ["paymentConfirmed"]),
       legacyCatalog: toBoolean(record, ["legacyCatalog"]),
       migrationOnly: toBoolean(record, ["migrationOnly"]),
+      categoryCode: toString(record, ["categoryCode"]) || undefined,
+      couplePt: toBoolean(record, ["couplePt"]),
     }));
 }
 

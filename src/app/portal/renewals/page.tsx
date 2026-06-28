@@ -17,12 +17,34 @@ import { formatDateOnly, formatDateTime } from "@/lib/formatters";
 
 interface RenewalRow extends RenewalQueueItem {
   memberName: string;
+  memberMobile: string;
 }
 
 const RENEWALS_PAGE_SIZE = 10;
 
 function toMemberLabel(memberId: string) {
   return memberId ? `Member #${memberId}` : "Unknown member";
+}
+
+/** Renewal "type" badge derived from the product category + couple flag. */
+function renewalType(item: RenewalRow): { label: string; cls: string } {
+  if (item.couplePt) {
+    return { label: "Couple PT", cls: "border-fuchsia-400/30 bg-fuchsia-500/15 text-fuchsia-100" };
+  }
+  const cat = (item.categoryCode || "").toUpperCase();
+  if (cat === "PT") return { label: "PT", cls: "border-sky-400/30 bg-sky-500/15 text-sky-100" };
+  if (cat === "GROUP_CLASS") return { label: "Group Class", cls: "border-teal-400/30 bg-teal-500/15 text-teal-100" };
+  if (cat === "TRANSFORMATION") return { label: "Transformation", cls: "border-amber-400/30 bg-amber-500/15 text-amber-100" };
+  if (cat === "CREDIT_PACK") return { label: "Credit Pack", cls: "border-indigo-400/30 bg-indigo-500/15 text-indigo-100" };
+  return { label: "Membership", cls: "border-emerald-400/30 bg-emerald-500/15 text-emerald-100" };
+}
+
+/** Deep-link straight into that subscription's renew flow on the member's profile. */
+function renewHref(item: RenewalRow): string {
+  const params = new URLSearchParams({ tab: "subscriptions", renew: item.memberSubscriptionId });
+  if (item.productVariantId) params.set("rv", item.productVariantId);
+  if (item.endDate) params.set("rexp", item.endDate);
+  return `/admin/members/${item.memberId}?${params.toString()}`;
 }
 
 export default function RenewalsPage() {
@@ -67,6 +89,9 @@ export default function RenewalsPage() {
       const memberNameById = new Map(
         members.map((member) => [String(member.id), member.name || toMemberLabel(String(member.id))]),
       );
+      const memberMobileById = new Map(
+        members.map((member) => [String(member.id), member.mobile || ""]),
+      );
       const branchMemberIds = new Set(members.map((member) => String(member.id)));
 
       const filteredRows = renewals
@@ -74,6 +99,7 @@ export default function RenewalsPage() {
         .map((item) => ({
           ...item,
           memberName: memberNameById.get(item.memberId) || toMemberLabel(item.memberId),
+          memberMobile: memberMobileById.get(item.memberId) || "",
         }))
         .sort((left, right) => left.daysRemaining - right.daysRemaining);
 
@@ -200,53 +226,60 @@ export default function RenewalsPage() {
           <table className="w-full text-left">
             <thead>
               <tr className="bg-white/[0.03] text-xs font-semibold tracking-wide text-slate-400 uppercase">
-                <th className="px-6 py-4">Member Name</th>
-                <th className="px-6 py-4">Plan</th>
-                <th className="px-6 py-4">Expiry Date</th>
-                <th className="px-6 py-4">Days Left</th>
+                <th className="px-6 py-4">Member</th>
+                <th className="px-6 py-4">Renewal</th>
+                <th className="px-6 py-4">Expiry</th>
                 <th className="px-6 py-4">Last Contacted</th>
-                <th className="px-6 py-4">Status</th>
                 <th className="px-6 py-4">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/8">
               {upcomingRows.length === 0 ? (
                 <tr>
-                  <td className="px-6 py-4 text-sm text-slate-400" colSpan={7}>
+                  <td className="px-6 py-4 text-sm text-slate-400" colSpan={5}>
                     No upcoming renewals available.
                   </td>
                 </tr>
               ) : (
-                pagedUpcomingRows.map((item) => (
-                  <tr key={`upcoming-${item.memberSubscriptionId}`} className="hover:bg-white/[0.03]">
-                    <td className="px-6 py-4 text-sm font-semibold text-white">{item.memberName}</td>
-                    <td className="px-6 py-4 text-sm text-slate-300">{item.variantName}</td>
-                    <td className="px-6 py-4 text-sm text-slate-300">{formatDateOnly(item.endDate)}</td>
-                    <td className="px-6 py-4 text-sm text-slate-300">{item.daysRemaining}</td>
-                    <td className="px-6 py-4 text-sm text-slate-300">
-                      {lastContactedByMemberId[item.memberId] ? formatDateTime(lastContactedByMemberId[item.memberId]) : <span className="text-slate-500">Never</span>}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-slate-300">
-                      {item.subscriptionStatus?.toUpperCase() === "PAUSED" ? "Frozen" : item.subscriptionStatus}
-                      {item.paymentConfirmed ? " · Paid" : " · Pending"}
-                      {item.migrationOnly ? " · Historical only" : ""}
-                    </td>
-                    <td className="px-6 py-4">
-                      {item.migrationOnly ? (
-                        <span className="inline-flex rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-300">
-                          Historical only
-                        </span>
-                      ) : (
-                        <Link
-                          href="/portal/billing"
-                          className="inline-flex rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white hover:bg-[#a51f1b]"
-                        >
-                          Open Billing
+                pagedUpcomingRows.map((item) => {
+                  const type = renewalType(item);
+                  return (
+                    <tr key={`upcoming-${item.memberSubscriptionId}`} className="hover:bg-white/[0.03]">
+                      <td className="px-6 py-4">
+                        <Link href={`/admin/members/${item.memberId}`} className="text-sm font-semibold text-white hover:text-[#ff8a86]">
+                          {item.memberName}
                         </Link>
-                      )}
-                    </td>
-                  </tr>
-                ))
+                        {item.memberMobile ? <p className="text-xs text-slate-500">{item.memberMobile}</p> : null}
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${type.cls}`}>{type.label}</span>
+                        <p className="mt-1 text-sm text-slate-300">{item.variantName}</p>
+                      </td>
+                      <td className="px-6 py-4">
+                        <p className="text-sm text-slate-300">{formatDateOnly(item.endDate)}</p>
+                        <p className="text-xs text-slate-500">{item.daysRemaining === 0 ? "Today" : `in ${item.daysRemaining} day${item.daysRemaining === 1 ? "" : "s"}`}</p>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-slate-300">
+                        {lastContactedByMemberId[item.memberId] ? formatDateTime(lastContactedByMemberId[item.memberId]) : <span className="text-slate-500">Never</span>}
+                      </td>
+                      <td className="px-6 py-4">
+                        {item.migrationOnly ? (
+                          <span className="inline-flex rounded-xl border border-white/10 bg-white/[0.04] px-4 py-2 text-sm font-semibold text-slate-300">
+                            Historical only
+                          </span>
+                        ) : (
+                          <Link
+                            href={renewHref(item)}
+                            title={item.couplePt ? "Renews both partners" : undefined}
+                            className="inline-flex rounded-xl bg-[#c42924] px-4 py-2 text-sm font-semibold text-white hover:bg-[#a51f1b]"
+                          >
+                            {item.couplePt ? "Renew couple" : "Renew"}
+                          </Link>
+                        )}
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>
@@ -282,60 +315,69 @@ export default function RenewalsPage() {
           <table className="w-full text-left">
             <thead>
               <tr className="bg-white/[0.03] text-xs font-semibold tracking-wide text-slate-400 uppercase">
-                <th className="px-6 py-4">Member Name</th>
-                <th className="px-6 py-4">Plan</th>
-                <th className="px-6 py-4">Expired On</th>
-                <th className="px-6 py-4">Days Overdue</th>
+                <th className="px-6 py-4">Member</th>
+                <th className="px-6 py-4">Renewal</th>
+                <th className="px-6 py-4">Expired</th>
                 <th className="px-6 py-4">Last Contacted</th>
-                <th className="px-6 py-4">Payment</th>
                 <th className="px-6 py-4">Action</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-white/8">
               {expiredRows.length === 0 ? (
                 <tr>
-                  <td className="px-6 py-4 text-sm text-slate-400" colSpan={7}>
+                  <td className="px-6 py-4 text-sm text-slate-400" colSpan={5}>
                     No expired members available.
                   </td>
                 </tr>
               ) : (
-                pagedExpiredRows.map((item) => (
-                  <tr key={`expired-${item.memberSubscriptionId}`} className="hover:bg-white/[0.03]">
-                    <td className="px-6 py-4 text-sm font-semibold text-white">{item.memberName}</td>
-                    <td className="px-6 py-4 text-sm text-slate-300">{item.variantName}</td>
-                    <td className="px-6 py-4 text-sm text-slate-300">{formatDateOnly(item.endDate)}</td>
-                    <td className="px-6 py-4 text-sm text-slate-300">{Math.abs(item.daysRemaining)}</td>
-                    <td className="px-6 py-4 text-sm text-slate-300">
-                      {lastContactedByMemberId[item.memberId] ? formatDateTime(lastContactedByMemberId[item.memberId]) : <span className="text-slate-500">Never</span>}
-                    </td>
-                    <td className="px-6 py-4 text-sm text-slate-300">
-                      {item.paymentConfirmed ? "Settled" : "Pending"}
-                      {item.migrationOnly ? " · Historical only" : ""}
-                    </td>
-                    <td className="px-6 py-4">
-                      <div className="flex gap-2">
-                        {item.migrationOnly ? (
-                          <span className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-slate-200">
-                            Historical only
-                          </span>
-                        ) : (
-                          <Link
-                            href="/portal/billing"
-                            className="rounded-xl bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700"
-                          >
-                            Renew Now
-                          </Link>
-                        )}
-                        <Link
-                          href="/portal/follow-ups"
-                          className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
-                        >
-                          Follow Up
+                pagedExpiredRows.map((item) => {
+                  const type = renewalType(item);
+                  const overdue = Math.abs(item.daysRemaining);
+                  return (
+                    <tr key={`expired-${item.memberSubscriptionId}`} className="hover:bg-white/[0.03]">
+                      <td className="px-6 py-4">
+                        <Link href={`/admin/members/${item.memberId}`} className="text-sm font-semibold text-white hover:text-[#ff8a86]">
+                          {item.memberName}
                         </Link>
-                      </div>
-                    </td>
-                  </tr>
-                ))
+                        {item.memberMobile ? <p className="text-xs text-slate-500">{item.memberMobile}</p> : null}
+                      </td>
+                      <td className="px-6 py-4">
+                        <span className={`inline-flex rounded-full border px-2.5 py-0.5 text-[11px] font-semibold ${type.cls}`}>{type.label}</span>
+                        <p className="mt-1 text-sm text-slate-300">{item.variantName}</p>
+                      </td>
+                      <td className="px-6 py-4">
+                        <p className="text-sm text-slate-300">{formatDateOnly(item.endDate)}</p>
+                        <p className="text-xs text-rose-300/80">{overdue} day{overdue === 1 ? "" : "s"} overdue</p>
+                      </td>
+                      <td className="px-6 py-4 text-sm text-slate-300">
+                        {lastContactedByMemberId[item.memberId] ? formatDateTime(lastContactedByMemberId[item.memberId]) : <span className="text-slate-500">Never</span>}
+                      </td>
+                      <td className="px-6 py-4">
+                        <div className="flex gap-2">
+                          {item.migrationOnly ? (
+                            <span className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-slate-200">
+                              Historical only
+                            </span>
+                          ) : (
+                            <Link
+                              href={renewHref(item)}
+                              title={item.couplePt ? "Renews both partners" : undefined}
+                              className="rounded-xl bg-red-600 px-3 py-2 text-sm font-semibold text-white hover:bg-red-700"
+                            >
+                              {item.couplePt ? "Renew couple" : "Renew"}
+                            </Link>
+                          )}
+                          <Link
+                            href={`/admin/members/${item.memberId}`}
+                            className="rounded-xl border border-white/10 bg-white/[0.04] px-3 py-2 text-sm font-semibold text-slate-200 hover:bg-white/[0.08]"
+                          >
+                            Follow Up
+                          </Link>
+                        </div>
+                      </td>
+                    </tr>
+                  );
+                })
               )}
             </tbody>
           </table>

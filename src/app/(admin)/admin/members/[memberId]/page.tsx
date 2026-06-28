@@ -2135,6 +2135,9 @@ export default function MemberProfilePage() {
     invoiceId: "",
   });
   const autoOpenedBalanceInvoiceRef = useRef<string | null>(null);
+  // Renewals-queue deep-link (?tab=subscriptions&renew=<subId>&rv=<variantId>&rexp=<endDate>)
+  // auto-opens the renew flow for that exact subscription. Guarded so it fires once.
+  const autoOpenedRenewRef = useRef<string | null>(null);
   const [ptRescheduleForm, setPtRescheduleForm] = useState({
     sessionId: "",
     currentDate: "",
@@ -4824,6 +4827,57 @@ export default function MemberProfilePage() {
       setActionBusy(false);
     }
   };
+
+  // Renewals-queue deep-link: auto-open the renew flow for the requested subscription.
+  // Mirrors the Subscription-History "Renew" setup (ISS-044) so the modal carries the
+  // exact plan the operator clicked, whether the sub is currently active or expired.
+  // Couple PT auto-renews both partners via the existing M-8 path.
+  useEffect(() => {
+    const renewSubId = searchParams.get("renew") || "";
+    if (!renewSubId || !memberId || searchParams.get("tab") !== "subscriptions") {
+      return;
+    }
+    if (autoOpenedRenewRef.current === renewSubId) {
+      return;
+    }
+    if (!catalogVariants.length) {
+      return; // catalog still loading — effect re-runs once it arrives
+    }
+    autoOpenedRenewRef.current = renewSubId;
+    const requestedVariantId = searchParams.get("rv") || "";
+    const requestedExpiry = searchParams.get("rexp") || "";
+    const variant = catalogVariants.find((entry) => String(entry.variantId) === requestedVariantId) || null;
+    if (!variant) {
+      return; // couldn't resolve the plan; leave the operator on the profile
+    }
+    const startDate = requestedExpiry
+      ? new Date(new Date(requestedExpiry).getTime() + 24 * 60 * 60 * 1000).toISOString().slice(0, 10)
+      : new Date().toISOString().slice(0, 10);
+    setActionError(null);
+    setActiveTab("subscriptions");
+    setSelectedMembershipId(renewSubId);
+    setRenewFromHistory({
+      subscriptionId: renewSubId,
+      productVariantId: String(variant.variantId || ""),
+      productCode: variant.productCode || "",
+      categoryCode: variant.categoryCode || "",
+      endDate: requestedExpiry,
+      basePrice: Number(variant.basePrice) || 0,
+      planName: variant.variantName || "",
+    });
+    setLifecycleForm({
+      categoryCode: variant.categoryCode || "",
+      productCode: variant.productCode || "",
+      productVariantId: String(variant.variantId || ""),
+      startDate,
+      sellingPrice: variant.basePrice ? formatDecimalInput(Number(variant.basePrice)) : "",
+      discountPercent: "",
+      notes: "",
+    });
+    setLifecycleBillingForm({ paymentMode: "UPI", receivedAmount: "", balanceDueDate: "" });
+    setRenewCardSubtype("DEBIT_CARD");
+    setActionModal("renew");
+  }, [searchParams, memberId, catalogVariants]);
 
   const handleRenewBillingContinue = () => {
     if (!token || !memberId || !lifecycleForm.productVariantId) {
