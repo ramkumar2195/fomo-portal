@@ -26,6 +26,7 @@ import {
 } from "lucide-react";
 import { BillingWorkflowTemplate } from "@/components/billing/billing-workflow-template";
 import { GrantPauseBenefitModal } from "@/components/member/grant-pause-benefit-modal";
+import { AddGroupClassModal } from "@/components/member/add-group-class-modal";
 import { DiscountApprovalModal } from "@/components/billing/discount-approval-modal";
 import { RiskyOpApprovalModal } from "@/components/billing/risky-op-approval-modal";
 import { Modal } from "@/components/common/modal";
@@ -129,6 +130,7 @@ type ActionModalKey =
   | "downgrade"
   | "transfer"
   | "pt"
+  | "groupclass"
   | "visit"
   | "biometric"
   // SUPER_ADMIN escape hatch for subs stuck in PAUSED without a
@@ -147,7 +149,7 @@ type MembershipFamily =
   | "GROUP_CLASS"
   | "CREDIT_PACK"
   | "UNKNOWN";
-type MembershipActionKey = "renew" | "upgrade" | "downgrade" | "freeze" | "unfreeze" | "transfer" | "pt" | "visit" | "force-activate" | "grant-pause-benefit" | "backdate";
+type MembershipActionKey = "renew" | "upgrade" | "downgrade" | "freeze" | "unfreeze" | "transfer" | "pt" | "groupclass" | "visit" | "force-activate" | "grant-pause-benefit" | "backdate";
 
 interface MembershipActionState {
   key: MembershipActionKey;
@@ -4025,6 +4027,13 @@ export default function MemberProfilePage() {
       actions.push({
         key: "pt",
         label: "Add PT",
+        enabled: true,
+      });
+    }
+    if (canRenewMembership) {
+      actions.push({
+        key: "groupclass",
+        label: "Add Group Class",
         enabled: true,
       });
     }
@@ -10485,6 +10494,16 @@ export default function MemberProfilePage() {
               </label>
             </div>
           </Modal>
+
+          <AddGroupClassModal
+            open={actionModal === "groupclass"}
+            onClose={() => setActionModal(null)}
+            token={token ?? ""}
+            memberId={memberId}
+            branchCode={branchCode}
+            operatorId={Number((user as { id?: string | number } | null)?.id) || undefined}
+            onSuccess={reloadShell}
+          />
 
           <Modal
             open={actionModal === "pt"}
