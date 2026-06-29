@@ -7,6 +7,7 @@ import { ToastBanner } from "@/components/common/toast-banner";
 import { ConfirmDialog } from "@/components/common/confirm-dialog";
 import { useAuth } from "@/contexts/auth-context";
 import { engagementService } from "@/lib/api/services/engagement-service";
+import { usersService } from "@/lib/api/services/users-service";
 
 type Row = Record<string, unknown>;
 
@@ -35,8 +36,11 @@ export default function CommunityPage() {
 
   // Create post
   const [showCreate, setShowCreate] = useState(false);
+  const [newTitle, setNewTitle] = useState("");
   const [newContent, setNewContent] = useState("");
   const [submitting, setSubmitting] = useState(false);
+  // Feed/comments only carry a numeric authorId — resolve to names from the directory.
+  const [authorNames, setAuthorNames] = useState<Record<string, string>>({});
 
   // Comments
   const [expandedPost, setExpandedPost] = useState<number | null>(null);
@@ -64,17 +68,39 @@ export default function CommunityPage() {
     void loadFeed();
   }, [loadFeed]);
 
+  useEffect(() => {
+    if (!token) return;
+    usersService
+      .searchUsers(token, { role: "MEMBER" })
+      .then((members) => {
+        const map: Record<string, string> = {};
+        for (const m of members) map[String(m.id)] = m.name || `Member #${m.id}`;
+        setAuthorNames(map);
+      })
+      .catch(() => undefined);
+  }, [token]);
+
   const handleCreatePost = async () => {
     if (!token || !newContent.trim()) return;
+    const authorId = Number(user?.id);
+    if (!authorId) {
+      setToast({ kind: "error", message: "Could not identify your account to post." });
+      return;
+    }
     setSubmitting(true);
     try {
-      await engagementService.createPost(token, { content: newContent.trim() });
+      await engagementService.createPost(token, {
+        authorId,
+        title: newTitle.trim() || newContent.trim().slice(0, 60),
+        content: newContent.trim(),
+      });
       setToast({ kind: "success", message: "Post created!" });
       setShowCreate(false);
+      setNewTitle("");
       setNewContent("");
       void loadFeed();
-    } catch {
-      setToast({ kind: "error", message: "Failed to create post" });
+    } catch (err) {
+      setToast({ kind: "error", message: err instanceof Error ? err.message : "Failed to create post" });
     } finally {
       setSubmitting(false);
     }
@@ -82,13 +108,15 @@ export default function CommunityPage() {
 
   const handleLike = async (postId: number) => {
     if (!token) return;
+    const userId = Number(user?.id);
+    if (!userId) return;
     try {
-      await engagementService.likePost(token, postId);
+      await engagementService.likePost(token, postId, userId);
       void loadFeed();
     } catch {
       // If already liked, try unlike
       try {
-        await engagementService.unlikePost(token, postId);
+        await engagementService.unlikePost(token, postId, userId);
         void loadFeed();
       } catch {
         setToast({ kind: "error", message: "Failed to toggle like" });
@@ -116,8 +144,13 @@ export default function CommunityPage() {
 
   const handleAddComment = async (postId: number) => {
     if (!token || !newComment.trim()) return;
+    const authorId = Number(user?.id);
+    if (!authorId) {
+      setToast({ kind: "error", message: "Could not identify your account to comment." });
+      return;
+    }
     try {
-      await engagementService.createComment(token, postId, { content: newComment.trim() });
+      await engagementService.createComment(token, postId, { authorId, content: newComment.trim() });
       setNewComment("");
       const data = await engagementService.getPostComments(token, postId);
       setComments(data as Row[]);
@@ -172,8 +205,14 @@ export default function CommunityPage() {
       <div className="space-y-6">
         {posts.map((post) => {
           const postId = num(post, "id", "postId");
-          const authorName = str(post, "authorName", "userName", "user", "author");
+          const authorId = num(post, "authorId", "userId");
+          const authorName =
+            str(post, "authorName", "userName", "user", "author") ||
+            authorNames[String(authorId)] ||
+            (user && String(user.id) === String(authorId) ? (user.name ?? "") : "") ||
+            (authorId ? `Member #${authorId}` : "");
           const authorRole = str(post, "authorRole", "role");
+          const title = str(post, "title");
           const content = str(post, "content", "body", "text");
           const likes = num(post, "likeCount", "likes", "totalLikes");
           const commentCount = num(post, "commentCount", "comments", "totalComments");
@@ -206,6 +245,7 @@ export default function CommunityPage() {
                 )}
               </div>
 
+              {title && title !== content ? <p className="mb-2 font-semibold text-gray-900">{title}</p> : null}
               <p className="mb-6 whitespace-pre-wrap text-gray-800">{content}</p>
 
               <div className="flex items-center gap-6 border-t border-gray-50 pt-4">
@@ -232,23 +272,25 @@ export default function CommunityPage() {
                     <p className="text-sm text-gray-400">Loading comments...</p>
                   ) : (
                     <>
-                      {comments.map((c, i) => (
-                        <div key={i} className="flex gap-2">
-                          <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gray-100 text-xs font-bold text-gray-500">
-                            {(str(c as Row, "authorName", "userName", "author") || "?")
-                              .charAt(0)
-                              .toUpperCase()}
+                      {comments.map((c, i) => {
+                        const cRow = c as Row;
+                        const cAuthorId = num(cRow, "authorId", "userId");
+                        const cAuthor =
+                          str(cRow, "authorName", "userName", "author") ||
+                          authorNames[String(cAuthorId)] ||
+                          (cAuthorId ? `Member #${cAuthorId}` : "Member");
+                        return (
+                          <div key={i} className="flex gap-2">
+                            <div className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full bg-gray-100 text-xs font-bold text-gray-500">
+                              {cAuthor.charAt(0).toUpperCase()}
+                            </div>
+                            <div>
+                              <p className="text-xs font-semibold text-gray-700">{cAuthor}</p>
+                              <p className="text-sm text-gray-600">{str(cRow, "content", "body", "text")}</p>
+                            </div>
                           </div>
-                          <div>
-                            <p className="text-xs font-semibold text-gray-700">
-                              {str(c as Row, "authorName", "userName", "author")}
-                            </p>
-                            <p className="text-sm text-gray-600">
-                              {str(c as Row, "content", "body", "text")}
-                            </p>
-                          </div>
-                        </div>
-                      ))}
+                        );
+                      })}
                       {comments.length === 0 && (
                         <p className="text-xs text-gray-400">No comments yet.</p>
                       )}
@@ -283,6 +325,13 @@ export default function CommunityPage() {
 
       {/* Create Post Modal */}
       <Modal open={showCreate} onClose={() => setShowCreate(false)} title="Create Post" size="md">
+        <input
+          type="text"
+          value={newTitle}
+          onChange={(e) => setNewTitle(e.target.value)}
+          placeholder="Title (optional)"
+          className="mb-3 w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
+        />
         <textarea
           rows={4}
           value={newContent}

@@ -106,8 +106,8 @@ export default function CreditsPage() {
       await engagementService.patchCreditRuleActive(token, ruleId, !currentActive);
       setToast({ kind: "success", message: `Rule ${!currentActive ? "activated" : "deactivated"}` });
       void loadRules();
-    } catch {
-      setToast({ kind: "error", message: "Failed to update rule" });
+    } catch (err) {
+      setToast({ kind: "error", message: err instanceof Error ? err.message : "Failed to update rule" });
     }
   };
 
@@ -128,14 +128,15 @@ export default function CreditsPage() {
     try {
       await engagementService.awardCredits(token, {
         memberId: Number(awardForm.memberId),
-        amount: Number(awardForm.amount),
+        points: Number(awardForm.amount),
+        sourceType: "MANUAL",
         reason: awardForm.reason || "Manual award",
       });
       setToast({ kind: "success", message: "Credits awarded successfully" });
       setShowAward(false);
       setAwardForm({ memberId: "", amount: "", reason: "" });
-    } catch {
-      setToast({ kind: "error", message: "Failed to award credits" });
+    } catch (err) {
+      setToast({ kind: "error", message: err instanceof Error ? err.message : "Failed to award credits" });
     } finally {
       setSubmitting(false);
     }
@@ -147,14 +148,15 @@ export default function CreditsPage() {
     try {
       await engagementService.adjustCredits(token, {
         memberId: Number(adjustForm.memberId),
-        amount: adjustForm.type === "DEBIT" ? -Math.abs(Number(adjustForm.amount)) : Math.abs(Number(adjustForm.amount)),
+        points: adjustForm.type === "DEBIT" ? -Math.abs(Number(adjustForm.amount)) : Math.abs(Number(adjustForm.amount)),
+        sourceType: "MANUAL",
         reason: adjustForm.reason || "Manual adjustment",
       });
       setToast({ kind: "success", message: `Credits ${adjustForm.type === "DEBIT" ? "debited" : "credited"} successfully` });
       setShowAdjust(false);
       setAdjustForm({ memberId: "", amount: "", reason: "", type: "CREDIT" });
-    } catch {
-      setToast({ kind: "error", message: "Failed to adjust credits" });
+    } catch (err) {
+      setToast({ kind: "error", message: err instanceof Error ? err.message : "Failed to adjust credits" });
     } finally {
       setSubmitting(false);
     }
@@ -290,10 +292,10 @@ export default function CreditsPage() {
       <SectionCard title="Credit Rules" subtitle="Configure how credits are earned and managed">
         <DataTable<Row>
           columns={[
-            { key: "name", header: "Rule Name", render: (r) => str(r, "name", "ruleName", "eventType") },
-            { key: "description", header: "Description", render: (r) => str(r, "description", "desc") },
-            { key: "credits", header: "Credits", render: (r) => String(num(r, "credits", "creditAmount", "amount")) },
-            { key: "eventType", header: "Trigger Event", render: (r) => str(r, "eventType", "trigger", "type") },
+            { key: "name", header: "Rule Name", render: (r) => str(r, "name", "ruleName") },
+            { key: "description", header: "Description", render: (r) => str(r, "notes", "description", "desc") },
+            { key: "credits", header: "Credits", render: (r) => String(num(r, "points", "credits", "creditAmount")) },
+            { key: "eventType", header: "Trigger Event", render: (r) => str(r, "ruleType", "eventType", "trigger") },
             {
               key: "active",
               header: "Status",
@@ -350,22 +352,18 @@ export default function CreditsPage() {
         </div>
 
         {walletData && (
-          <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-4">
+          <div className="mt-4 grid grid-cols-2 gap-4 sm:grid-cols-3">
             <div className="rounded-xl border border-white/10 bg-[#171d29] p-4">
               <p className="text-xs font-medium text-slate-400 uppercase">Balance</p>
               <p className="mt-1 text-xl font-bold text-white">{num(walletData, "balance", "totalCredits", "availableCredits")}</p>
             </div>
             <div className="rounded-xl border border-white/10 bg-[#171d29] p-4">
-              <p className="text-xs font-medium text-slate-400 uppercase">Earned</p>
-              <p className="mt-1 text-xl font-bold text-green-700">{num(walletData, "totalEarned", "earned")}</p>
+              <p className="text-xs font-medium text-slate-400 uppercase">Lifetime Earned</p>
+              <p className="mt-1 text-xl font-bold text-emerald-400">{num(walletData, "lifetimeEarned", "totalEarned", "earned")}</p>
             </div>
             <div className="rounded-xl border border-white/10 bg-[#171d29] p-4">
-              <p className="text-xs font-medium text-slate-400 uppercase">Spent</p>
-              <p className="mt-1 text-xl font-bold text-rose-700">{num(walletData, "totalSpent", "spent", "redeemed")}</p>
-            </div>
-            <div className="rounded-xl border border-white/10 bg-[#171d29] p-4">
-              <p className="text-xs font-medium text-slate-400 uppercase">Expired</p>
-              <p className="mt-1 text-xl font-bold text-gray-500">{num(walletData, "totalExpired", "expired")}</p>
+              <p className="text-xs font-medium text-slate-400 uppercase">Lifetime Spent</p>
+              <p className="mt-1 text-xl font-bold text-rose-400">{num(walletData, "lifetimeSpent", "totalSpent", "spent")}</p>
             </div>
           </div>
         )}
@@ -386,10 +384,10 @@ export default function CreditsPage() {
                     return <Badge variant={type.includes("EARN") || type.includes("CREDIT") || type.includes("AWARD") ? "success" : type.includes("REDEEM") || type.includes("DEBIT") ? "error" : "neutral"}>{type}</Badge>;
                   }},
                   { key: "amount", header: "Amount", render: (r) => {
-                    const amt = num(r, "amount", "credits");
-                    return <span className={amt >= 0 ? "text-green-700 font-semibold" : "text-rose-700 font-semibold"}>{amt >= 0 ? `+${amt}` : String(amt)}</span>;
+                    const amt = num(r, "points", "amount", "credits");
+                    return <span className={amt >= 0 ? "text-emerald-400 font-semibold" : "text-rose-400 font-semibold"}>{amt >= 0 ? `+${amt}` : String(amt)}</span>;
                   }},
-                  { key: "balance", header: "Balance", render: (r) => String(num(r, "balance", "runningBalance")) },
+                  { key: "balance", header: "Balance", render: (r) => String(num(r, "availablePoints", "balance", "runningBalance")) },
                   { key: "reason", header: "Reason", render: (r) => str(r, "reason", "description", "note") },
                 ]}
                 data={ledger}

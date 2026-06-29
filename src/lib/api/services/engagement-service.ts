@@ -909,10 +909,11 @@ export const engagementService = {
   async patchCreditRuleActive(token: string, ruleId: number, active: boolean): Promise<Record<string, unknown>> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "engagement",
-      path: `/api/credits/rules/${ruleId}/active`,
+      // Backend expects `active` as a @RequestParam (query), not a JSON body.
+      path: `/api/credits/rules/${ruleId}/active?active=${active}`,
       token,
       method: "PATCH",
-      body: { active },
+      body: {},
     });
     const p = unwrapData<unknown>(response);
     return typeof p === "object" && p !== null ? (p as Record<string, unknown>) : {};
@@ -932,7 +933,7 @@ export const engagementService = {
 
   // ── Community CRUD ────────────────────────────────────────────────
 
-  async createPost(token: string, payload: { content: string; title?: string }): Promise<Record<string, unknown>> {
+  async createPost(token: string, payload: { content: string; title: string; authorId: number; visibility?: string }): Promise<Record<string, unknown>> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "engagement",
       path: "/api/community/posts",
@@ -975,7 +976,7 @@ export const engagementService = {
     return Array.isArray(payload) ? payload : [];
   },
 
-  async createComment(token: string, postId: number, payload: { content: string }): Promise<Record<string, unknown>> {
+  async createComment(token: string, postId: number, payload: { content: string; authorId: number }): Promise<Record<string, unknown>> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "engagement",
       path: `/api/community/posts/${postId}/comments`,
@@ -987,20 +988,21 @@ export const engagementService = {
     return typeof p === "object" && p !== null ? (p as Record<string, unknown>) : {};
   },
 
-  async likePost(token: string, postId: number): Promise<void> {
+  async likePost(token: string, postId: number, userId: number): Promise<void> {
     await apiRequest<unknown | { data: unknown }>({
       service: "engagement",
       path: `/api/community/posts/${postId}/likes`,
       token,
       method: "POST",
-      body: {},
+      body: { userId },
     });
   },
 
-  async unlikePost(token: string, postId: number): Promise<void> {
+  async unlikePost(token: string, postId: number, userId: number): Promise<void> {
     await apiRequest<unknown | { data: unknown }>({
       service: "engagement",
-      path: `/api/community/posts/${postId}/likes`,
+      // Backend unlike expects userId as a @RequestParam (query), not a body.
+      path: `/api/community/posts/${postId}/likes?userId=${userId}`,
       token,
       method: "DELETE",
     });

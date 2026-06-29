@@ -214,7 +214,15 @@ export default function ProgramsPage() {
   };
 
   const handleSubmit = async () => {
-    if (!token || !form.name || !form.branchId || !form.durationWeeks) return;
+    if (!token) return;
+    if (!form.name || !form.branchId || !form.durationWeeks) {
+      setToast({ kind: "error", message: "Program name, branch, and duration are required." });
+      return;
+    }
+    if (!form.trainerId) {
+      setToast({ kind: "error", message: "Please assign a coach — a program must have a coach." });
+      return;
+    }
     setSubmitting(true);
     try {
       const payload: Record<string, unknown> = {
@@ -464,13 +472,13 @@ export default function ProgramsPage() {
             </FormField>
           </div>
 
-          <FormField label="Assigned Coach">
+          <FormField label="Assigned Coach" required>
             <select
               value={form.trainerId}
               onChange={(e) => updateTrainerId(e.target.value)}
               className="w-full rounded-lg border border-gray-200 px-3 py-2 text-sm"
             >
-              <option value="">Unassigned</option>
+              <option value="">Select a coach</option>
               {availableCoaches.map((coach) => (
                 <option key={coach.id} value={coach.id}>
                   {coach.name}{coach.designation ? ` (${coach.designation.replaceAll("_", " ")})` : ""}

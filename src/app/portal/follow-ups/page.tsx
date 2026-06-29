@@ -76,9 +76,6 @@ const CANONICAL_FOLLOW_UP_TYPES: FollowUpType[] = [
   "FEEDBACK",
   "OTHER",
 ];
-const FOLLOW_UP_TYPE_OPTIONS = CANONICAL_FOLLOW_UP_TYPES.map(
-  (t) => FOLLOW_UP_TYPE_LABELS[t],
-);
 const LEAD_STATUS_MASTER_OPTIONS: InquiryStatus[] = [
   "NEW",
   "CONTACTED",
@@ -609,7 +606,12 @@ export default function FollowUpsPage() {
     [followUps, inquiriesById, staffById],
   );
 
-  const followUpTypeOptions = useMemo(() => FOLLOW_UP_TYPE_OPTIONS, []);
+  // Pair each enum CODE with its display label — the select must submit the code,
+  // not the human label (backend followUpType is a FollowUpType enum).
+  const followUpTypeOptions = useMemo(
+    () => CANONICAL_FOLLOW_UP_TYPES.map((code) => ({ code, label: FOLLOW_UP_TYPE_LABELS[code] })),
+    [],
+  );
 
   const assignedToOptions = useMemo(() => staffDirectoryOptions, [staffDirectoryOptions]);
 
@@ -1101,7 +1103,7 @@ export default function FollowUpsPage() {
                 <label className="mb-1 block text-[10px] font-semibold uppercase tracking-wider text-slate-400">Follow-up Type</label>
                 <select value={followUpTypeFilter} onChange={(e) => setFollowUpTypeFilter(e.target.value)} className="h-9 w-full rounded-lg border border-white/10 bg-[#0f141d] px-2 text-sm text-white">
                   <option value="ALL">All</option>
-                  {followUpTypeOptions.map((o) => <option key={o} value={o}>{o}</option>)}
+                  {followUpTypeOptions.map((o) => <option key={o.code} value={o.label}>{o.label}</option>)}
                 </select>
               </div>
               <div>
@@ -1511,7 +1513,7 @@ export default function FollowUpsPage() {
                 onChange={(event) => setAddFollowUpForm((current) => ({ ...current, followUpType: event.target.value as FollowUpType }))}
               >
                 {followUpTypeOptions.map((option) => (
-                  <option key={option} value={option}>{option}</option>
+                  <option key={option.code} value={option.code}>{option.label}</option>
                 ))}
               </select>
             </label>
