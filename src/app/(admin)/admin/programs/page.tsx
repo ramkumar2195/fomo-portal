@@ -186,6 +186,18 @@ export default function ProgramsPage() {
     return branchMatches.length > 0 ? branchMatches : coaches;
   }, [coaches, form.branchId]);
 
+  // Map coach id -> name so program cards show the trainer's name instead of a raw id
+  // (the training-service program list doesn't include trainerName).
+  const coachNameById = useMemo(() => {
+    const map: Record<string, string> = {};
+    coaches.forEach((coach) => {
+      if (coach.id && coach.name) {
+        map[String(coach.id)] = coach.name;
+      }
+    });
+    return map;
+  }, [coaches]);
+
   const updateTrainerId = (value: string) => {
     updateField("trainerId", value);
   };
@@ -320,7 +332,7 @@ export default function ProgramsPage() {
                 </div>
                 <div>
                   <span className="text-xs text-slate-400">Trainer</span>
-                  <p className="font-medium">{program.trainerName || program.trainerId || "-"}</p>
+                  <p className="font-medium">{program.trainerName || coachNameById[String(program.trainerId)] || program.trainerId || "-"}</p>
                 </div>
                 <div>
                   <span className="text-xs text-slate-400">Enrolled</span>
@@ -332,7 +344,7 @@ export default function ProgramsPage() {
                 </div>
               </div>
 
-              {program.maxCapacity && program.maxCapacity > 0 && (
+              {program.maxCapacity && program.maxCapacity > 0 && typeof program.membersEnrolled === "number" && (
                 <div>
                   <div className="flex items-center justify-between text-xs text-slate-400 mb-1">
                     <span>Enrollment</span>

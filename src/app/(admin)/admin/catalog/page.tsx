@@ -164,7 +164,9 @@ function getFormProfile(productCode: string): CatalogFormProfile {
     isSelectableTrack: SELECTABLE_TRACK_PRODUCT_CODES.has(productCode),
     showExtraVisitPrice: isFlex,
     showCheckInLimit: isFlex,
-    showIncludedPtSessions: isPt,
+    // FOMO_BLACK is FLAGSHIP but bundles PT sessions (13/39/78/156) — show the field
+    // so editing a Black variant doesn't silently wipe includedPtSessions to 0 on save.
+    showIncludedPtSessions: isPt || productCode === "FOMO_BLACK",
     showPassBenefitDays: productCode === "FOMO_CORE_PLUS",
     showIncludedCredits: isCreditPack,
     showBonusCredits: isFlex,

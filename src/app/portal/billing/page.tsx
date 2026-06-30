@@ -104,10 +104,16 @@ export default function BillingPage() {
       if (ids.size === 0) return;
 
       try {
-        const members = await usersService.searchUsers(token, { role: "MEMBER" });
+        // Resolve members AND staff/admins (user ids are unique) so the discount-log
+        // "Approved By" column can map discountedByStaffId -> staff name.
+        const [members, staff, admins] = await Promise.all([
+          usersService.searchUsers(token, { role: "MEMBER" }),
+          usersService.searchUsers(token, { role: "STAFF" }),
+          usersService.searchUsers(token, { role: "ADMIN" }),
+        ]);
         const nameMap = new Map<string, string>();
-        for (const m of members) {
-          if (m.id && m.name) nameMap.set(String(m.id), m.name);
+        for (const u of [...members, ...staff, ...admins]) {
+          if (u.id && u.name) nameMap.set(String(u.id), u.name);
         }
         setMemberNames(nameMap);
       } catch {
@@ -123,8 +129,15 @@ export default function BillingPage() {
       if (memberNames.size === 0) return rows;
       return rows.map((row) => {
         const mid = String(row.memberId ?? row.member ?? "");
-        const resolved = memberNames.get(mid);
-        return resolved ? { ...row, memberName: resolved } : row;
+        const sid = String(row.discountedByStaffId ?? "");
+        const memberResolved = memberNames.get(mid);
+        const staffResolved = memberNames.get(sid);
+        if (!memberResolved && !staffResolved) return row;
+        return {
+          ...row,
+          ...(memberResolved ? { memberName: memberResolved } : {}),
+          ...(staffResolved ? { staffName: staffResolved } : {}),
+        };
       });
     },
     [memberNames],
@@ -467,18 +480,18 @@ export default function BillingPage() {
               {
                 key: "reason",
                 header: "Reason",
-                render: (r) => str(r, "reason", "notes", "remarks"),
+                render: (r) => str(r, "discountReason", "reason", "notes", "remarks"),
               },
               {
                 key: "staffName",
                 header: "Approved By",
                 render: (r) =>
-                  str(r, "staffName", "discountedByStaffName", "approvedBy"),
+                  str(r, "staffName", "discountedByStaffName", "approvedBy", "discountedByStaffId"),
               },
               {
                 key: "createdAt",
                 header: "Date",
-                render: (r) => formatDateTime(str(r, "createdAt", "discountDate")),
+                render: (r) => formatDateTime(str(r, "appliedAt", "createdAt", "discountDate")),
               },
             ]}
             data={enrichRows(state.discounts)}

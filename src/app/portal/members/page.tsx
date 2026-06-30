@@ -7,6 +7,7 @@ import { SectionCard } from "@/components/common/section-card";
 import { useAuth } from "@/contexts/auth-context";
 import { useBranch } from "@/contexts/branch-context";
 import { canAccessRoute, hasCapability } from "@/lib/access-policy";
+import { branchService } from "@/lib/api/services/branch-service";
 import { engagementService } from "@/lib/api/services/engagement-service";
 import { subscriptionService } from "@/lib/api/services/subscription-service";
 import { trainingService } from "@/lib/api/services/training-service";
@@ -368,6 +369,10 @@ export default function MembersPage() {
   const [loadingSummaries, setLoadingSummaries] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [detailsByMemberId, setDetailsByMemberId] = useState<Record<string, MemberDetailSummary>>({});
+  // Branch-wide membership status for EVERY member (not just the hydrated page), sourced from the
+  // server-side members directory. Drives the summary cards + status filter so they reflect the whole
+  // branch instead of defaulting un-hydrated rows to "ACTIVE".
+  const [memberStatusById, setMemberStatusById] = useState<Record<string, MemberLifecycle>>({});
   const [staffNameById, setStaffNameById] = useState<Record<string, string>>({});
   const [currentPage, setCurrentPage] = useState(() => {
     const page = Number(searchParams.get("page") || "1");
@@ -535,6 +540,54 @@ export default function MembersPage() {
     })();
   }, [token, canViewMembers, effectiveBranchId]);
 
+  // Load branch-wide membership status for EVERY member from the server-side directory. The directory
+  // caps each page at 200, so page through it until exhausted. This drives the summary cards + status
+  // filter so they cover the whole branch instead of defaulting un-hydrated rows to "ACTIVE".
+  useEffect(() => {
+    if (!token || !canViewMembers) {
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const DIR_PAGE = 200;
+        const statusMap: Record<string, MemberLifecycle> = {};
+        let page = 0;
+        let hasMore = true;
+        while (hasMore && page < 40) {
+          const directory = await branchService.getGlobalMembersDirectory(token, {
+            branchId: effectiveBranchId ? String(effectiveBranchId) : undefined,
+            size: DIR_PAGE,
+            page,
+          });
+          if (cancelled) {
+            return;
+          }
+          const content = directory.members?.content || [];
+          content.forEach((row) => {
+            const id = row.memberId ? String(row.memberId) : "";
+            const status = (row.memberStatus || "").toUpperCase();
+            if (id && (status === "ACTIVE" || status === "EXPIRED" || status === "IRREGULAR")) {
+              statusMap[id] = status as MemberLifecycle;
+            }
+          });
+          hasMore = content.length === DIR_PAGE;
+          page += 1;
+        }
+        if (!cancelled) {
+          setMemberStatusById(statusMap);
+        }
+      } catch {
+        if (!cancelled) {
+          setMemberStatusById({});
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [token, canViewMembers, effectiveBranchId]);
+
   // Reset details when member list changes entirely (e.g. branch switch)
   const memberListKey = useMemo(() => members.map((m) => m.id).join(","), [members]);
   useEffect(() => {
@@ -547,7 +600,7 @@ export default function MembersPage() {
     let irregular = 0;
 
     members.forEach((member) => {
-      const lifecycle = detailsByMemberId[member.id]?.membershipState || "ACTIVE";
+      const lifecycle = memberStatusById[member.id] || detailsByMemberId[member.id]?.membershipState;
       if (lifecycle === "ACTIVE") {
         active += 1;
       }
@@ -560,7 +613,7 @@ export default function MembersPage() {
     });
 
     return { active, expired, irregular };
-  }, [members, detailsByMemberId]);
+  }, [members, detailsByMemberId, memberStatusById]);
 
   const filterCounts = useMemo(
     () => ({
@@ -605,7 +658,7 @@ export default function MembersPage() {
     () =>
       members.filter((member) => {
         const details = detailsByMemberId[member.id];
-        const lifecycle = details?.membershipState || "ACTIVE";
+        const lifecycle = memberStatusById[member.id] || details?.membershipState;
         const searchNeedle = searchTerm.trim().toLowerCase();
         const searchHaystack = [
           member.name,
@@ -682,7 +735,7 @@ export default function MembersPage() {
         const rightId = Number(rightMember.id) || 0;
         return rightId - leftId;
       }),
-    [dateRangeError, detailsByMemberId, fromDate, genderFilter, memberFilter, membershipFilter, members, searchTerm, serviceFilter, toDate, trainerFilter],
+    [dateRangeError, detailsByMemberId, fromDate, genderFilter, memberFilter, membershipFilter, members, memberStatusById, searchTerm, serviceFilter, toDate, trainerFilter],
   );
 
   const totalPages = Math.max(1, Math.ceil(filteredMembers.length / pageSize));
@@ -735,7 +788,7 @@ export default function MembersPage() {
           mobile: member.mobile,
           email: member.email || "-",
           memberCode: details?.memberCode || resolveMemberCode(member, details),
-          membershipStatus: details?.membershipState || "ACTIVE",
+          membershipStatus: memberStatusById[member.id] || details?.membershipState || "-",
           subscriptionState: details?.subscriptionState || "-",
           membership: details?.activePlan || "-",
           gender: details?.gender || "-",
@@ -748,7 +801,7 @@ export default function MembersPage() {
           joinedAt: details?.inquiryCreatedAt || "-",
         };
       }),
-    [detailsByMemberId, filteredMembers],
+    [detailsByMemberId, filteredMembers, memberStatusById],
   );
 
   const handleExportCsv = useCallback(() => {
@@ -847,7 +900,8 @@ export default function MembersPage() {
                 <th>Member</th>
                 <th>Mobile</th>
                 <th>Member Code</th>
-                <th>Status</th>
+                <th>Membership Status</th>
+                <th>Subscription Status</th>
                 <th>Membership</th>
                 <th>Gender</th>
                 <th>Added By</th>
@@ -1118,7 +1172,7 @@ export default function MembersPage() {
               ) : (
                 paginatedMembers.map((member) => {
                   const details = detailsByMemberId[member.id];
-                  const lifecycle = details?.membershipState || "ACTIVE";
+                  const lifecycle = memberStatusById[member.id] || details?.membershipState || "ACTIVE";
                   const subscriptionState = details?.subscriptionState || "-";
 
                   return (

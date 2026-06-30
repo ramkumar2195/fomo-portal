@@ -93,11 +93,27 @@ const EMPTY_ANALYTICS: AnalyticsSnapshot = {
   },
 };
 
-function buildMonthlySeries(monthRevenue: number): Array<{ month: string; value: number }> {
-  const base = Math.max(Math.round(monthRevenue / 6), 5000);
-  const labels = ["Jan", "Feb", "Mar", "Apr", "May", "Jun"];
-  const factors = [0.85, 0.92, 1.04, 0.98, 1.12, 1.2];
-  return labels.map((month, index) => ({ month, value: Math.round(base * factors[index]) }));
+// Build a REAL monthly collections series from the loaded receipts (grouped by paid month),
+// not a fabricated curve. Returns up to the last 6 months that actually have collections.
+function buildMonthlySeries(receipts: Record<string, unknown>[]): Array<{ month: string; value: number }> {
+  const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+  const byKey = new Map<string, number>();
+  for (const receipt of receipts) {
+    const dateStr = (receipt.paidAt ?? receipt.paymentDate ?? receipt.createdAt) as string | undefined;
+    if (!dateStr) continue;
+    const parsed = new Date(dateStr);
+    if (Number.isNaN(parsed.getTime())) continue;
+    const key = `${parsed.getFullYear()}-${String(parsed.getMonth()).padStart(2, "0")}`;
+    const amount = Number(receipt.amountPaid ?? receipt.amount ?? 0) || 0;
+    byKey.set(key, (byKey.get(key) || 0) + amount);
+  }
+  return Array.from(byKey.keys())
+    .sort()
+    .slice(-6)
+    .map((key) => {
+      const [year, monthIdx] = key.split("-");
+      return { month: `${MONTHS[Number(monthIdx)]} '${year.slice(2)}`, value: Math.round(byKey.get(key) || 0) };
+    });
 }
 
 function toRecord(value: unknown): Record<string, unknown> {
@@ -250,8 +266,8 @@ export default function ReportsPage() {
   }, [loadReports]);
 
   const monthlySeries = useMemo(
-    () => buildMonthlySeries(state.adminOverview.monthRevenue || state.metrics.revenueThisMonth),
-    [state.adminOverview.monthRevenue, state.metrics.revenueThisMonth],
+    () => buildMonthlySeries(analytics.receipts),
+    [analytics.receipts],
   );
   const maxSeries = useMemo(() => Math.max(...monthlySeries.map((item) => item.value), 1), [monthlySeries]);
   const analysisCards = useMemo<AnalysisCardModel[]>(() => {
@@ -616,7 +632,9 @@ export default function ReportsPage() {
       <div className="grid grid-cols-1 gap-8 lg:grid-cols-2">
         <SectionCard title="Revenue Growth">
           <div className="flex h-64 items-end gap-4 rounded-2xl bg-[#171d29] p-4">
-            {monthlySeries.map((point) => {
+            {monthlySeries.length === 0 ? (
+              <p className="m-auto text-sm text-slate-400">No collections recorded in the selected period.</p>
+            ) : monthlySeries.map((point) => {
               const height = Math.max(12, Math.round((point.value / maxSeries) * 100));
               return (
                 <div key={point.month} className="flex flex-1 flex-col items-center justify-end gap-2">
