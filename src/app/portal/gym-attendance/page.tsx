@@ -219,34 +219,42 @@ export default function GymAttendancePage() {
     [rows, userMap],
   );
 
+  // Branch scope: Super Admin "All Branches" → no filter; otherwise only rows whose
+  // resolved defaultBranchId matches the header selector. A row whose branch can't be
+  // resolved is EXCLUDED under a specific branch (no cross-branch leak), shown only when
+  // "All Branches" is selected. Both the table and the summary cards use this set.
+  const branchScopedRows = useMemo(
+    () => (effectiveBranchId
+      ? enrichedRows.filter((row) => row.defaultBranchId === effectiveBranchId)
+      : enrichedRows),
+    [enrichedRows, effectiveBranchId],
+  );
+
   const filteredRows = useMemo(() => {
     const needle = search.trim().toLowerCase();
-    return enrichedRows.filter((row) => {
+    return branchScopedRows.filter((row) => {
       if (activeRole !== "ALL" && row.role !== activeRole) return false;
-      // Branch scope: Super Admin "All Branches" → no filter; otherwise show
-      // only users whose defaultBranchId matches the header selector.
-      if (effectiveBranchId && row.defaultBranchId && row.defaultBranchId !== effectiveBranchId) return false;
       if (needle) {
         const hay = `${row.name} ${row.mobile} ${row.designation}`.toLowerCase();
         if (!hay.includes(needle)) return false;
       }
       return true;
     });
-  }, [enrichedRows, activeRole, effectiveBranchId, search]);
+  }, [branchScopedRows, activeRole, search]);
 
   const counts = useMemo(() => {
     const byRole: Record<string, number> = { MEMBER: 0, STAFF: 0, COACH: 0, ADMIN: 0, UNKNOWN: 0 };
-    enrichedRows.forEach((row) => {
+    branchScopedRows.forEach((row) => {
       if (!row.role) byRole.UNKNOWN += 1;
       else if (byRole[row.role] !== undefined) byRole[row.role] += 1;
       else byRole.UNKNOWN += 1;
     });
     return {
-      total: enrichedRows.length,
-      uniqueMembers: new Set(enrichedRows.map((row) => row.memberId)).size,
+      total: branchScopedRows.length,
+      uniqueMembers: new Set(branchScopedRows.map((row) => row.memberId)).size,
       byRole,
     };
-  }, [enrichedRows]);
+  }, [branchScopedRows]);
 
   if (loading) return <PageLoader label="Loading gym attendance..." />;
 

@@ -109,7 +109,7 @@ function formatCalendarDate(value?: string): string {
 
 export default function ClassesPage() {
   const { token } = useAuth();
-  const { selectedBranchCode } = useBranch();
+  const { selectedBranchCode, branches: orgBranches } = useBranch();
   const [search, setSearch] = useState("");
   const [branchFilter, setBranchFilter] = useState(selectedBranchCode || "ALL");
   const [classType, setClassType] = useState("ALL");
@@ -256,9 +256,12 @@ export default function ClassesPage() {
     if (!form.branchCode || form.branchCode === "ALL") {
       return coaches;
     }
-    const branchMatches = coaches.filter((coach) => coach.defaultBranchId === form.branchCode);
+    // coach.defaultBranchId is a numeric branch id; form.branchCode is a code — map code→id to compare.
+    const branchId = orgBranches.find((b) => b.branchCode === form.branchCode)?.id;
+    if (!branchId) return coaches;
+    const branchMatches = coaches.filter((coach) => String(coach.defaultBranchId) === String(branchId));
     return branchMatches.length > 0 ? branchMatches : coaches;
-  }, [coaches, form.branchCode]);
+  }, [coaches, form.branchCode, orgBranches]);
 
   const updateTrainer = (value: string) => {
     const selectedCoach = availableCoaches.find((coach) => coach.id === value) ?? coaches.find((coach) => coach.id === value);

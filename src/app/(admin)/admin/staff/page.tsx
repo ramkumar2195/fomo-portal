@@ -142,7 +142,7 @@ async function enrichStaffRow(token: string, staffUser: UserDirectoryItem): Prom
 export default function StaffPage() {
   const router = useRouter();
   const { token } = useAuth();
-  const { branches } = useBranch();
+  const { branches, effectiveBranchId } = useBranch();
   const [search, setSearch] = useState("");
   const [designationFilter, setDesignationFilter] = useState("ALL");
   const [rows, setRows] = useState<StaffRow[]>([]);
@@ -173,6 +173,7 @@ export default function StaffPage() {
           role: "STAFF",
           query: search.trim() || undefined,
           designation: designationFilter === "ALL" ? undefined : (designationFilter as UserDesignation),
+          defaultBranchId: effectiveBranchId ? String(effectiveBranchId) : undefined,
         });
 
         const enriched = await Promise.all(staffUsers.slice(0, 20).map((user) => enrichStaffRow(token, user)));
@@ -198,7 +199,7 @@ export default function StaffPage() {
     return () => {
       active = false;
     };
-  }, [designationFilter, search, token]);
+  }, [designationFilter, search, token, effectiveBranchId]);
 
   const filterValues = useMemo(
     () => ({

@@ -49,7 +49,7 @@ function renewHref(item: RenewalRow): string {
 
 export default function RenewalsPage() {
   const { token, user } = useAuth();
-  const { effectiveBranchId } = useBranch();
+  const { effectiveBranchId, selectedBranchCode } = useBranch();
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [rows, setRows] = useState<RenewalRow[]>([]);
@@ -81,6 +81,8 @@ export default function RenewalsPage() {
         }),
         subscriptionService.getRenewalsQueue(token, {
           daysAhead: 30,
+          // Branch scoping is enforced server-side now — no fragile client-side intersection.
+          branchCode: selectedBranchCode || undefined,
         }),
         engagementService.getSalesDashboard(token, user.id, user.role),
         usersService.getSuperAdminDashboard(token, effectiveBranchId),
@@ -92,10 +94,8 @@ export default function RenewalsPage() {
       const memberMobileById = new Map(
         members.map((member) => [String(member.id), member.mobile || ""]),
       );
-      const branchMemberIds = new Set(members.map((member) => String(member.id)));
 
       const filteredRows = renewals
-        .filter((item) => branchMemberIds.size === 0 || branchMemberIds.has(item.memberId))
         .map((item) => ({
           ...item,
           memberName: memberNameById.get(item.memberId) || toMemberLabel(item.memberId),
@@ -143,7 +143,7 @@ export default function RenewalsPage() {
     } finally {
       setLoading(false);
     }
-  }, [token, user, effectiveBranchId]);
+  }, [token, user, effectiveBranchId, selectedBranchCode]);
 
   useEffect(() => {
     void loadPage();

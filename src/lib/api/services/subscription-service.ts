@@ -48,6 +48,7 @@ export interface RenewalQueueQuery {
   daysAhead?: number;
   from?: string;
   to?: string;
+  branchCode?: string;
 }
 
 export interface RenewalQueueItem {
@@ -1213,7 +1214,7 @@ export const subscriptionService = {
     return toRecord(unwrapData<unknown>(response));
   },
 
-  async getInvoiceRegister(token: string, query: { from?: string; to?: string; memberId?: string; status?: string } = {}): Promise<unknown[]> {
+  async getInvoiceRegister(token: string, query: { from?: string; to?: string; memberId?: string; status?: string; branchCode?: string } = {}): Promise<unknown[]> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "subscription",
       path: "/api/subscriptions/v2/finance/registers/invoices",
@@ -1224,7 +1225,7 @@ export const subscriptionService = {
     return Array.isArray(data) ? data : [];
   },
 
-  async getReceiptRegister(token: string, query: { from?: string; to?: string; memberId?: string; paymentMode?: string } = {}): Promise<unknown[]> {
+  async getReceiptRegister(token: string, query: { from?: string; to?: string; memberId?: string; paymentMode?: string; branchCode?: string } = {}): Promise<unknown[]> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "subscription",
       path: "/api/subscriptions/v2/finance/registers/receipts",
@@ -1246,7 +1247,7 @@ export const subscriptionService = {
     return Array.isArray(data) ? data : [];
   },
 
-  async getSubscriptionRegister(token: string, query: { from?: string; to?: string; memberId?: string; status?: string } = {}): Promise<unknown[]> {
+  async getSubscriptionRegister(token: string, query: { from?: string; to?: string; memberId?: string; status?: string; branchCode?: string } = {}): Promise<unknown[]> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "subscription",
       path: "/api/subscriptions/v2/finance/registers/subscriptions",
@@ -1257,7 +1258,7 @@ export const subscriptionService = {
     return Array.isArray(data) ? data : [];
   },
 
-  async getDiscountLogs(token: string, query: { from?: string; to?: string; memberId?: string; discountedByStaffId?: string } = {}): Promise<unknown[]> {
+  async getDiscountLogs(token: string, query: { from?: string; to?: string; memberId?: string; discountedByStaffId?: string; branchCode?: string } = {}): Promise<unknown[]> {
     const response = await apiRequest<unknown | { data: unknown }>({
       service: "subscription",
       path: "/api/subscriptions/v2/finance/registers/discount-logs",

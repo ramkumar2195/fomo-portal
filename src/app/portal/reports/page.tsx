@@ -199,9 +199,9 @@ export default function ReportsPage() {
           0,
           500,
         ),
-        subscriptionService.getRenewalsQueue(token, { daysAhead: 30 }),
-        subscriptionService.getReceiptRegister(token),
-        subscriptionService.getSubscriptionRegister(token),
+        subscriptionService.getRenewalsQueue(token, { daysAhead: 30, branchCode: selectedBranchCode || undefined }),
+        subscriptionService.getReceiptRegister(token, { branchCode: selectedBranchCode || undefined }),
+        subscriptionService.getSubscriptionRegister(token, { branchCode: selectedBranchCode || undefined }),
       ]);
       if (dashboardResult.status === "fulfilled") {
         setState(dashboardResult.value);
@@ -441,25 +441,25 @@ export default function ReportsPage() {
         key: "subscription-register",
         title: "Subscription Register",
         description: "All subscription rows from the finance subscription register.",
-        loadRows: async () => subscriptionService.getSubscriptionRegister(token).then((rows) => rows.map(toRecord)),
+        loadRows: async () => subscriptionService.getSubscriptionRegister(token, { branchCode: selectedBranchCode || undefined }).then((rows) => rows.map(toRecord)),
       },
       {
         key: "sales-register",
         title: "Sales / Invoice Register",
         description: "Invoice-side sales register with tax, totals, balances, and staff fields.",
-        loadRows: async () => subscriptionService.getInvoiceRegister(token).then((rows) => rows.map(toRecord)),
+        loadRows: async () => subscriptionService.getInvoiceRegister(token, { branchCode: selectedBranchCode || undefined }).then((rows) => rows.map(toRecord)),
       },
       {
         key: "collection-report",
         title: "Collection Report",
         description: "Receipt-side collection report with payment mode and transaction details.",
-        loadRows: async () => subscriptionService.getReceiptRegister(token).then((rows) => rows.map(toRecord)),
+        loadRows: async () => subscriptionService.getReceiptRegister(token, { branchCode: selectedBranchCode || undefined }).then((rows) => rows.map(toRecord)),
       },
       {
         key: "balance-due-register",
         title: "Balance Due Register",
         description: "Invoices with outstanding balance as of today.",
-        loadRows: async () => subscriptionService.getBalanceDue(token).then((rows) => rows.map(toRecord)),
+        loadRows: async () => subscriptionService.getBalanceDue(token, { branchCode: selectedBranchCode || undefined }).then((rows) => rows.map(toRecord)),
       },
       {
         key: "transfer-register",
@@ -478,7 +478,7 @@ export default function ReportsPage() {
         loadRows: async () => [],
       },
     ];
-  }, [token]);
+  }, [token, selectedBranchCode]);
 
   const handleDownloadReport = async (card: ReportDownloadCard) => {
     if (card.disabled) return;
