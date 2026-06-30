@@ -477,22 +477,6 @@ export default function ReportsPage() {
         description: "Invoices with outstanding balance as of today.",
         loadRows: async () => subscriptionService.getBalanceDue(token, { branchCode: selectedBranchCode || undefined }).then((rows) => rows.map(toRecord)),
       },
-      {
-        key: "transfer-register",
-        title: "Transfer Register",
-        description: "Download will be enabled after a transfer register endpoint is exposed.",
-        disabled: true,
-        disabledReason: "No register-level transfer API is available yet.",
-        loadRows: async () => [],
-      },
-      {
-        key: "freeze-register",
-        title: "Freeze / Pause Register",
-        description: "Download will be enabled after a branch-level freeze register endpoint is exposed.",
-        disabled: true,
-        disabledReason: "Freeze history is currently member-scoped only.",
-        loadRows: async () => [],
-      },
     ];
   }, [token, selectedBranchCode]);
 

@@ -544,6 +544,14 @@ function formatAuditDetailsSummary(entry: MemberProfileAuditEntry): string {
   if (details.variantName) {
     parts.push(details.variantName);
   }
+  if (parts.length === 0) {
+    // Fallback for audit events that aren't freeze/billing-shaped: surface whatever
+    // key=value pairs the change payload carries instead of rendering a blank cell.
+    return Object.entries(details)
+      .filter(([, value]) => value !== undefined && value !== null && String(value).trim() !== "" && String(value).trim() !== "-")
+      .map(([key, value]) => `${humanizeLabel(key)}: ${String(value).trim()}`)
+      .join(" · ");
+  }
   return parts.join(" · ");
 }
 
@@ -1607,16 +1615,24 @@ function projectMembershipEndDate(startDate: string, durationMonths: number, val
   if (Number.isNaN(parsed.getTime())) {
     return undefined;
   }
+  // Format from local Y/M/D — toISOString() serializes to UTC, which rolls the
+  // date back a day in IST (local midnight = previous-day 18:30 UTC).
+  const toLocalYmd = (date: Date): string => {
+    const year = date.getFullYear();
+    const month = String(date.getMonth() + 1).padStart(2, "0");
+    const day = String(date.getDate()).padStart(2, "0");
+    return `${year}-${month}-${day}`;
+  };
   if (durationMonths > 0) {
     const projected = new Date(parsed);
     projected.setMonth(projected.getMonth() + durationMonths);
     projected.setDate(projected.getDate() - 1);
-    return projected.toISOString().slice(0, 10);
+    return toLocalYmd(projected);
   }
   if (validityDays > 0) {
     const projected = new Date(parsed);
     projected.setDate(projected.getDate() + validityDays - 1);
-    return projected.toISOString().slice(0, 10);
+    return toLocalYmd(projected);
   }
   return undefined;
 }
@@ -4597,6 +4613,47 @@ export default function MemberProfilePage() {
   const ptReceivedAmount = Number(ptBillingForm.receivedAmount || 0);
   const ptBalanceAmount = Math.max(ptInvoiceTotal - ptReceivedAmount, 0);
   const ptPreviewStatus = "Pending";
+
+  // Couple PT is billed 50/50 across two members (each gets their own invoice with
+  // per-half GST rounding). Pull the authoritative per-member split so the summary
+  // shows what each partner actually pays, not just the combined couple total.
+  const [couplePtPreview, setCouplePtPreview] = useState<{
+    each: number;
+    taxable: number;
+    cgst: number;
+    sgst: number;
+  } | null>(null);
+  useEffect(() => {
+    if (!isCouplePt || !token || !selectedPtVariant?.variantId) {
+      setCouplePtPreview(null);
+      return;
+    }
+    let cancelled = false;
+    (async () => {
+      try {
+        const data = await subscriptionService.getCouplePtPreview(
+          token,
+          Number(selectedPtVariant.variantId),
+          Math.round(Number(ptCommercial.discountAmount) || 0),
+        );
+        if (cancelled) return;
+        const memberA = toRecord(data.memberA);
+        setCouplePtPreview({
+          each: Number(memberA.total) || 0,
+          taxable: Number(memberA.taxable) || 0,
+          cgst: Number(memberA.cgst) || 0,
+          sgst: Number(memberA.sgst) || 0,
+        });
+      } catch {
+        if (!cancelled) {
+          setCouplePtPreview(null);
+        }
+      }
+    })();
+    return () => {
+      cancelled = true;
+    };
+  }, [isCouplePt, token, selectedPtVariant?.variantId, ptCommercial.discountAmount]);
 
   useEffect(() => {
     if (!isUpgradeLifecycleModal || !singleUpgradeVariant) {
@@ -8874,13 +8931,20 @@ export default function MemberProfilePage() {
           const rawId = String(entry.freezeId || "").trim();
           const numericIdMatch = rawId.match(/\d+/);
           const displayFreezeId = numericIdMatch ? `Freeze ${numericIdMatch[0]}` : `Freeze ${index + 1}`;
+          // A freeze whose end date has already passed is COMPLETED even if the backend
+          // never stamped resumedAt (it lapsed rather than being explicitly resumed).
+          const rawFreezeTo = entry.freezeTo || entry.endDate || entry.freeze_to;
+          const freezeWindowOver = rawFreezeTo
+            ? new Date(`${String(rawFreezeTo).slice(0, 10)}T23:59:59`).getTime() < Date.now()
+            : false;
+          const derivedStatus = entry.status || (entry.resumedAt || freezeWindowOver ? "COMPLETED" : "ACTIVE");
           return {
             freezeId: displayFreezeId,
             freezeFrom: formatDateOnly(entry.freezeFrom || entry.startDate || entry.freeze_from),
             freezeTo: formatDateOnly(entry.freezeTo || entry.endDate || entry.freeze_to),
             days: entry.days ?? "-",
             reason: entry.reason || "-",
-            status: titleize((entry.status || (entry.resumedAt ? "COMPLETED" : "ACTIVE")).toLowerCase()),
+            status: titleize(String(derivedStatus).toLowerCase()),
             resumedAt: entry.resumedAt ? formatDateTime(entry.resumedAt) : "",
             completion: entry.completionReason ? titleize(entry.completionReason.toLowerCase()) : "",
             restoredPauseDays: entry.restoredPauseDays ?? 0,
@@ -8893,7 +8957,11 @@ export default function MemberProfilePage() {
         const showCompletionColumn = freezeHistoryRows.some((entry) => entry.completion);
         const showRestoredColumn = freezeHistoryRows.some((entry) => Number(entry.restoredPauseDays) > 0);
         return (
-          <ProfilePanel title="Freeze History" accent="slate">
+          <ProfilePanel
+            title="Freeze History"
+            subtitle={`${freezeHistoryRows.length} freeze${freezeHistoryRows.length === 1 ? "" : "s"} used · max 4 per membership term`}
+            accent="slate"
+          >
             {freezeHistoryRows.length === 0 ? (
               <div className="rounded-2xl border border-dashed border-white/10 bg-white/[0.03] px-4 py-6 text-sm text-slate-400">
                 No freeze history found.
@@ -11038,11 +11106,21 @@ export default function MemberProfilePage() {
                       <span className="text-slate-400">SGST</span>
                       <span className="font-semibold text-white">{formatRoundedInr(ptSgstAmount)}</span>
                     </div>
+                    {isCouplePt && couplePtPreview ? (
+                      <div className="flex items-center justify-between gap-4 rounded-xl border border-sky-400/20 bg-sky-500/[0.06] px-3 py-2">
+                        <span className="text-sky-200">Per partner (2 invoices)</span>
+                        <span className="font-semibold text-white">{formatRoundedInr(couplePtPreview.each)}</span>
+                      </div>
+                    ) : null}
                     <div className="border-t border-white/10 pt-3">
                       <div className="flex items-end justify-between gap-4">
                         <div>
                           <p className="text-[11px] font-semibold uppercase tracking-[0.22em] text-slate-400">Total Payable</p>
-                          <p className="mt-1 text-xs text-slate-500">PT is billed as an add-on to the current gym membership.</p>
+                          <p className="mt-1 text-xs text-slate-500">
+                            {isCouplePt && couplePtPreview
+                              ? `Couple PT — split into 2 invoices of ${formatRoundedInr(couplePtPreview.each)}, one per partner.`
+                              : "PT is billed as an add-on to the current gym membership."}
+                          </p>
                         </div>
                         <span className="text-3xl font-semibold text-white">{formatRoundedInr(ptInvoiceTotal)}</span>
                       </div>

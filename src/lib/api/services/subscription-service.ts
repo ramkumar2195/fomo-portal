@@ -1404,6 +1404,19 @@ export const subscriptionService = {
     return unwrapData<Record<string, unknown>>(response);
   },
 
+  // Couple PT pricing is split 50/50 across two members with per-half GST rounding.
+  // This endpoint is the source of truth (manual maths drift by ₹1 on the integer
+  // GST rounding) — returns { coupleTaxable, memberA:{taxable,cgst,sgst,total}, memberB:{...} }.
+  async getCouplePtPreview(token: string, variantId: number, discountAmount = 0): Promise<Record<string, unknown>> {
+    const response = await apiRequest<unknown | { data: Record<string, unknown> }>({
+      service: "subscription",
+      path: `/api/subscriptions/v2/couple-pt/preview?variantId=${variantId}&discountAmount=${discountAmount}`,
+      token,
+      method: "GET",
+    });
+    return unwrapData<Record<string, unknown>>(response);
+  },
+
   // M-8 — relink two NEW couple-PT subs after dual renewal. The backend
   // updates training-service client_assignments to share a fresh
   // couple_group_id + cross-reference each other's member id.
